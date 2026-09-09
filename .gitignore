@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+coverage/
+*.log
+.npm-cache/
+test-results/
+playwright-report/
+graphify-out/
+artifacts/*.log
+.claude/

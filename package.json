@@ -1,0 +1,30 @@
+{
+  "name": "ai-agent-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "node packages/server/src/main.js",
+    "dev": "node --watch packages/server/src/main.js",
+    "dev:web": "vite apps/web --config apps/web/vite.config.js",
+    "build": "vite build apps/web --config apps/web/vite.config.js",
+    "test:ui": "playwright test",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "lucide-react": "^1.43.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.186.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "prettier": "^3.9.6",
+    "vite": "^8.2.2"
+  }
+}
