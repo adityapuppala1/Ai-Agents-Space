@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { get } from "node:http";
 import { TaskStore } from "../packages/core/src/TaskStore.js";
 import { createWorkspaceServer } from "../packages/server/src/server.js";
+import { createServices } from "../packages/core/src/services.js";
 
 test("tasks sort by priority and snapshots cannot mutate the store", () => {
   const store = new TaskStore();
@@ -112,4 +113,45 @@ test("HTTP API creates, updates and lists tasks; validates input", async (t) => 
     request.on("error", reject);
   });
   assert.equal(rejectedHostStatus, 403);
+});
+
+test("settings store ordinary token limits but refuse credentials", () => {
+  const services = createServices({ demo: false });
+  services.settings.set("budget.dailyTokenLimit", 500000);
+  assert.equal(services.settings.get("budget.dailyTokenLimit"), 500000);
+  for (const key of [
+    "auth_token",
+    "apiToken",
+    "access-token",
+    "api_key",
+    "password",
+  ])
+    assert.throws(
+      () => services.settings.set(key, "x"),
+      /Secrets are not stored/,
+    );
+});
+
+test("tasks accept document inputs alongside code targets", () => {
+  const services = createServices({ demo: false });
+  const workspace = services.hub.get(services.hub.create({ name: "Docs" }).id);
+  const task = workspace.store.create({
+    title: "With documents",
+    target: {
+      folder: "C:/work",
+      documents: [{ path: "spec.md", label: "Spec" }, "notes.txt"],
+    },
+  });
+  assert.deepEqual(workspace.store.get(task.id).target.documents, [
+    { path: "spec.md", label: "Spec" },
+    { path: "notes.txt" },
+  ]);
+  assert.throws(
+    () =>
+      workspace.store.create({
+        title: "bad",
+        target: { documents: [{ label: "no path" }] },
+      }),
+    /path/,
+  );
 });

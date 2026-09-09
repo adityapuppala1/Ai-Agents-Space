@@ -19,6 +19,13 @@ const dbPath =
   fileURLToPath(new URL("../../../data/agent-space.sqlite", import.meta.url));
 const observe = process.env.AGENT_SPACE_OBSERVE !== "false";
 
+// How often the outbound webhook queue is drained and the health level is
+// refreshed. Both timers are unref'd so they never hold the process open.
+const WEBHOOK_INTERVAL_MS =
+  Number(process.env.AGENT_SPACE_WEBHOOK_INTERVAL) || 30_000;
+const HEALTH_INTERVAL_MS =
+  Number(process.env.AGENT_SPACE_HEALTH_INTERVAL) || 60_000;
+
 const services = createServices({
   dbPath,
   demo: process.env.DEMO !== "false",
@@ -103,6 +110,77 @@ async function startup() {
     await services.observation.poll().catch(() => {});
   }
 
+  // 6. Optional modules that this build may or may not contain.
+  const optional = await (services.ready ?? Promise.resolve([]));
+
+  // 7. Retention sweeps. The timer starts only when the policy is enabled;
+  // a disabled policy keeps everything and says so in the startup line.
+  let retentionLabel = "not available";
+  try {
+    const policy = services.retention?.policy?.();
+    services.retention?.start?.();
+    retentionLabel = !policy
+      ? "not available"
+      : policy.enabled
+        ? `on (events ${policy.eventsDays ?? "forever"}d, runs ${
+            policy.runsDays ?? "forever"
+          }d, audit ${policy.auditDays ?? "forever"}d)`
+        : "off (nothing is deleted)";
+  } catch (error) {
+    retentionLabel = `error (${error.message})`;
+  }
+
+  // 8. Outbound webhook deliveries. Nothing is sent unless an endpoint exists;
+  // deliverDue() drains the retry queue with the service's own backoff.
+  if (services.webhooks?.deliverDue) {
+    const timer = setInterval(() => {
+      services.webhooks
+        .deliverDue({})
+        .catch((error) =>
+          console.error(`Webhook delivery failed: ${error?.message ?? error}`),
+        );
+    }, WEBHOOK_INTERVAL_MS);
+    timer.unref?.();
+    services.onClose(() => clearInterval(timer));
+  }
+
+  // 9. Scheduled reports, when this build has them (see OPTIONAL_MODULES).
+  try {
+    services.reports?.start?.();
+  } catch (error) {
+    console.error(`Scheduled reports failed to start: ${error.message}`);
+  }
+
+  // 10. Health. The snapshot is computed on demand; this timer only refreshes
+  // the level so the global channel can show a banner without every client
+  // polling. A change in level forces one global broadcast.
+  let healthLabel = "not available";
+  let health = null;
+  try {
+    health = services.health?.snapshot?.() ?? null;
+    if (health) {
+      healthLabel = `${health.status}${
+        health.alerts?.length ? ` (${health.alerts.length} alert(s))` : ""
+      }`;
+      let lastStatus = health.status;
+      const timer = setInterval(() => {
+        try {
+          const next = services.health.snapshot();
+          if (next.status !== lastStatus) {
+            lastStatus = next.status;
+            services.bus.emit("global");
+          }
+        } catch {
+          /* health must never crash the server */
+        }
+      }, HEALTH_INTERVAL_MS);
+      timer.unref?.();
+      services.onClose(() => clearInterval(timer));
+    }
+  } catch (error) {
+    healthLabel = `error (${error.message})`;
+  }
+
   const connections = services.connections.list();
   const providers = connections.length
     ? connections
@@ -116,6 +194,25 @@ async function startup() {
     `Startup: providers — ${providers} | live sessions: ${live} | hooks: ${hooksLabel} | observation: ${
       observe ? "on" : "off (AGENT_SPACE_OBSERVE=false)"
     }${disconnected.length ? ` | ${disconnected.length} run(s) marked disconnected` : ""}`,
+  );
+
+  // Operational facts an operator needs before touching anything.
+  const incident = services.incidents?.status?.() ?? null;
+  const breakers = Object.entries(services.runWorker?.providerHealth?.() ?? {})
+    .filter(([, state]) => state?.state && state.state !== "closed")
+    .map(([provider, state]) => `${provider}:${state.state}`);
+  console.log(
+    `Operations: dispatch ${
+      incident?.dispatchStopped
+        ? `STOPPED${incident.reason ? ` — ${incident.reason}` : ""}`
+        : "allowed"
+    }${
+      incident?.unacknowledged?.length
+        ? ` | ${incident.unacknowledged.length} stop request(s) not acknowledged by a run`
+        : ""
+    } | circuit breakers: ${breakers.length ? breakers.join(", ") : "all closed"} | retention: ${retentionLabel} | health: ${healthLabel}${
+      optional.length ? ` | optional modules: ${optional.join(", ")}` : ""
+    }`,
   );
 }
 

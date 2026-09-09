@@ -1,12 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { InputError } from "../TaskStore.js";
 import {
   REGISTRY,
   REGISTRY_IDS,
   capabilityMatrix,
   compareVersions,
+  compatibility,
   listProviders,
 } from "../providers/registry.js";
-import { detectProviders } from "../providers/detect.js";
+import {
+  detectProviders,
+  categorizeDetection,
+  remediationFor,
+  authExpiryFor,
+  ERROR_CATEGORIES,
+} from "../providers/detect.js";
+import { planMigration, applyMigration } from "./migration.js";
 
 /**
  * Connections: one persisted row per provider alias (`default` for the local
@@ -22,6 +31,26 @@ import { detectProviders } from "../providers/detect.js";
 
 const STATUSES = ["unknown", "detected", "ready", "error", "missing"];
 const DEFAULT_ALIAS = "default";
+const PROBE_HISTORY_LIMIT = 20;
+
+/**
+ * What a connection connects to. Only `coding-runtime` is implemented today;
+ * the other kinds are accepted so a row can be recorded honestly, and they
+ * carry no detection or launch support (status stays `unknown` unless a probe
+ * is written for them).
+ */
+export const CONNECTION_KINDS = [
+  "coding-runtime",
+  "model-api",
+  "local-model-server",
+  "external-agent-service",
+  "workflow-engine",
+];
+
+const ALIAS_PATTERN = /^[a-z0-9][a-z0-9._-]{0,39}$/i;
+
+/** Environment names that would carry a credential; never stored. */
+const SECRET_ENV = /key|token|secret|password|passwd|credential|auth|cookie/i;
 
 function rowToConnection(row) {
   const parse = (text, fallback) => {
@@ -32,9 +61,17 @@ function rowToConnection(row) {
     }
   };
   const provider = REGISTRY[row.provider];
+  const errorCategory = row.error_category ?? null;
   return {
     id: row.id,
     provider: row.provider,
+    kind: row.kind ?? "coding-runtime",
+    errorCategory,
+    remediation: errorCategory
+      ? remediationFor(errorCategory, row.provider)
+      : null,
+    authExpiresAt: row.auth_expires_at ?? null,
+    lastSuccessAt: row.last_success_at ?? null,
     providerName: provider?.name ?? row.provider,
     badge: provider?.badge ?? row.provider,
     alias: row.alias,
@@ -55,6 +92,31 @@ function rowToConnection(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? null,
   };
+}
+
+/**
+ * Keeps only non-credential environment overrides. Anything whose name looks
+ * like a key, token, secret, password, or credential is dropped and only its
+ * name is remembered, so a secret can never reach the database.
+ */
+export function sanitizeEnv(input) {
+  if (input === undefined || input === null) return { env: {}, refusedEnv: [] };
+  if (typeof input !== "object" || Array.isArray(input))
+    throw new InputError("env must be an object of NAME: value strings");
+  const env = {};
+  const refusedEnv = [];
+  for (const [name, value] of Object.entries(input)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,80}$/.test(name))
+      throw new InputError(`env name "${name}" is not a valid variable name`);
+    if (typeof value !== "string" || value.length > 500)
+      throw new InputError(`env.${name} must be a string under 500 characters`);
+    if (SECRET_ENV.test(name)) {
+      refusedEnv.push(name);
+      continue;
+    }
+    env[name] = value;
+  }
+  return { env, refusedEnv };
 }
 
 function statusFor(entry) {
@@ -120,7 +182,7 @@ export class ConnectionService {
     return this.list();
   }
 
-  /** Re-detects a single connection's provider and records last_probe_at. */
+  /** Re-detects a single connection's provider and records a probe entry. */
   async probe(id) {
     const connection = this.get(id);
     const [entry] = await this.detect({
@@ -128,15 +190,17 @@ export class ConnectionService {
       force: true,
       providers: [connection.provider],
     });
-    this.#upsert(entry, connection.alias);
+    this.#upsert(entry, connection.alias, { id: connection.id });
     this.bus.emit("global");
     return this.get(id);
   }
 
-  #upsert(entry, alias = DEFAULT_ALIAS) {
+  #upsert(entry, alias = DEFAULT_ALIAS, { id: knownId = null } = {}) {
     const now = this.now();
     this.lastDetection.set(entry.provider, entry);
     const capabilities = JSON.stringify(this.capabilities(entry.provider));
+    const health = categorizeDetection(entry, { env: this.env });
+    const compat = compatibility(entry.provider, entry.version ?? null);
     const details = JSON.stringify({
       authHint: entry.authHint ?? "unknown",
       homeExists: Boolean(entry.homeExists),
@@ -145,14 +209,20 @@ export class ConnectionService {
       versionOutput: entry.versionOutput ?? null,
       launchVerified: REGISTRY[entry.provider]?.launchVerified ?? false,
       docsUrl: REGISTRY[entry.provider]?.docsUrl ?? null,
+      errorDetail: health.detail,
+      remediation: health.remediation,
+      compatibility: compat,
     });
-    const id = `${entry.provider}-${alias}`;
+    const id = knownId ?? `${entry.provider}-${alias}`;
+    const status = statusFor(entry);
+    const ok = !health.category;
     this.db
       .prepare(
         `INSERT INTO connections
-           (id, workspace_id, provider, alias, host, capabilities, created_at,
-            status, version, binary_path, home_path, last_probe_at, error, details, updated_at)
-         VALUES (?, NULL, ?, ?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, workspace_id, provider, alias, host, capabilities, created_at, kind,
+            status, version, binary_path, home_path, last_probe_at, error, details, updated_at,
+            error_category, auth_expires_at, last_success_at)
+         VALUES (?, NULL, ?, ?, 'local', ?, ?, 'coding-runtime', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(provider, alias) DO UPDATE SET
            capabilities = excluded.capabilities,
            status = excluded.status,
@@ -162,7 +232,10 @@ export class ConnectionService {
            last_probe_at = excluded.last_probe_at,
            error = excluded.error,
            details = excluded.details,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           error_category = excluded.error_category,
+           auth_expires_at = excluded.auth_expires_at,
+           last_success_at = COALESCE(excluded.last_success_at, connections.last_success_at)`,
       )
       .run(
         id,
@@ -170,7 +243,7 @@ export class ConnectionService {
         alias,
         capabilities,
         now,
-        statusFor(entry),
+        status,
         entry.version ?? null,
         entry.binaryPath ?? null,
         entry.homePath ?? null,
@@ -178,7 +251,216 @@ export class ConnectionService {
         entry.error ?? null,
         details,
         now,
+        health.category,
+        authExpiryFor(entry.provider, entry),
+        ok ? (entry.probedAt ?? now) : null,
       );
+    const rowId =
+      this.db
+        .prepare("SELECT id FROM connections WHERE provider = ? AND alias = ?")
+        .get(entry.provider, alias)?.id ?? id;
+    this.#recordProbe(rowId, {
+      probedAt: entry.probedAt ?? now,
+      ok,
+      category: health.category,
+      detail:
+        health.detail ??
+        (ok
+          ? `${REGISTRY[entry.provider]?.name ?? entry.provider}${entry.version ? ` ${entry.version}` : ""} answered --version`
+          : null),
+    });
+  }
+
+  /** Appends one probe entry and keeps only the newest 20 per connection. */
+  #recordProbe(connectionId, { probedAt, ok, category, detail }) {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO connection_probes (id, connection_id, probed_at, ok, category, detail)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          connectionId,
+          probedAt ?? this.now(),
+          ok ? 1 : 0,
+          category ?? null,
+          detail ? String(detail).slice(0, 500) : null,
+        );
+      this.db
+        .prepare(
+          `DELETE FROM connection_probes
+            WHERE connection_id = ?
+              AND id NOT IN (
+                SELECT id FROM connection_probes WHERE connection_id = ?
+                 ORDER BY probed_at DESC, rowid DESC LIMIT ?
+              )`,
+        )
+        .run(connectionId, connectionId, PROBE_HISTORY_LIMIT);
+    } catch {
+      /* probe history is best effort; it never blocks a refresh */
+    }
+  }
+
+  /** Newest-first probe history for one connection (at most 20 rows). */
+  probes(id, { limit = PROBE_HISTORY_LIMIT } = {}) {
+    const connection = this.get(id);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM connection_probes WHERE connection_id = ?
+          ORDER BY probed_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(
+        connection.id,
+        Math.max(1, Math.min(PROBE_HISTORY_LIMIT, Number(limit) || 20)),
+      );
+    return rows.map((row) => ({
+      id: row.id,
+      connectionId: row.connection_id,
+      probedAt: row.probed_at,
+      ok: Boolean(row.ok),
+      category: row.category ?? null,
+      detail: row.detail ?? null,
+      remediation: row.category
+        ? remediationFor(row.category, connection.provider)
+        : null,
+    }));
+  }
+
+  /**
+   * Creates an extra connection for a provider (a second account, a different
+   * host, or a non-coding-runtime endpoint recorded honestly as `kind`).
+   * Nothing here contacts the provider: the row starts as `unknown` until it
+   * is probed. Credential-looking environment variables are refused.
+   */
+  create(input = {}) {
+    if (!input || typeof input !== "object" || Array.isArray(input))
+      throw new InputError("Expected an object");
+    const provider = String(input.provider ?? "").trim();
+    if (!REGISTRY[provider])
+      throw new InputError(
+        `provider must be one of ${REGISTRY_IDS.join(", ")}`,
+        400,
+      );
+    const alias = String(input.alias ?? "").trim();
+    if (!ALIAS_PATTERN.test(alias))
+      throw new InputError(
+        "alias must be 1-40 letters, digits, dots, dashes, or underscores",
+      );
+    const kind = input.kind ?? "coding-runtime";
+    if (!CONNECTION_KINDS.includes(kind))
+      throw new InputError(
+        `kind must be one of ${CONNECTION_KINDS.join(", ")}`,
+      );
+    const host = String(input.host ?? "local").trim() || "local";
+    if (host.length > 120)
+      throw new InputError("host must be under 120 characters");
+    if (input.owner !== undefined && input.owner !== null) {
+      if (typeof input.owner !== "string" || input.owner.length > 80)
+        throw new InputError("owner must be a string under 80 characters");
+    }
+    const allowedWorkspaces = input.allowedWorkspaces ?? [];
+    if (
+      !Array.isArray(allowedWorkspaces) ||
+      allowedWorkspaces.length > 200 ||
+      !allowedWorkspaces.every(
+        (w) => typeof w === "string" && w && w.length <= 80,
+      )
+    )
+      throw new InputError(
+        "allowedWorkspaces must be an array of workspace ids",
+      );
+    for (const key of ["binaryPath", "homePath"]) {
+      const value = input[key];
+      if (value === undefined || value === null) continue;
+      if (typeof value !== "string" || value.length > 500)
+        throw new InputError(`${key} must be a string under 500 characters`);
+    }
+    const { env, refusedEnv } = sanitizeEnv(input.env);
+    const existing = this.db
+      .prepare("SELECT id FROM connections WHERE provider = ? AND alias = ?")
+      .get(provider, alias);
+    if (existing)
+      throw new InputError(
+        `${REGISTRY[provider].name} already has a connection called "${alias}"`,
+        409,
+      );
+    const now = this.now();
+    const id = `${provider}-${alias}`;
+    this.db
+      .prepare(
+        `INSERT INTO connections
+           (id, workspace_id, provider, alias, host, capabilities, created_at, kind,
+            status, version, binary_path, home_path, last_probe_at, error, details, updated_at,
+            owner, allowed_workspaces, enabled, observe, error_category)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'unknown', NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, 1, 1, NULL)`,
+      )
+      .run(
+        id,
+        provider,
+        alias,
+        host,
+        JSON.stringify(this.capabilities(provider)),
+        now,
+        kind,
+        input.binaryPath ?? null,
+        input.homePath ?? null,
+        JSON.stringify({
+          createdBy: "user",
+          env,
+          refusedEnv,
+          docsUrl: REGISTRY[provider]?.docsUrl ?? null,
+          note:
+            kind === "coding-runtime"
+              ? "User-created alias. Probe it to record its own health."
+              : `Recorded as "${kind}". Agent Space implements coding runtimes only, so this connection cannot launch runs.`,
+        }),
+        now,
+        input.owner ? input.owner.trim() : null,
+        JSON.stringify([...new Set(allowedWorkspaces)]),
+      );
+    this.services.audit?.record?.({
+      actor: input.actor ?? "local-user",
+      action: "connection.create",
+      target: id,
+      details: { provider, alias, kind, host },
+    });
+    this.bus.emit("global");
+    return this.get(id);
+  }
+
+  /**
+   * Removes a connection. Refuses while a run references it so run history
+   * keeps its provenance.
+   */
+  remove(id, { actor = "local-user" } = {}) {
+    const connection = this.get(id);
+    let used = 0;
+    try {
+      used =
+        this.db
+          .prepare("SELECT COUNT(*) AS n FROM runs WHERE connection_id = ?")
+          .get(connection.id)?.n ?? 0;
+    } catch {
+      used = 0;
+    }
+    if (used)
+      throw new InputError(
+        `${connection.providerName} "${connection.alias}" is used by ${used} run${used === 1 ? "" : "s"}; it cannot be removed.`,
+        409,
+      );
+    this.db
+      .prepare("DELETE FROM connection_probes WHERE connection_id = ?")
+      .run(connection.id);
+    this.db.prepare("DELETE FROM connections WHERE id = ?").run(connection.id);
+    this.services.audit?.record?.({
+      actor,
+      action: "connection.remove",
+      target: connection.id,
+      details: { provider: connection.provider, alias: connection.alias },
+    });
+    this.bus.emit("global");
+    return { removed: connection.id };
   }
 
   list() {
@@ -242,6 +524,22 @@ export class ConnectionService {
         throw new InputError("owner must be under 80 characters");
       fields.owner = patch.owner ? patch.owner.trim() : null;
     }
+    if (patch.kind !== undefined) {
+      if (!CONNECTION_KINDS.includes(patch.kind))
+        throw new InputError(
+          `kind must be one of ${CONNECTION_KINDS.join(", ")}`,
+        );
+      fields.kind = patch.kind;
+    }
+    if (patch.host !== undefined) {
+      if (
+        typeof patch.host !== "string" ||
+        !patch.host.trim() ||
+        patch.host.length > 120
+      )
+        throw new InputError("host must be a string under 120 characters");
+      fields.host = patch.host.trim();
+    }
     if (patch.allowedWorkspaces !== undefined) {
       const list = patch.allowedWorkspaces;
       if (
@@ -256,9 +554,15 @@ export class ConnectionService {
     }
     const unknown = Object.keys(patch).filter(
       (key) =>
-        !["enabled", "observe", "alias", "owner", "allowedWorkspaces"].includes(
-          key,
-        ),
+        ![
+          "enabled",
+          "observe",
+          "alias",
+          "owner",
+          "allowedWorkspaces",
+          "kind",
+          "host",
+        ].includes(key),
     );
     if (unknown.length)
       throw new InputError(`Unknown field(s): ${unknown.join(", ")}`);
@@ -275,13 +579,110 @@ export class ConnectionService {
     return this.get(id);
   }
 
-  /** Records that a provider produced an event (observed or managed). */
+  /**
+   * Records that a provider produced an event (observed or managed). A real
+   * event is the strongest health signal there is, so it also updates
+   * `last_success_at` and clears a stale error category.
+   */
   markEvent(providerId, at = this.now()) {
     this.db
       .prepare(
         "UPDATE connections SET last_event_at = ? WHERE provider = ? AND (last_event_at IS NULL OR last_event_at < ?)",
       )
       .run(at, providerId, at);
+    this.db
+      .prepare(
+        "UPDATE connections SET last_success_at = ? WHERE provider = ? AND (last_success_at IS NULL OR last_success_at < ?)",
+      )
+      .run(at, providerId, at);
+  }
+
+  /**
+   * Version/OS compatibility for one provider. With no version the stored
+   * connection version is used.
+   */
+  compatibility(providerId, version) {
+    if (!REGISTRY[providerId])
+      throw new InputError(`Unknown provider: ${providerId}`, 404);
+    const resolved =
+      version === undefined
+        ? (this.forProvider(providerId)?.version ?? null)
+        : version;
+    return compatibility(providerId, resolved);
+  }
+
+  /** Compatibility verdicts for every provider, using the detected versions. */
+  allCompatibility() {
+    return Object.fromEntries(
+      REGISTRY_IDS.map((id) => [id, this.compatibility(id)]),
+    );
+  }
+
+  /**
+   * Health record for one connection: what actually happened, when, and what
+   * to do about it. Nothing here is invented; `authExpiresAt` stays null
+   * because none of the five providers exposes an expiry we are allowed to
+   * read (existence of a credential file is all Agent Space checks).
+   */
+  health(id) {
+    const connection = this.get(id);
+    return {
+      id: connection.id,
+      provider: connection.provider,
+      alias: connection.alias,
+      kind: connection.kind,
+      status: connection.status,
+      errorCategory: connection.errorCategory,
+      error: connection.error,
+      detail: connection.details?.errorDetail ?? null,
+      remediation: connection.remediation,
+      lastProbeAt: connection.lastProbeAt,
+      lastEventAt: connection.lastEventAt,
+      lastSuccessAt: connection.lastSuccessAt,
+      authExpiresAt: connection.authExpiresAt,
+      authExpiryNote:
+        "No supported provider publishes a credential expiry that Agent Space may read, so this is always empty.",
+      compatibility: this.compatibility(
+        connection.provider,
+        connection.version,
+      ),
+      probes: this.probes(connection.id),
+    };
+  }
+
+  /**
+   * Provider migration assistant. `migrate()` returns the plan; pass
+   * `apply: true` to copy the compatible profile fields onto a profile for
+   * the target provider (and optionally launch a run with `launch: true`).
+   * See connections/migration.js — behaviour is never promised to match.
+   */
+  migrate({
+    agentId,
+    workspaceId,
+    targetProvider,
+    apply = false,
+    taskId = null,
+    launch = false,
+    actor = "local-user",
+  }) {
+    if (!apply)
+      return planMigration({
+        services: this.services,
+        connections: this,
+        agentId,
+        workspaceId,
+        targetProvider,
+      });
+    return applyMigration({
+      services: this.services,
+      connections: this,
+      agentId,
+      workspaceId,
+      targetProvider,
+      taskId,
+      launch,
+      actor,
+    });
   }
 
   /** Resolved capability matrix for one provider. */
@@ -367,12 +768,33 @@ export class ConnectionService {
         );
         continue;
       }
-      if (connection.details?.authHint === "no-credentials-file") {
+      if (connection.errorCategory === "not-logged-in") {
         push(
           "warn",
           `${provider.name} is probably not logged in`,
-          `No credentials file was found under ${connection.homePath}. Only file existence is checked; contents are never read.`,
-          `Run \`${provider.binaries[0]}\` once and complete the login flow.`,
+          connection.details?.errorDetail ??
+            `No credentials file was found under ${connection.homePath}. Only file existence is checked; contents are never read.`,
+          connection.remediation,
+        );
+      } else if (connection.errorCategory) {
+        push(
+          "warn",
+          `${provider.name}: ${connection.errorCategory.replace(/-/g, " ")}`,
+          connection.details?.errorDetail ??
+            connection.error ??
+            "The last probe did not succeed.",
+          connection.remediation,
+        );
+      }
+      // `supported === false` is already covered by the minimum-version
+      // warning below; only the "never tested here" case is added.
+      const compat = this.compatibility(id, connection.version);
+      if (compat.supported === "untested" && connection.version) {
+        push(
+          "warn",
+          `${provider.name} ${connection.version} has not been tested here`,
+          compat.reason,
+          "Run a small sandbox task and confirm it behaves before relying on it.",
         );
       }
       if (
@@ -411,7 +833,10 @@ export class ConnectionService {
           "Install the hook bridge (POST /api/hooks/claude-code/install) — it keeps existing hooks such as rtk.",
         );
       }
-      if (provider.launchVerified === "format-verified") {
+      if (
+        provider.launchVerified === "format-verified" ||
+        provider.launchVerified === "flags-verified"
+      ) {
         push(
           "warn",
           `${provider.name} managed runs are experimental`,
@@ -447,6 +872,41 @@ export class ConnectionService {
           `Found at ${connection.binaryPath}.`,
         );
       }
+    }
+    // Extra aliases created by the user: each one reports its own health.
+    for (const extra of this.list().filter((c) => c.alias !== DEFAULT_ALIAS)) {
+      const name = REGISTRY[extra.provider]?.name ?? extra.provider;
+      if (extra.kind !== "coding-runtime") {
+        items.push({
+          provider: extra.provider,
+          level: "warn",
+          title: `${name} "${extra.alias}" is recorded as ${extra.kind}`,
+          detail:
+            "Agent Space implements coding runtimes only; this connection is recorded for reference and cannot launch runs.",
+          fix: null,
+        });
+        continue;
+      }
+      if (extra.status === "unknown") {
+        items.push({
+          provider: extra.provider,
+          level: "warn",
+          title: `${name} "${extra.alias}" has never been probed`,
+          detail: `Created ${extra.owner ? `for ${extra.owner} ` : ""}on host ${extra.host}. Nothing is known about it until it is probed.`,
+          fix: `POST /api/connections/${extra.id}/probe`,
+        });
+        continue;
+      }
+      items.push({
+        provider: extra.provider,
+        level: extra.errorCategory ? "warn" : "ok",
+        title: `${name} "${extra.alias}" is ${extra.status}`,
+        detail:
+          extra.details?.errorDetail ??
+          extra.error ??
+          `Host ${extra.host}${extra.owner ? `, owner ${extra.owner}` : ""}.`,
+        fix: extra.remediation,
+      });
     }
     return items;
   }
@@ -531,6 +991,13 @@ export class ConnectionService {
       id: c.id,
       provider: c.provider,
       alias: c.alias,
+      kind: c.kind,
+      host: c.host,
+      owner: c.owner,
+      errorCategory: c.errorCategory,
+      remediation: c.remediation,
+      lastSuccessAt: c.lastSuccessAt,
+      authExpiresAt: c.authExpiresAt,
       status: c.status,
       version: c.version,
       enabled: c.enabled,
@@ -541,4 +1008,4 @@ export class ConnectionService {
   }
 }
 
-export { STATUSES as CONNECTION_STATUSES };
+export { STATUSES as CONNECTION_STATUSES, ERROR_CATEGORIES };

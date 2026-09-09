@@ -78,6 +78,66 @@ export function rowToRun(row, now = Date.now()) {
   };
 }
 
+/**
+ * Test results a managed run actually reported. The numbers come from the
+ * `test-output` artifact the run worker writes (one entry per test command it
+ * recognised) and from the exit codes the provider reported for those
+ * commands. When a provider reported no exit code the command is counted as
+ * `unknown`, never as a pass: Agent Space does not guess whether tests passed.
+ *
+ * Returns a Map of runId → summary for the runs asked for, and only for runs
+ * that have such an artifact. Reading is bounded to the first 8 KB of the
+ * artifact so a huge log cannot slow a snapshot down.
+ */
+export function testSummaries(db, runIds) {
+  const summaries = new Map();
+  const ids = [...new Set(runIds.filter(Boolean))];
+  if (!ids.length) return summaries;
+  const placeholders = ids.map(() => "?").join(",");
+  let rows = [];
+  try {
+    rows = db
+      .prepare(
+        `SELECT id, run_id, title, metadata, SUBSTR(COALESCE(content, ''), 1, 8000) AS head
+         FROM artifacts WHERE kind = 'test-output' AND run_id IN (${placeholders})
+         ORDER BY created_at ASC`,
+      )
+      .all(...ids);
+  } catch {
+    return summaries;
+  }
+  for (const row of rows) {
+    const metadata = parseJson(row.metadata, {});
+    const commands = Array.isArray(metadata.commands) ? metadata.commands : [];
+    let passed = 0;
+    let failed = 0;
+    let unknown = 0;
+    const total = Number(metadata.count) || commands.length || 0;
+    let seen = 0;
+    for (const match of String(row.head ?? "").matchAll(
+      /^\$ .*?\(exit (-?\d+)\)\s*$/gm,
+    )) {
+      seen++;
+      if (Number(match[1]) === 0) passed++;
+      else failed++;
+    }
+    unknown = Math.max(0, total - seen);
+    summaries.set(row.run_id, {
+      artifactId: row.id,
+      title: row.title ?? "Test output",
+      commands: total,
+      passed,
+      failed,
+      unknown,
+      // "reported" is true only when every command carried an exit code from
+      // the provider; otherwise the UI must say results are incomplete.
+      reported: total > 0 && unknown === 0,
+      basis: "exit codes reported by the provider for recognised test commands",
+    });
+  }
+  return summaries;
+}
+
 export function rowToWorkspace(row) {
   return {
     id: row.id,
@@ -180,31 +240,88 @@ export class Workspace extends EventEmitter {
       }));
   }
 
+  /**
+   * Attaches the reported test results to each run that has a test-output
+   * artifact. Runs without one keep `tests: null` — "no tests were recorded",
+   * which is not the same as "tests passed".
+   */
+  #withTests(runs) {
+    if (!runs.length) return runs;
+    const summaries = testSummaries(
+      this.db,
+      runs.map((run) => run.id),
+    );
+    for (const run of runs) run.tests = summaries.get(run.id) ?? null;
+    return runs;
+  }
+
+  /**
+   * Execution fields that live on the task row but are not part of the
+   * TaskStore shape: the per-task contract, the branch condition, the named
+   * reviewer, and the repair chain. Absent columns (an older database) are
+   * reported as empty rather than failing the snapshot.
+   */
+  #taskExecutionFields() {
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT id, contract, branch_condition, reviewer, repair_of FROM tasks WHERE workspace_id = ?",
+        )
+        .all(this.id);
+      return new Map(
+        rows.map((row) => [
+          row.id,
+          {
+            contract: parseJson(row.contract, null),
+            branch: parseJson(row.branch_condition, null),
+            reviewer: row.reviewer ?? null,
+            repairOf: row.repair_of ?? null,
+          },
+        ]),
+      );
+    } catch {
+      return new Map();
+    }
+  }
+
   runs(limit = 100) {
     const now = Date.now();
-    return this.db
-      .prepare(
-        "SELECT * FROM runs WHERE workspace_id = ? ORDER BY started_at DESC LIMIT ?",
-      )
-      .all(this.id, limit)
-      .map((row) => rowToRun(row, now));
+    return this.#withTests(
+      this.db
+        .prepare(
+          "SELECT * FROM runs WHERE workspace_id = ? ORDER BY started_at DESC LIMIT ?",
+        )
+        .all(this.id, limit)
+        .map((row) => rowToRun(row, now)),
+    );
   }
 
   /** Runs that currently occupy an agent (queued, running, blocked, waiting, stale). */
   activeRuns() {
     const now = Date.now();
     const placeholders = ACTIVE_RUN_STATUSES.map(() => "?").join(",");
-    return this.db
-      .prepare(
-        `SELECT * FROM runs WHERE workspace_id = ? AND status IN (${placeholders}) ORDER BY started_at DESC`,
-      )
-      .all(this.id, ...ACTIVE_RUN_STATUSES)
-      .map((row) => rowToRun(row, now));
+    return this.#withTests(
+      this.db
+        .prepare(
+          `SELECT * FROM runs WHERE workspace_id = ? AND status IN (${placeholders}) ORDER BY started_at DESC`,
+        )
+        .all(this.id, ...ACTIVE_RUN_STATUSES)
+        .map((row) => rowToRun(row, now)),
+    );
   }
 
   snapshot() {
     const now = Date.now();
-    const tasks = this.store.list();
+    const execution = this.#taskExecutionFields();
+    const tasks = this.store.list().map((task) => ({
+      ...task,
+      ...(execution.get(task.id) ?? {
+        contract: null,
+        branch: null,
+        reviewer: null,
+        repairOf: null,
+      }),
+    }));
     const activeRuns = this.activeRuns();
     const agents = this.profiles.list().map((agent) => {
       const task = tasks.find(
@@ -223,6 +340,10 @@ export class Workspace extends EventEmitter {
       return {
         ...agent,
         state,
+        // Team name for grouping in the office. Uses the profile's own team
+        // field when a build has one; otherwise the role is the team, which is
+        // a label the user already chose rather than an invented one.
+        team: agent.team ?? agent.role,
         taskId: task?.id,
         taskTitle: task?.title ?? null,
         completed: tasks.filter(
@@ -239,6 +360,7 @@ export class Workspace extends EventEmitter {
         actualModel: run?.actualModel ?? null,
         lastEventAt: run?.lastEventAt ?? null,
         elapsedMs: run ? Math.max(0, now - run.startedAt) : null,
+        tests: run?.tests ?? null,
       };
     });
     return {

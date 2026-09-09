@@ -141,19 +141,163 @@ export const REGISTRY = {
     docsUrl: "https://github.com/google-gemini/gemini-cli",
     installHint:
       "Install Gemini CLI (npm install -g @google/gemini-cli) and run `gemini` once to sign in.",
-    launchVerified: false,
-    // Per Gemini CLI docs; not verified on this machine (existence only, never read).
-    authFiles: ["oauth_creds.json"],
-    minVersion: null,
-    verifiedVersions: [],
+    launchVerified: "flags-verified",
+    launchNote:
+      "Launch flags were read from `gemini --help` of 0.59.0 on this machine, so the command line is verified. No authenticated run has been observed (the CLI exits 41 with an auth error), so the stream format, usage, and model reporting stay unknown.",
+    /**
+     * The authoritative "an auth method was chosen" signal is the existence of
+     * ~/.gemini/settings.json (the CLI creates it only after you pick one).
+     * Contents are never read. GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI /
+     * GOOGLE_GENAI_USE_GCA in the environment count too (see authEnv).
+     */
+    authFiles: ["settings.json"],
+    authEnv: [
+      "GEMINI_API_KEY",
+      "GOOGLE_GENAI_USE_VERTEXAI",
+      "GOOGLE_GENAI_USE_GCA",
+    ],
+    minVersion: "0.59.0",
+    verifiedVersions: ["0.59.0"],
     versionArgs: ["--version"],
     storage:
-      "Per docs (unverified): ~/.gemini/tmp/<project_hash>/chats/*.json and logs.json. ~/.gemini/antigravity is the Antigravity IDE (detect only).",
-    capabilities: allUnknown(),
+      "~/.gemini/projects.json maps a lower-cased absolute cwd to a short project alias; per-project data lives in ~/.gemini/history/<alias>/ and ~/.gemini/tmp/<alias>/. ~/.gemini/settings.json exists only once an auth method is chosen. ~/.gemini/antigravity is the Antigravity IDE (detect only).",
+    capabilities: {
+      ...allUnknown(),
+      // Flags verified from the CLI's own --help; no completed run observed.
+      launch: "experimental",
+      observe: "experimental",
+    },
   },
 };
 
 export const REGISTRY_IDS = PROVIDER_IDS.filter((id) => REGISTRY[id]);
+
+/**
+ * Per-provider version/OS compatibility. `testedVersions` are the versions a
+ * human actually exercised on this machine; `testedOS` is the platform list
+ * those checks ran on (Windows 11 x64 only so far). Anything outside those
+ * lists is reported as `untested`, never as unsupported.
+ */
+export const COMPATIBILITY = {
+  "claude-code": {
+    minVersion: "2.0.0",
+    testedVersions: ["2.1.258", "2.1.266"],
+    testedOS: ["win32"],
+    notes:
+      "Headless stream-json launch and the hook bridge were exercised on Windows 11 with 2.1.258/2.1.266.",
+  },
+  codex: {
+    minVersion: "0.150.0",
+    testedVersions: ["0.152.1"],
+    testedOS: ["win32"],
+    notes:
+      "`codex exec --json` stream format verified on 0.152.1; the end-to-end run hit the account usage limit, and the app-server protocol was exercised against a fake only.",
+  },
+  copilot: {
+    minVersion: "1.0.0",
+    testedVersions: ["1.0.80"],
+    testedOS: ["win32"],
+    notes:
+      "Headless `copilot -p --output-format json` verified on 1.0.80; non-interactive runs require an explicit tool allow list.",
+  },
+  cursor: {
+    minVersion: null,
+    testedVersions: [],
+    testedOS: [],
+    notes:
+      "Only the Cursor IDE launcher (cursor.cmd) exists here; the cursor-agent CLI is not installed, so nothing has been tested.",
+  },
+  gemini: {
+    minVersion: "0.59.0",
+    testedVersions: ["0.59.0"],
+    testedOS: ["win32"],
+    notes:
+      "Launch flags were read from `gemini --help` of 0.59.0 on Windows 11. The CLI is not authenticated here (every run exits 41), so no completed run, stream format, or usage report has been observed.",
+  },
+};
+
+/**
+ * Version/OS compatibility verdict for one provider.
+ *
+ *   { supported: true | false | "untested", reason }
+ *
+ * `true` only for a version we actually tested on this platform; `false` when
+ * the version is older than the minimum the adapter was written against;
+ * `untested` for everything else (unknown version, newer version, other OS).
+ */
+export function compatibility(
+  providerId,
+  version = null,
+  { platform = process.platform } = {},
+) {
+  const record = COMPATIBILITY[providerId];
+  const provider = REGISTRY[providerId];
+  if (!record || !provider)
+    return {
+      provider: providerId,
+      supported: "untested",
+      reason: `Unknown provider: ${providerId}`,
+      minVersion: null,
+      testedVersions: [],
+      testedOS: [],
+      version: version ?? null,
+      platform,
+    };
+  const base = {
+    provider: providerId,
+    minVersion: record.minVersion,
+    testedVersions: record.testedVersions,
+    testedOS: record.testedOS,
+    notes: record.notes,
+    version: version ?? null,
+    platform,
+  };
+  if (!record.testedVersions.length)
+    return {
+      ...base,
+      supported: "untested",
+      reason: `${provider.name} has never been exercised here, so no version is known to work.`,
+    };
+  if (!record.testedOS.includes(platform))
+    return {
+      ...base,
+      supported: "untested",
+      reason: `${provider.name} was only tested on ${record.testedOS.join(", ")}; this machine reports ${platform}.`,
+    };
+  if (!version)
+    return {
+      ...base,
+      supported: "untested",
+      reason: `No version was reported for ${provider.name}; tested versions are ${record.testedVersions.join(", ")}.`,
+    };
+  if (record.minVersion && compareVersions(version, record.minVersion) < 0)
+    return {
+      ...base,
+      supported: false,
+      reason: `${provider.name} ${version} is older than ${record.minVersion}, the oldest version the adapter was written against.`,
+    };
+  if (record.testedVersions.includes(String(version)))
+    return {
+      ...base,
+      supported: true,
+      reason: `${provider.name} ${version} was tested on ${record.testedOS.join(", ")}.`,
+    };
+  return {
+    ...base,
+    supported: "untested",
+    reason: `${provider.name} ${version} has not been tested here (tested: ${record.testedVersions.join(", ")}); it is newer than or different from the verified versions and may behave differently.`,
+  };
+}
+
+/** Compatibility verdicts for every provider, keyed by provider id. */
+export function allCompatibility(versions = {}, options = {}) {
+  return Object.fromEntries(
+    REGISTRY_IDS.map((id) => [
+      id,
+      compatibility(id, versions[id] ?? null, options),
+    ]),
+  );
+}
 
 export function getProvider(id) {
   return REGISTRY[id] ?? null;
@@ -216,6 +360,7 @@ export function listProviders({ hooksInstalled = false } = {}) {
       verifiedVersions: p.verifiedVersions,
       storage: p.storage,
       capabilities: capabilityMatrix(id, { hooksInstalled }),
+      compatibility: COMPATIBILITY[id] ?? null,
       binaryOverrideEnv: binaryOverrideEnvName(id),
     };
   });

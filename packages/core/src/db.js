@@ -253,6 +253,153 @@ const migrations = [
       );
     `,
   },
+  {
+    // Wave 2 (provider & model control center): multiple connections per
+    // provider with a kind, honest error categories, and probe history.
+    // Written so it does not depend on any other wave-2 migration.
+    version: 4,
+    sql: `
+      ALTER TABLE connections ADD COLUMN kind TEXT NOT NULL DEFAULT 'coding-runtime';
+      ALTER TABLE connections ADD COLUMN error_category TEXT;
+      ALTER TABLE connections ADD COLUMN auth_expires_at INTEGER;
+      ALTER TABLE connections ADD COLUMN last_success_at INTEGER;
+      CREATE TABLE connection_probes (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        probed_at INTEGER NOT NULL,
+        ok INTEGER NOT NULL DEFAULT 0,
+        category TEXT,
+        detail TEXT
+      );
+      CREATE INDEX connection_probes_connection ON connection_probes(connection_id, probed_at);
+    `,
+  },
+  {
+    // v5: tamper-evident audit log (hash chain) for the operations console.
+    // Rows written before this migration keep NULL sequence/hash: they are
+    // reported as "unchained" by Audit.verify() and never claimed as verified.
+    version: 5,
+    sql: `
+      ALTER TABLE audit_log ADD COLUMN prev_hash TEXT;
+      ALTER TABLE audit_log ADD COLUMN hash TEXT;
+      ALTER TABLE audit_log ADD COLUMN sequence INTEGER;
+      CREATE UNIQUE INDEX audit_log_sequence ON audit_log(sequence);
+    `,
+  },
+  {
+    // Wave 2, module G (orchestration without conflicting control loops):
+    // workflow versioning for Git review, per-task contracts, conditional
+    // branches, bounded repair loops, idempotency keys, recovery
+    // checkpoints, and signed webhooks in both directions.
+    //
+    // Written so it does not depend on any other wave-2 migration having
+    // run: it only touches tables created in v1/v2 plus its own new ones.
+    version: 6,
+    sql: `
+      ALTER TABLE workflows ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE workflows ADD COLUMN published_at INTEGER;
+      ALTER TABLE workflows ADD COLUMN definition_hash TEXT;
+      ALTER TABLE workflows ADD COLUMN external_id TEXT;
+      ALTER TABLE workflows ADD COLUMN owner TEXT NOT NULL DEFAULT 'agent-space';
+
+      ALTER TABLE tasks ADD COLUMN contract TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE tasks ADD COLUMN branch_condition TEXT;
+      ALTER TABLE tasks ADD COLUMN repair_of TEXT;
+      ALTER TABLE tasks ADD COLUMN reviewer TEXT;
+      ALTER TABLE tasks ADD COLUMN idempotency_key TEXT;
+      CREATE INDEX tasks_repair_of ON tasks(repair_of);
+
+      CREATE TABLE workflow_versions (
+        id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        definition TEXT NOT NULL DEFAULT '{}',
+        definition_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        created_by TEXT NOT NULL DEFAULT 'local-user',
+        published_at INTEGER
+      );
+      CREATE UNIQUE INDEX workflow_versions_unique ON workflow_versions(workflow_id, version);
+
+      CREATE TABLE checkpoints (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        workflow_id TEXT,
+        task_id TEXT,
+        run_id TEXT,
+        kind TEXT NOT NULL,
+        label TEXT,
+        state TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX checkpoints_workspace ON checkpoints(workspace_id, created_at DESC);
+
+      CREATE TABLE webhook_endpoints (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        direction TEXT NOT NULL DEFAULT 'outbound',
+        url TEXT,
+        secret_ref TEXT,
+        events TEXT NOT NULL DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        last_delivery_at INTEGER,
+        failure_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE webhook_deliveries (
+        id TEXT PRIMARY KEY,
+        endpoint_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER,
+        response_code INTEGER,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        delivered_at INTEGER,
+        event TEXT NOT NULL DEFAULT '',
+        payload TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX webhook_deliveries_endpoint ON webhook_deliveries(endpoint_id, created_at DESC);
+      CREATE INDEX webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at);
+
+      CREATE TABLE webhook_inbox (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        external_id TEXT,
+        signature_ok INTEGER NOT NULL DEFAULT 0,
+        received_at INTEGER NOT NULL,
+        payload_hash TEXT NOT NULL,
+        processed_at INTEGER,
+        result TEXT
+      );
+      CREATE INDEX webhook_inbox_source ON webhook_inbox(source, received_at DESC);
+      CREATE UNIQUE INDEX webhook_inbox_external ON webhook_inbox(source, external_id)
+        WHERE external_id IS NOT NULL;
+      CREATE INDEX webhook_inbox_hash ON webhook_inbox(payload_hash);
+    `,
+  },
+  {
+    // Roadmap §2/§8: token budget reservations for managed runs. Reservations
+    // are estimates booked before a run starts and released when the provider
+    // reports its (post-hoc) token totals; the daily rollup is a query over
+    // this table plus runs.usage, never a second copy of the numbers.
+    version: 3,
+    sql: `
+      CREATE TABLE budget_reservations (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT,
+        run_id TEXT NOT NULL,
+        estimate_tokens INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        released_at INTEGER
+      );
+      CREATE INDEX budget_reservations_workspace
+        ON budget_reservations(workspace_id, created_at DESC);
+      CREATE INDEX budget_reservations_run ON budget_reservations(run_id);
+    `,
+  },
 ];
 
 export function openDatabase(path = ":memory:") {

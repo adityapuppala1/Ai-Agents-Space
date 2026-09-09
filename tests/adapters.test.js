@@ -512,16 +512,36 @@ test("gemini and cursor adapters build documented commands and parse tolerantly"
     cwd: "C:\\w",
     policy: { autonomy: "propose" },
   });
-  assert.deepEqual(gemini.args, ["-p", "hi", "--output-format", "stream-json"]);
-  const cursor = cursorAdapter.build({
-    prompt: "hi",
-    binary,
-    cwd: "C:\\w",
-    policy: { autonomy: "propose" },
-  });
-  assert.deepEqual(cursor.args, ["-p", "hi", "--output-format", "stream-json"]);
-  assert.equal(geminiAdapter.capabilities.launch, "unknown");
-  assert.equal(cursorAdapter.capabilities.launch, "experimental");
+  // Flags verified from `gemini --help` 0.59.0 on this machine: -p, -o, and
+  // --approval-mode (propose -> plan). A fresh run gets a --session-id it can
+  // be resumed with, so the uuid is checked by shape, not by value.
+  assert.deepEqual(gemini.args.slice(0, 6), [
+    "-p",
+    "hi",
+    "-o",
+    "stream-json",
+    "--approval-mode",
+    "plan",
+  ]);
+  assert.equal(gemini.args[6], "--session-id");
+  assert.match(gemini.args[7], /^[0-9a-f-]{36}$/);
+  assert.ok(
+    !gemini.args.includes("--skip-trust") && !gemini.args.includes("-y"),
+  );
+  // cursor-agent is not installed anywhere we can verify, so the adapter
+  // refuses to build a command instead of pretending it can launch one.
+  assert.throws(
+    () =>
+      cursorAdapter.build({
+        prompt: "hi",
+        binary,
+        cwd: "C:\w",
+        policy: { autonomy: "propose" },
+      }),
+    /cursor-agent is not installed/,
+  );
+  assert.equal(geminiAdapter.capabilities.launch, "experimental");
+  assert.equal(cursorAdapter.capabilities.launch, "unsupported");
   assert.equal(geminiAdapter.supportsResume, false);
   const lines = [
     { type: "init", session_id: "g1", model: "gemini-2.5-pro" },
@@ -583,7 +603,7 @@ test("adapter registry selects codex app-server only when the setting is on", ()
   const caps = adapterCapabilities();
   assert.equal(caps["claude-code"].launch, "verified");
   assert.equal(caps.codex.launch, "verified");
-  assert.equal(caps.gemini.launch, "unknown");
+  assert.equal(caps.gemini.launch, "experimental");
   assert.equal(Object.keys(defaultAdapters).length, 6);
 });
 

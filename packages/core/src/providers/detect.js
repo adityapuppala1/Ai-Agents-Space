@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { extname, join, isAbsolute, resolve as resolvePath } from "node:path";
-import { REGISTRY, REGISTRY_IDS, binaryOverrideEnvName } from "./registry.js";
+import {
+  REGISTRY,
+  REGISTRY_IDS,
+  binaryOverrideEnvName,
+  compareVersions,
+} from "./registry.js";
 import { providerHome } from "../util/paths.js";
 
 /**
@@ -255,12 +260,140 @@ function directoryExists(path) {
   }
 }
 
-function authHintFor(definition, homePath, homeExists) {
+function authHintFor(definition, homePath, homeExists, env = process.env) {
+  // Some providers accept an environment credential instead of a file
+  // (Gemini: GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_GENAI_USE_GCA).
+  // Only the presence of the variable is checked; the value is never read.
+  const fromEnv = (definition.authEnv ?? []).some(
+    (name) => typeof env?.[name] === "string" && env[name].trim() !== "",
+  );
+  if (fromEnv) return "logged-in-likely";
   if (!definition.authFiles?.length) return "unknown";
   if (!homeExists) return "no-credentials-file";
   return definition.authFiles.some((name) => fileExists(join(homePath, name)))
     ? "logged-in-likely"
     : "no-credentials-file";
+}
+
+/**
+ * Honest error categories for a connection's health. Every value has a
+ * plain-language remediation (see `remediationFor`). `null` means healthy.
+ */
+export const ERROR_CATEGORIES = [
+  "not-installed",
+  "not-logged-in",
+  "version-unsupported",
+  "permission-denied",
+  "binary-unrunnable",
+  "timeout",
+  "rate-limited",
+  "unknown",
+];
+
+/**
+ * The Gemini CLI prints this exact instruction (exit code 41) when no auth
+ * method is configured. Reused verbatim so the remediation is the provider's
+ * own wording, not ours.
+ */
+export const GEMINI_AUTH_FIX =
+  "Please set an Auth method in your ~/.gemini/settings.json or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA";
+
+/** Plain-language fix for one error category, tailored per provider. */
+export function remediationFor(category, providerId = null) {
+  const definition = providerId ? REGISTRY[providerId] : null;
+  const name = definition?.name ?? "The provider CLI";
+  const binary = definition?.binaries?.[0] ?? "the CLI";
+  switch (category) {
+    case "not-installed":
+      return (
+        definition?.installHint ??
+        `Install ${name} and make sure ${binary} is on PATH.`
+      );
+    case "not-logged-in":
+      if (providerId === "gemini") return GEMINI_AUTH_FIX;
+      return `Run \`${binary}\` once in a terminal and complete the sign-in. Agent Space never collects or stores credentials; it only checks that the provider's own credential file exists.`;
+    case "version-unsupported":
+      return `Update ${binary} to ${definition?.minVersion ?? "a newer version"} or newer: the launch and stream formats were verified on ${definition?.verifiedVersions?.join(", ") || "a later version"}.`;
+    case "permission-denied":
+      return `Windows or your security software refused to run ${binary}. Check the file permissions and any antivirus or AppLocker rule, then probe the connection again.`;
+    case "binary-unrunnable":
+      return `${binary} was found but could not be run. Try \`${binary} --version\` in a terminal and fix what it reports (a broken npm shim usually needs a reinstall).`;
+    case "timeout":
+      return `${binary} did not answer \`--version\` in time. Run it once in a terminal (a first run may download or update itself), then probe again.`;
+    case "rate-limited":
+      return `${name} reported a rate or usage limit. Wait for the limit to reset or use a different account, then probe again.`;
+    default:
+      return `Run \`${binary} --version\` in a terminal and fix what it reports.`;
+  }
+}
+
+/**
+ * Derives an honest error category from a detection entry. Nothing is
+ * invented: the category comes from what the probe actually reported, the
+ * provider's own credential file, and the registry's minimum version.
+ *
+ * @returns {{category: string|null, detail: string|null, remediation: string|null}}
+ */
+export function categorizeDetection(entry, { env = process.env } = {}) {
+  const definition = REGISTRY[entry?.provider] ?? null;
+  const done = (category, detail) => ({
+    category,
+    detail: detail ? String(detail).slice(0, 500) : null,
+    remediation: category ? remediationFor(category, entry?.provider) : null,
+  });
+  if (!entry) return done("unknown", "No detection result");
+  if (!entry.found)
+    return done(
+      "not-installed",
+      entry.error ??
+        `No ${definition?.binaries?.join(" / ") ?? "CLI"} was found on PATH.`,
+    );
+  const error = String(entry.error ?? "");
+  if (error) {
+    if (/timed out/i.test(error)) return done("timeout", error);
+    if (/rate.?limit|usage limit|429|quota/i.test(error))
+      return done("rate-limited", error);
+    if (/eacces|eperm|permission denied|access is denied/i.test(error))
+      return done("permission-denied", error);
+    return done("binary-unrunnable", error);
+  }
+  // Sign-in comes before the version check: it is the first thing the user
+  // has to fix, and the doctor reports an old version separately anyway.
+  const hint =
+    entry.authHint ??
+    authHintFor(
+      definition ?? {},
+      entry.homePath ?? "",
+      Boolean(entry.homeExists),
+      env,
+    );
+  if (hint === "no-credentials-file")
+    return done(
+      "not-logged-in",
+      entry.provider === "gemini"
+        ? "No ~/.gemini/settings.json and no GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_GENAI_USE_GCA in the environment."
+        : `No credential file was found under ${entry.homePath ?? "the provider home"} (existence only; contents are never read).`,
+    );
+  if (
+    definition?.minVersion &&
+    entry.version &&
+    compareVersions(entry.version, definition.minVersion) < 0
+  )
+    return done(
+      "version-unsupported",
+      `${entry.version} is older than ${definition.minVersion}`,
+    );
+  return done(null, null);
+}
+
+/**
+ * Auth expiry, honestly: none of the five providers writes an expiry we are
+ * allowed to read (Agent Space checks file existence only and never opens a
+ * credential file), so this is always null. It exists so the column has a
+ * single documented source instead of an invented value.
+ */
+export function authExpiryFor() {
+  return null;
 }
 
 /**
@@ -298,7 +431,12 @@ export async function detectProvider(
   try {
     entry.homePath = providerHome(providerId, env, { platform });
     entry.homeExists = directoryExists(entry.homePath);
-    entry.authHint = authHintFor(definition, entry.homePath, entry.homeExists);
+    entry.authHint = authHintFor(
+      definition,
+      entry.homePath,
+      entry.homeExists,
+      env,
+    );
   } catch (error) {
     entry.error = `home: ${error.message}`;
   }

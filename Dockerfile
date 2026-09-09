@@ -13,6 +13,8 @@ RUN apk add --no-cache git
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY packages ./packages
+# bin/ holds agent-space.js (CLI + Claude hook bridge) and, when this build has
+# the MCP module, agent-space-mcp.js (stdio MCP bridge for external clients).
 COPY bin ./bin
 COPY docs ./docs
 COPY --from=build /app/apps/web/dist ./apps/web/dist

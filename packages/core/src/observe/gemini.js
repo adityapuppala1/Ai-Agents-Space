@@ -1,16 +1,21 @@
 /**
- * Gemini CLI observer (unverified; Gemini CLI is not installed on the
- * reference machine). Reads, per the Gemini CLI docs:
- *   <home>/tmp/<project_hash>/chats/*.json   saved chat sessions
- *   <home>/tmp/<project_hash>/logs.json      prompt log [{sessionId,messageId,type,message,timestamp}]
+ * Gemini CLI observer (gemini 0.59.0 on this machine).
  *
- * The chat file structure is parsed defensively: either an array of messages
- * or an object with `messages`/`history`; each message with `role`|`type`
- * and `parts`|`content`, optional `toolCalls`, `tokens`, `model`, `timestamp`.
- * Everything emitted carries `data.unverified = true` and sessions carry
- * `metadata.unverified = true` until the format is verified against a real
- * installation. Antigravity (`<home>/antigravity`) is a different product:
- * detected and reported as unsupported, never parsed.
+ * Storage layout (verified by inspection on 2026-09-09):
+ *   <home>/projects.json          lower-cased absolute cwd → short project alias
+ *   <home>/history/<alias>/       per-project data written by the CLI
+ *   <home>/tmp/<alias>/           per-project scratch data (chats/, logs.json)
+ *   <home>/settings.json          exists only once an auth method is chosen
+ *   <home>/antigravity/           the Antigravity IDE, a different product
+ *
+ * The *layout* is real; the *file formats* are not verified, because the CLI
+ * on this machine is not authenticated (every run exits 41), so no session has
+ * ever been produced here. Every `*.json` under those folders is therefore
+ * parsed defensively — array of messages, `{messages|history|turns}`, or a
+ * flat log array — and anything unreadable is skipped rather than guessed at.
+ * Every session and every event carries `unverified: true`.
+ *
+ * Antigravity data is detected and reported as unsupported, never parsed.
  */
 
 import fs from "node:fs";
@@ -21,11 +26,14 @@ import { makeEvent, classifyTool } from "../contracts.js";
 export const provider = "gemini";
 
 export const capabilityNote =
-  "Gemini CLI observation is unverified: session files under ~/.gemini/tmp are parsed " +
-  "defensively from the documented layout, and live-ness is inferred from file " +
-  "modification time. Antigravity IDE data in ~/.gemini/antigravity is detected only.";
+  "Gemini CLI observation is unverified: ~/.gemini/projects.json, ~/.gemini/history/<alias>/ " +
+  "and ~/.gemini/tmp/<alias>/ are the real storage locations, but no authenticated Gemini " +
+  "session has been observed on this machine, so the file formats are parsed defensively and " +
+  "live-ness is inferred from file modification time. Launch flags are the only Gemini facts " +
+  "verified here (from the CLI's own --help). Antigravity IDE data in ~/.gemini/antigravity " +
+  "is detected only.";
 
-export const capabilities = {
+const allUnknown = () => ({
   observe: "unknown",
   launch: "unknown",
   stream: "unknown",
@@ -38,7 +46,29 @@ export const capabilities = {
   reportUsage: "unknown",
   artifacts: "unknown",
   delegate: "unsupported",
+});
+
+/**
+ * Everything is `unknown` except the two facts we can defend: the launch
+ * flags come from the CLI's own help, and the storage layout is real enough
+ * to list sessions from (experimental — the formats are not verified).
+ */
+export const capabilities = {
+  ...allUnknown(),
+  launch: "experimental",
+  observe: "experimental",
 };
+
+/** Environment variables that count as "an auth method is configured". */
+export const AUTH_ENV = [
+  "GEMINI_API_KEY",
+  "GOOGLE_GENAI_USE_VERTEXAI",
+  "GOOGLE_GENAI_USE_GCA",
+];
+
+/** The CLI's own wording when no auth method is set (exit code 41). */
+export const AUTH_FIX =
+  "Please set an Auth method in your ~/.gemini/settings.json or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA";
 
 const LIVE_WINDOW_MS = 120_000;
 const SUMMARY_MAX = 120;
@@ -115,6 +145,29 @@ function listFiles(dir, ext) {
   }
 }
 
+/**
+ * Reads `<home>/projects.json` and returns `alias → absolute cwd`. The file
+ * maps a lower-cased absolute path to a short alias; both `{path: "alias"}`
+ * and `{path: {alias|hash|id}}` shapes are accepted, and anything else is
+ * ignored rather than guessed at.
+ */
+export function readProjectAliases(file) {
+  const json = readJson(file);
+  const byAlias = new Map();
+  if (!json || typeof json !== "object" || Array.isArray(json)) return byAlias;
+  const source =
+    json.projects && typeof json.projects === "object" ? json.projects : json;
+  for (const [cwd, value] of Object.entries(source)) {
+    let alias = null;
+    if (typeof value === "string") alias = value;
+    else if (value && typeof value === "object")
+      alias = value.alias ?? value.hash ?? value.id ?? null;
+    if (!alias || typeof alias !== "string") continue;
+    if (!byAlias.has(alias)) byAlias.set(alias, normalizePath(cwd));
+  }
+  return byAlias;
+}
+
 /** Extracts the message array from whatever shape the chat file has. */
 export function extractMessages(json) {
   if (Array.isArray(json)) return json;
@@ -124,6 +177,21 @@ export function extractMessages(json) {
     if (Array.isArray(json.turns)) return json.turns;
   }
   return [];
+}
+
+/** True when an array looks like a flat prompt log rather than a chat. */
+function looksLikeLog(json) {
+  return (
+    Array.isArray(json) &&
+    json.length > 0 &&
+    json.every(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        entry.sessionId !== undefined &&
+        entry.message !== undefined,
+    )
+  );
 }
 
 function roleOf(message) {
@@ -225,18 +293,45 @@ export function createObserver({
     expandHome(home || env?.GEMINI_HOME || "~/.gemini", env),
   );
   const tmpDir = path.join(homePath, "tmp");
+  const historyDir = path.join(homePath, "history");
+  const projectsFile = path.join(homePath, "projects.json");
+  const settingsFile = path.join(homePath, "settings.json");
   const antigravityDir = path.join(homePath, "antigravity");
+
+  /** Existence only; the settings file is never read. */
+  function auth() {
+    const fromEnv = AUTH_ENV.filter(
+      (name) => typeof env?.[name] === "string" && env[name].trim() !== "",
+    );
+    const hasSettings = Boolean(statSafe(settingsFile));
+    return {
+      loggedIn: hasSettings || fromEnv.length > 0,
+      settingsFile: hasSettings ? settingsFile : null,
+      envVars: fromEnv,
+      category: hasSettings || fromEnv.length ? null : "not-logged-in",
+      fix: hasSettings || fromEnv.length ? null : AUTH_FIX,
+      note: "Only the existence of ~/.gemini/settings.json and the presence of the documented environment variables is checked; nothing is read.",
+    };
+  }
 
   function status() {
     const homeExists = Boolean(statSafe(homePath));
     const antigravity = Boolean(statSafe(antigravityDir));
-    const hasSessions = Boolean(statSafe(tmpDir));
+    const hasTmp = Boolean(statSafe(tmpDir));
+    const hasHistory = Boolean(statSafe(historyDir));
+    const hasProjects = Boolean(statSafe(projectsFile));
     return {
       provider,
       home: homePath,
       homeExists,
-      installed: hasSessions, // a Gemini CLI home has tmp/<hash>; antigravity alone is not the CLI
+      // A Gemini CLI home has projects.json plus history/ or tmp/;
+      // antigravity alone is not the CLI.
+      installed: hasProjects || hasTmp || hasHistory,
       unverified: true,
+      projectsFile: hasProjects ? projectsFile : null,
+      historyDir: hasHistory ? historyDir : null,
+      tmpDir: hasTmp ? tmpDir : null,
+      auth: auth(),
       capabilities,
       note: capabilityNote,
       antigravity: {
@@ -250,7 +345,7 @@ export function createObserver({
     };
   }
 
-  function sessionFromChat(projectHash, file) {
+  function sessionFromChat(alias, cwd, file) {
     const json = readJson(file);
     if (json == null) return null;
     const messages = extractMessages(json);
@@ -276,7 +371,7 @@ export function createObserver({
     return {
       provider,
       sessionId,
-      cwd: json.cwd ? normalizePath(json.cwd) : null,
+      cwd: json.cwd ? normalizePath(json.cwd) : (cwd ?? null),
       title: firstText ? truncate(firstText, 200) : `Gemini session ${base}`,
       sourcePath: file,
       startedAt,
@@ -291,14 +386,14 @@ export function createObserver({
         unverified: true,
         experimental: true,
         source: "chats",
-        projectHash,
+        projectAlias: alias,
+        projectHash: alias,
         messageCount: messages.length,
       },
     };
   }
 
-  function sessionsFromLogs(projectHash, file, seen) {
-    const json = readJson(file);
+  function sessionsFromLogs(alias, cwd, file, seen, json) {
     if (!Array.isArray(json)) return [];
     const stat = statSafe(file);
     const grouped = new Map();
@@ -319,7 +414,7 @@ export function createObserver({
       out.push({
         provider,
         sessionId,
-        cwd: null,
+        cwd: cwd ?? null,
         title: first?.message
           ? truncate(first.message, 200)
           : `Gemini session ${sessionId}`,
@@ -335,8 +430,9 @@ export function createObserver({
         metadata: {
           unverified: true,
           experimental: true,
-          source: "logs.json",
-          projectHash,
+          source: path.basename(file).toLowerCase(),
+          projectAlias: alias,
+          projectHash: alias,
           messageCount: group.entries.length,
         },
       });
@@ -344,25 +440,57 @@ export function createObserver({
     return out;
   }
 
+  /** `<root>/<alias>` folders plus their `chats/` subfolder, if present. */
+  function projectFolders() {
+    const aliases = readProjectAliases(projectsFile);
+    const folders = [];
+    for (const root of [historyDir, tmpDir]) {
+      for (const alias of listDirs(root)) {
+        const dir = path.join(root, alias);
+        const cwd = aliases.get(alias) ?? null;
+        folders.push({ alias, cwd, dir });
+        const chats = path.join(dir, "chats");
+        if (statSafe(chats)) folders.push({ alias, cwd, dir: chats });
+      }
+    }
+    return folders;
+  }
+
   function scanSessions() {
     const sessions = [];
     const seen = new Set();
-    for (const hash of listDirs(tmpDir)) {
-      const projectDir = path.join(tmpDir, hash);
-      const chatsDir = path.join(projectDir, "chats");
-      for (const name of listFiles(chatsDir, ".json")) {
-        const session = sessionFromChat(hash, path.join(chatsDir, name));
-        if (session && !seen.has(session.sessionId)) {
-          seen.add(session.sessionId);
-          sessions.push(session);
-        }
+    // Chats first so a richer chat file wins over a bare prompt log.
+    const files = [];
+    for (const folder of projectFolders())
+      for (const name of listFiles(folder.dir, ".json"))
+        files.push({ ...folder, file: path.join(folder.dir, name) });
+    const logs = [];
+    for (const entry of files) {
+      const json = readJson(entry.file);
+      if (json == null) continue; // unreadable or not JSON → skip, never guess
+      if (
+        path.basename(entry.file).toLowerCase() === "logs.json" ||
+        looksLikeLog(json)
+      ) {
+        logs.push({ ...entry, json });
+        continue;
       }
-      const logs = path.join(projectDir, "logs.json");
-      if (statSafe(logs)) {
-        for (const session of sessionsFromLogs(hash, logs, seen)) {
-          seen.add(session.sessionId);
-          sessions.push(session);
-        }
+      const session = sessionFromChat(entry.alias, entry.cwd, entry.file);
+      if (session && !seen.has(session.sessionId)) {
+        seen.add(session.sessionId);
+        sessions.push(session);
+      }
+    }
+    for (const entry of logs) {
+      for (const session of sessionsFromLogs(
+        entry.alias,
+        entry.cwd,
+        entry.file,
+        seen,
+        entry.json,
+      )) {
+        seen.add(session.sessionId);
+        sessions.push(session);
       }
     }
     for (const session of sessions) session.live = isLive(session);
@@ -371,7 +499,7 @@ export function createObserver({
     return sessions;
   }
 
-  /** Live-ness is inferred from mtime only; Gemini does not expose a registry we know of. */
+  /** Live-ness is inferred from mtime only; Gemini exposes no registry we know of. */
   function isLive(session) {
     const stat = session?.sourcePath ? statSafe(session.sourcePath) : null;
     if (!stat) return false;
@@ -502,7 +630,8 @@ export function createObserver({
     const events = [];
 
     if (
-      path.basename(file).toLowerCase() === "logs.json" &&
+      (path.basename(file).toLowerCase() === "logs.json" ||
+        looksLikeLog(json)) &&
       Array.isArray(json)
     ) {
       json.forEach((entry, index) => {
@@ -538,7 +667,15 @@ export function createObserver({
     };
   }
 
-  return { provider, home: homePath, status, scanSessions, readEvents, isLive };
+  return {
+    provider,
+    home: homePath,
+    status,
+    auth,
+    scanSessions,
+    readEvents,
+    isLive,
+  };
 }
 
 export default createObserver;

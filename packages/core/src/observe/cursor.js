@@ -16,13 +16,18 @@ export const provider = "cursor";
 
 export const capabilityNote =
   "Cursor observation is experimental: Agent Space only lists conversation summaries " +
-  "from ~/.cursor/ai-tracking (read-only) and cannot see live activity. Install the " +
-  "`cursor-agent` CLI (https://docs.cursor.com/en/cli) to launch managed runs; " +
-  "headless output (`cursor-agent -p --output-format stream-json`) is unverified here.";
+  "from ~/.cursor/ai-tracking (read-only) and cannot see live activity. Managed runs are " +
+  "unsupported here: cursor-agent is not installed; the Cursor IDE launcher cannot run " +
+  "headless tasks. Install the `cursor-agent` CLI (https://docs.cursor.com/en/cli) first; " +
+  "its headless output (`cursor-agent -p --output-format stream-json`) is unverified here.";
+
+/** Exactly what the adapter refuses a launch with. */
+export const LAUNCH_REFUSAL =
+  "cursor-agent is not installed; the Cursor IDE launcher cannot run headless tasks";
 
 export const capabilities = {
   observe: "experimental",
-  launch: "unknown",
+  launch: "unsupported",
   stream: "unknown",
   attach: "unsupported",
   interrupt: "unknown",
@@ -94,6 +99,8 @@ export function createObserver({ home, appData, env = process.env } = {}) {
       ideStorage: ideExists ? ideStorage : null,
       trackingDb: exists(trackingDb) ? trackingDb : null,
       cliRequired: "cursor-agent",
+      launchRefusal: LAUNCH_REFUSAL,
+      launchFix: "https://docs.cursor.com/en/cli",
       note: capabilityNote,
       capabilities,
     };

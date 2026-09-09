@@ -22,8 +22,10 @@ import {
 } from "../packages/core/src/util/paths.js";
 import {
   REGISTRY,
+  COMPATIBILITY,
   capabilityMatrix,
   compareVersions,
+  compatibility,
   listProviders,
   binaryOverrideEnvName,
 } from "../packages/core/src/providers/registry.js";
@@ -165,7 +167,8 @@ test("registry covers every provider with an honest capability matrix", () => {
   assert.equal(REGISTRY.copilot.launchVerified, true);
   assert.equal(REGISTRY.codex.launchVerified, "format-verified");
   assert.equal(REGISTRY.cursor.launchVerified, false);
-  assert.equal(REGISTRY.gemini.launchVerified, false);
+  // Gemini: flags read from the CLI's own --help, no authenticated run seen.
+  assert.equal(REGISTRY.gemini.launchVerified, "flags-verified");
   // Claude approve depends on the hook bridge.
   assert.equal(capabilityMatrix("claude-code").approve, "unknown");
   assert.equal(
@@ -177,9 +180,17 @@ test("registry covers every provider with an honest capability matrix", () => {
   assert.equal(capabilityMatrix("copilot").approve, "unsupported");
   assert.equal(capabilityMatrix("cursor").observe, "experimental");
   assert.equal(capabilityMatrix("cursor").launch, "unsupported");
-  assert.ok(
-    Object.values(capabilityMatrix("gemini")).every((v) => v === "unknown"),
-  );
+  // Gemini: launch flags verified from --help, storage layout real, nothing
+  // else observed → experimental for those two, unknown everywhere else.
+  const gemini = capabilityMatrix("gemini");
+  assert.equal(gemini.launch, "experimental");
+  assert.equal(gemini.observe, "experimental");
+  for (const [key, value] of Object.entries(gemini))
+    if (!["launch", "observe"].includes(key))
+      assert.ok(
+        ["unknown", "unsupported"].includes(value),
+        `gemini.${key} is ${value}`,
+      );
   assert.equal(compareVersions("2.1.266", "2.0.0"), 1);
   assert.equal(compareVersions("0.152.1", "0.152.1"), 0);
   assert.equal(compareVersions("1.0", "1.0.5"), -1);
@@ -190,6 +201,37 @@ test("registry covers every provider with an honest capability matrix", () => {
   const listed = listProviders();
   assert.equal(listed.length, PROVIDER_IDS.length);
   assert.equal(listed[0].capabilities.approve, "unknown");
+  assert.ok(listed.every((p) => p.compatibility));
+});
+
+test("compatibility reports tested versions honestly, never guessing", () => {
+  const win = { platform: "win32" };
+  assert.equal(
+    compatibility("claude-code", "2.1.266", win).supported,
+    true,
+    "a version we actually exercised",
+  );
+  const newer = compatibility("claude-code", "2.9.0", win);
+  assert.equal(newer.supported, "untested");
+  assert.match(newer.reason, /has not been tested here/);
+  const old = compatibility("claude-code", "1.4.0", win);
+  assert.equal(old.supported, false);
+  assert.match(old.reason, /older than 2\.0\.0/);
+  // No version reported → untested, never "supported".
+  assert.equal(compatibility("codex", null, win).supported, "untested");
+  // Another OS: only Windows has been exercised.
+  assert.equal(
+    compatibility("codex", "0.152.1", { platform: "linux" }).supported,
+    "untested",
+  );
+  // cursor-agent has never run here, so no version can be supported.
+  const cursor = compatibility("cursor", "3.14.27", win);
+  assert.equal(cursor.supported, "untested");
+  assert.match(cursor.reason, /never been exercised/);
+  const gemini = compatibility("gemini", "0.59.0", win);
+  assert.equal(gemini.supported, true);
+  assert.match(gemini.notes, /not authenticated/i);
+  assert.deepEqual(COMPATIBILITY.gemini.testedOS, ["win32"]);
 });
 
 // ------------------------------------------------------------ detection
@@ -713,8 +755,12 @@ test("connection routes expose providers, connections, doctor, capabilities, pro
     /required/,
   );
   assert.equal((await call(services, "GET", "/api/other")).handled, false);
+  await assert.rejects(
+    call(services, "DELETE", "/api/connections/x"),
+    /Connection not found/,
+  );
   assert.equal(
-    (await call(services, "DELETE", "/api/connections/x")).handled,
+    (await call(services, "GET", "/api/connections/a/b/c")).handled,
     false,
   );
 });

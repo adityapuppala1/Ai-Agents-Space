@@ -15,6 +15,7 @@ import {
   SHUTDOWN_ERROR,
 } from "../packages/core/src/runs/RunWorker.js";
 import { listWorktrees } from "../packages/core/src/runs/worktree.js";
+import { rangeIsStale } from "../packages/core/src/runs/outputScope.js";
 import { DEFAULT_POLICY } from "../packages/core/src/contracts.js";
 import { createWorkspaceServer } from "../packages/server/src/server.js";
 import runRoutes from "../packages/server/src/routes/runs.js";
@@ -67,7 +68,10 @@ function gitRepo(t) {
   return dir;
 }
 
-function setup(t, { policy = null, extraServices = {} } = {}) {
+function setup(
+  t,
+  { policy = null, extraServices = {}, workerOptions = {} } = {},
+) {
   const services = createServices({ demo: false });
   Object.assign(services, extraServices);
   // The HTTP server also closes services on shutdown; make it idempotent.
@@ -88,7 +92,12 @@ function setup(t, { policy = null, extraServices = {} } = {}) {
       .prepare("UPDATE workspaces SET policy = ? WHERE id = ?")
       .run(JSON.stringify(policy), workspace.id);
   const recorder = new RunRecorder(services, { broadcastIntervalMs: 1 });
-  const worker = createRunWorker(services, { recorder, env: fakeEnv, dataDir });
+  const worker = createRunWorker(services, {
+    recorder,
+    env: fakeEnv,
+    dataDir,
+    ...workerOptions,
+  });
   t.after(async () => {
     await worker.close();
     recorder.flush();
@@ -511,7 +520,7 @@ test("policy gates: observe-only refuses, unknown provider and missing binary ar
       }),
     (error) => {
       assert.equal(error.status, 409);
-      assert.match(error.message, /install cursor-agent for managed runs/);
+      assert.match(error.message, /cursor-agent is not installed/);
       return true;
     },
   );
@@ -809,4 +818,250 @@ test("reconcile flags a provider process that is still alive; retry refuses unti
   });
   assert.equal(retried.parentRunId, orphan.id);
   await worker.wait(retried.id, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// Wave 2: bounded retries, output scoping, range pinning, document inputs.
+// ---------------------------------------------------------------------------
+
+/** A provider binary that dies without ever producing a line (transport). */
+function crashCli(t) {
+  const dir = tempDir(t, "agent-space-crash-");
+  const file = join(dir, "crash.js");
+  writeFileSync(file, "process.exit(9);\n");
+  return q(process.execPath) + " " + q(file);
+}
+
+async function waitFor(check, { timeoutMs = 20000, label = "condition" } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = check();
+    if (value) return value;
+    if (Date.now() > deadline)
+      throw new Error("Timed out waiting for " + label);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+test("a transport failure is retried automatically once, with an audited backoff, then stops", async (t) => {
+  const { services, workspace, recorder, worker, task } = setup(t, {
+    // random() = 0 gives the -20 % edge of the jitter: 1000 * 2 ** 1 * 0.8.
+    workerOptions: { random: () => 0 },
+  });
+  worker.env = { ...fakeEnv, AGENT_SPACE_BIN_GEMINI: crashCli(t) };
+  const created = task("Flaky transport");
+  const first = await worker.start({
+    workspaceId: workspace.id,
+    taskId: created.id,
+    provider: "gemini",
+    prompt: "hello",
+  });
+  const failed = await worker.wait(first.id, 20000);
+  assert.equal(failed.status, "failed");
+
+  const events = recorder.events(first.id);
+  const classified = events.find((e) =>
+    /Failure classified as/.test(e.message),
+  );
+  assert.ok(classified, "the classification is recorded as an event");
+  assert.equal(classified.kind, "status");
+  assert.equal(classified.data.class, "transport");
+  assert.equal(classified.data.sideEffects, "none");
+  const scheduled = events.find((e) =>
+    /Automatic retry 2 of 2/.test(e.message),
+  );
+  assert.ok(scheduled, "the automatic retry is announced before it happens");
+  assert.equal(scheduled.data.delayMs, 1600);
+  assert.match(scheduled.message, /cannot duplicate side effects/);
+  assert.ok(
+    services.audit
+      .list({ action: "run.retry.scheduled" })
+      .some((entry) => entry.runId === first.id),
+  );
+
+  const second = await waitFor(
+    () => recorder.list(workspace.id).find((r) => r.parentRunId === first.id),
+    { label: "the automatic retry" },
+  );
+  assert.equal(second.attempt, 2);
+  const secondDone = await worker.wait(second.id, 20000);
+  assert.equal(secondDone.status, "failed");
+  const refusal = await waitFor(
+    () =>
+      recorder
+        .events(second.id)
+        .find((e) => /No automatic retry/.test(e.message)),
+    { label: "the retry budget refusal" },
+  );
+  assert.match(refusal.message, /attempt 2 of 2: the automatic retry budget/);
+  assert.equal(
+    recorder.list(workspace.id).filter((r) => r.parentRunId === second.id)
+      .length,
+    0,
+    "bounded: no third attempt",
+  );
+  const health = worker.providerHealth().find((h) => h.provider === "gemini");
+  assert.equal(health.consecutiveFailures, 2);
+  assert.equal(health.state, "closed", "two failures is not yet an outage");
+});
+
+test("a failed run that may have edited files is never retried automatically and lands in the inbox", async (t) => {
+  const { services, workspace, recorder, worker, task } = setup(t);
+  const created = task("Half-written change");
+  const run = await worker.start({
+    workspaceId: workspace.id,
+    taskId: created.id,
+    // The fake CLI writes fake-output.txt and then fails.
+    prompt: "WRITE_FILE then FAIL",
+    provider: "claude-code",
+  });
+  const done = await worker.wait(run.id, 20000);
+  assert.equal(done.status, "failed");
+  assert.ok(existsSync(join(recorder.get(run.id).cwd, "fake-output.txt")));
+
+  const events = recorder.events(run.id);
+  const classified = events.find((e) =>
+    /Failure classified as/.test(e.message),
+  );
+  assert.notEqual(classified.data.sideEffects, "none");
+  assert.equal(classified.data.retryable, false);
+  const refusal = events.find((e) => /No automatic retry/.test(e.message));
+  assert.match(
+    refusal.message,
+    /the previous attempt may already have changed files; review before retrying/,
+  );
+  assert.ok(
+    services.audit
+      .list({ action: "run.retry.refused" })
+      .some((entry) => entry.runId === run.id),
+  );
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(
+    recorder.list(workspace.id).filter((r) => r.parentRunId === run.id).length,
+    0,
+    "no automatic attempt 2",
+  );
+  const inbox = services.approvals.inbox({ workspaceId: workspace.id });
+  assert.ok(
+    inbox.runs.some((r) => r.id === run.id),
+    "the failure waits for a person in the decision inbox",
+  );
+  // A person may still retry it deliberately.
+  const manual = await worker.retry(run.id, { prompt: "quick" });
+  assert.equal(manual.parentRunId, run.id);
+  await worker.wait(manual.id, 20000);
+});
+
+test("a non-Git folder gets a scoped output folder that is released when it stays empty", async (t) => {
+  const { services, recorder, worker, dataDir } = setup(t);
+  const docs = tempDir(t, "agent-space-docs-");
+  const docWorkspace = services.hub.get(
+    services.hub.create({ name: "Docs", rootPath: docs }).id,
+  );
+  const created = docWorkspace.create({ title: "Summarize the brief" });
+  const run = await worker.start({
+    workspaceId: docWorkspace.id,
+    taskId: created.id,
+    provider: "claude-code",
+    prompt: "quick",
+    isolation: "worktree",
+  });
+  const outputDir = resolve(join(dataDir, "outputs", run.id));
+  assert.equal(run.configSnapshot.outputDir, outputDir);
+  assert.equal(run.worktree, null, "a document folder is not a worktree");
+  assert.equal(run.cwd, docs, "the run still reads the source folder");
+  assert.ok(
+    run.configSnapshot.extraDirs.includes(outputDir),
+    "the output folder is handed to the provider as a writable dir",
+  );
+  assert.match(run.configSnapshot.command, /--add-dir/);
+  const scoping = recorder
+    .events(run.id)
+    .find((e) => /scoped to an output folder/.test(e.message));
+  assert.ok(scoping);
+  assert.match(scoping.message, /copied back/i);
+  assert.equal(scoping.kind, "status");
+
+  const done = await worker.wait(run.id, 20000);
+  assert.equal(done.status, "completed");
+  const release = recorder
+    .events(run.id)
+    .find((e) => /Scoped output folder/.test(e.message));
+  assert.match(release.message, /was empty and has been removed/);
+  assert.equal(existsSync(outputDir), false);
+});
+
+test("a code range is pinned to a git revision at launch and staleness is detectable", async (t) => {
+  const { workspace, recorder, worker, task, repo, services } = setup(t);
+  const created = task("Tighten the header", {
+    target: JSON.stringify({
+      files: ["README.md"],
+      range: { file: "README.md", start: 1, end: 1 },
+      documents: [{ path: "README.md", label: "The brief" }],
+    }),
+  });
+  const run = await worker.start({
+    workspaceId: workspace.id,
+    taskId: created.id,
+    provider: "claude-code",
+  });
+  const stored = JSON.parse(
+    services.db.prepare("SELECT target FROM tasks WHERE id = ?").get(created.id)
+      .target,
+  );
+  assert.match(
+    stored.range.revision,
+    /^git:[0-9a-f]{7,64}$/,
+    "the revision is the git blob hash of the file on disk",
+  );
+  assert.ok(stored.range.pinnedAt);
+  assert.deepEqual(stored.documents, [
+    { path: "README.md", label: "The brief" },
+  ]);
+  const pinnedEvent = recorder
+    .events(run.id)
+    .find((e) => /Pinned README\.md lines 1-1/.test(e.message));
+  assert.ok(pinnedEvent);
+  assert.equal(pinnedEvent.data.range.revision, stored.range.revision);
+
+  // Document inputs reach the prompt as an explicit list.
+  assert.match(
+    run.prompt,
+    /Input documents \(read these; they are the inputs for this task\):\n- README\.md \(The brief\)/,
+  );
+  assert.deepEqual(run.context.documents, [
+    { path: "README.md", label: "The brief" },
+  ]);
+  const documentEvent = recorder
+    .events(run.id)
+    .find((e) => /document input/.test(e.message));
+  assert.ok(documentEvent);
+  await worker.wait(run.id, 20000);
+
+  // Editing the file makes the pin stale; the pin itself never changes.
+  assert.equal(await rangeIsStale(stored.range, { cwd: repo }), false);
+  writeFileSync(join(repo, "README.md"), "# fixture repo, edited\n");
+  assert.equal(await rangeIsStale(stored.range, { cwd: repo }), true);
+
+  // A second launch reports the staleness instead of silently repinning.
+  const again = await worker.start({
+    workspaceId: workspace.id,
+    taskId: created.id,
+    provider: "claude-code",
+    prompt: "quick",
+  });
+  const staleEvent = recorder
+    .events(again.id)
+    .find((e) => /no longer matches revision/.test(e.message));
+  assert.ok(staleEvent, "the stale pin is announced");
+  assert.equal(
+    JSON.parse(
+      services.db
+        .prepare("SELECT target FROM tasks WHERE id = ?")
+        .get(created.id).target,
+    ).range.revision,
+    stored.range.revision,
+    "the pin is not silently rewritten",
+  );
+  await worker.wait(again.id, 20000);
 });

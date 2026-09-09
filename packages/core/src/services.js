@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { openDatabase } from "./db.js";
 import { WorkspaceHub } from "./WorkspaceHub.js";
@@ -25,6 +26,17 @@ import { TaskGraph } from "./workflows/TaskGraph.js";
 import { WorkflowService } from "./workflows/WorkflowService.js";
 import { Analytics } from "./analytics/Analytics.js";
 import { ContextManifest } from "./context/ContextManifest.js";
+import { createCheckpointService } from "./workflows/checkpoints.js";
+import { createDryRun } from "./workflows/dryRun.js";
+import { createSuggest } from "./workflows/suggest.js";
+import { createWebhookService } from "./webhooks/WebhookService.js";
+import { createIncidentService } from "./ops/Incident.js";
+import { createBackupService } from "./ops/Backup.js";
+import { createHealthService } from "./ops/Health.js";
+import { createDiagnosticsService } from "./ops/Diagnostics.js";
+import { createRetentionService } from "./ops/Retention.js";
+import { createSearch } from "./search/Search.js";
+import { classifyFailure, retryPolicy } from "./runs/retry.js";
 
 const OBSERVER_FACTORIES = [
   ["claude-code", createClaudeObserver],
@@ -75,9 +87,15 @@ export function defaultObservers(
  * shared by the HTTP server, the CLI, and tests.
  *
  * Composition order (each step may use the ones before it):
- *   db, bus, hub → settings → audit → policy → connections → recorder →
- *   approvals → hookBridge → observation → runWorker (+ adapters) →
- *   workflows (TaskGraph + WorkflowService + templates) → analytics → context
+ *   db, bus, hub → settings → audit (hash chain) → policy → connections →
+ *   recorder → approvals → hookBridge → observation →
+ *   runWorker (+ adapters, budget, queue, retry) →
+ *   workflows (TaskGraph + WorkflowService + checkpoints + dryRun + suggest) →
+ *   analytics → context → webhooks → ops (incidents, backup, health,
+ *   diagnostics, retention) → search → optional modules (services.ready)
+ *
+ * Every service is optional to its consumers: modules guard cross-service use
+ * with optional chaining, so a container built without one still answers.
  *
  * options:
  *   db | dbPath        existing DatabaseSync or a path (":memory:" default)
@@ -196,10 +214,20 @@ export function createServices(options = {}) {
     env,
   });
 
+  // 5b. Retry classification is a pure module; it is exposed here so callers
+  // that are not the run worker (routes, the inbox) can explain a failure the
+  // same way the worker does. services.budget and services.queue are attached
+  // by createRunWorker above; the aliases below are only convenience.
+  services.retry = { classifyFailure, retryPolicy };
+  services.queue = services.runWorker?.queue ?? null;
+
   // 6. Workflows (task graph + templates), analytics, context manifests.
   const graph = new TaskGraph(services);
   services.graph = graph;
   services.workflows = new WorkflowService(services, { graph });
+  createCheckpointService(services); // → services.checkpoints
+  createDryRun(services); // → services.dryRun
+  createSuggest(services); // → services.suggest
   services.analytics = new Analytics(services, {
     pricing: options.pricing ?? null,
   });
@@ -207,13 +235,190 @@ export function createServices(options = {}) {
     git: options.git ?? true,
   });
 
+  // 7. Outbound/inbound webhooks. Nothing is delivered until main.js (or a
+  // test) calls services.webhooks.deliverDue(); creating the service starts
+  // no timer, so a container built for a unit test never opens a socket.
+  createWebhookService(services); // → services.webhooks
+
+  // 8. Operations: incidents (the dispatch stop flag), backup, health,
+  // diagnostics, retention. Retention registers its own onClose; its timer
+  // only starts when start() is called and the policy is enabled.
+  createIncidentService(services); // → services.incidents
+  createBackupService(services); // → services.backup
+  createHealthService(services); // → services.health
+  createDiagnosticsService(services); // → services.diagnostics
+  createRetentionService(services); // → services.retention
+
+  // 9. Search across the records above (never the filesystem).
+  createSearch(services); // → services.search
+
+  // 10. Modules that may not be installed in this build. Each is optional and
+  // is attached only when its file exists; every consumer must keep using
+  // optional chaining. `services.ready` resolves once the scan has finished.
+  services.ready =
+    options.optional === false
+      ? Promise.resolve([])
+      : attachOptionalServices(services).catch((error) => {
+          log.debug?.(
+            `[services] optional module scan failed: ${error?.message ?? error}`,
+          );
+          return [];
+        });
+
   return services;
+}
+
+/**
+ * Modules planned for wave 2 that this build may or may not contain. Each
+ * entry is { key, path, factory }: when the file exists it is imported and
+ * `factory(services)` is called, which is expected to attach `services[key]`.
+ *
+ * This list is the ONLY place a new optional module has to be named. Nothing
+ * here is required: an absent module leaves `services[key]` undefined and every
+ * caller already guards with optional chaining, so the container degrades
+ * instead of failing.
+ */
+export const OPTIONAL_MODULES = Object.freeze([
+  { key: "mcp", path: "./mcp/McpServer.js", factory: "createMcpServer" },
+  {
+    key: "connectors",
+    path: "./connectors/Connectors.js",
+    factory: "createConnectors",
+  },
+  { key: "memory", path: "./memory/Memory.js", factory: "createMemory" },
+  {
+    key: "relevance",
+    path: "./memory/Relevance.js",
+    factory: "createRelevance",
+  },
+  {
+    key: "handover",
+    path: "./collab/Handover.js",
+    factory: "createHandover",
+  },
+  {
+    key: "decisions",
+    path: "./collab/Decisions.js",
+    factory: "createDecisions",
+  },
+  {
+    key: "pricing",
+    path: "./analytics/Pricing.js",
+    factory: "createPricing",
+  },
+  {
+    key: "lineage",
+    path: "./analytics/Lineage.js",
+    factory: "createLineage",
+  },
+  {
+    key: "evaluation",
+    path: "./evaluation/Evaluation.js",
+    factory: "createEvaluation",
+  },
+  {
+    key: "extensions",
+    path: "./extensions/Extensions.js",
+    factory: "createExtensions",
+  },
+]);
+
+/**
+ * Attaches every optional module whose file is present. Returns the list of
+ * keys that were attached, so main.js can log exactly what this build has.
+ * A module that throws while loading is logged and skipped: one broken
+ * optional module never stops the container.
+ */
+export async function attachOptionalServices(
+  services,
+  { modules = OPTIONAL_MODULES } = {},
+) {
+  const attached = [];
+  const here = new URL("./", import.meta.url);
+  for (const entry of modules) {
+    const file = new URL(entry.path, here);
+    if (!existsSync(fileURLToPath(file))) continue;
+    try {
+      const module = await import(file.href);
+      const factory = module[entry.factory] ?? module.default;
+      if (typeof factory !== "function") continue;
+      const value = await factory(services);
+      services[entry.key] ??= value;
+      if (services[entry.key]) attached.push(entry.key);
+    } catch (error) {
+      services.log?.error?.(
+        `[services] optional module ${entry.key} failed to load: ${error?.message ?? error}`,
+      );
+    }
+  }
+  return attached;
+}
+
+/** How long a health snapshot is reused for the global channel payload. */
+export const HEALTH_CACHE_MS = 5_000;
+
+const emptyUrgency = Object.freeze({
+  overdueApprovals: 0,
+  oldestApprovalAgeMs: null,
+  failedRuns: 0,
+  pendingReviews: 0,
+  questions: 0,
+});
+
+/** Approvals older than this are counted as overdue in the inbox urgency. */
+export const OVERDUE_APPROVAL_MS = 30 * 60 * 1000;
+
+/**
+ * Urgency counts for the inbox badge. Everything here is derived from stored
+ * timestamps; nothing is predicted or scored. `oldestApprovalAgeMs` is null
+ * when no approval is pending rather than 0, so the UI cannot mistake "none
+ * waiting" for "just arrived".
+ */
+export function inboxUrgency(inbox, now = Date.now()) {
+  const pending = inbox?.approvals ?? [];
+  const ages = pending
+    .map((approval) => approval.requestedAt)
+    .filter((value) => Number.isFinite(value))
+    .map((value) => Math.max(0, now - value));
+  return {
+    overdueApprovals: ages.filter((age) => age > OVERDUE_APPROVAL_MS).length,
+    oldestApprovalAgeMs: ages.length ? Math.max(...ages) : null,
+    failedRuns: (inbox?.runs ?? []).filter((run) =>
+      ["failed", "disconnected", "stale"].includes(run.status),
+    ).length,
+    pendingReviews: inbox?.reviews?.length ?? 0,
+    questions: inbox?.questions?.length ?? 0,
+  };
+}
+
+/** Health level + top alerts, recomputed at most every HEALTH_CACHE_MS. */
+function cachedHealth(services) {
+  const now = Date.now();
+  const cache = services._healthCache;
+  if (cache && now - cache.at < HEALTH_CACHE_MS) return cache.value;
+  const snapshot = services.health?.snapshot?.();
+  const value = snapshot
+    ? {
+        status: snapshot.status,
+        checkedAt: snapshot.checkedAt ?? now,
+        alertCount: snapshot.alerts?.length ?? 0,
+        alerts: (snapshot.alerts ?? [])
+          .slice(0, 5)
+          .map(({ level, code, title }) => ({ level, code, title })),
+      }
+    : { status: "unknown", alerts: [], alertCount: 0, checkedAt: null };
+  services._healthCache = { at: now, value };
+  return value;
 }
 
 /**
  * Global channel payload. Each section is guarded so one failing module
  * cannot take the whole broadcast down. Connection rows never contain
  * credentials (detection only checks that auth files exist).
+ *
+ * The payload stays small on purpose: counts, levels, and top-N lists only.
+ * The full tables live behind their own routes (/api/ops/health, /api/inbox,
+ * /api/connections).
  */
 function globalSnapshot(services) {
   const section = (name, fn, fallback) => {
@@ -250,16 +455,88 @@ function globalSnapshot(services) {
       () => {
         const inbox = services.approvals?.inbox?.();
         if (!inbox)
-          return { counts: emptyCounts, approvals: [], runs: [], reviews: [] };
+          return {
+            counts: emptyCounts,
+            urgency: emptyUrgency,
+            approvals: [],
+            runs: [],
+            reviews: [],
+          };
         return {
           counts: inbox.counts,
+          urgency: inboxUrgency(inbox, Date.now()),
           approvals: inbox.approvals.slice(0, 5),
           runs: inbox.runs.slice(0, 5),
           reviews: inbox.reviews.slice(0, 5),
         };
       },
-      { counts: emptyCounts, approvals: [], runs: [], reviews: [] },
+      {
+        counts: emptyCounts,
+        urgency: emptyUrgency,
+        approvals: [],
+        runs: [],
+        reviews: [],
+      },
     ),
+    // Provider circuit breakers and rate-limit parking from the run queue.
+    // Counts and the parked providers only; the full table is behind
+    // GET /api/ops/health.
+    providers: section(
+      "providers",
+      () => {
+        const worker = services.runWorker;
+        if (!worker?.providerHealth)
+          return { health: {}, outages: [], breakersOpen: 0 };
+        const health = worker.providerHealth() ?? {};
+        const outages = (worker.outage?.() ?? []).slice(0, 5);
+        const breakersOpen = Object.values(health).filter(
+          (entry) => entry?.state === "open",
+        ).length;
+        return { health, outages, breakersOpen };
+      },
+      { health: {}, outages: [], breakersOpen: 0 },
+    ),
+    // Operator state: is dispatch stopped, and are there stop requests that
+    // no run has acknowledged yet (a headless worker that never received the
+    // cancel). Counts only, plus the reason so a banner can explain itself.
+    operations: section(
+      "operations",
+      () => {
+        const status = services.incidents?.status?.();
+        if (!status)
+          return {
+            dispatchStopped: false,
+            unacknowledgedStops: 0,
+            quarantinedHosts: 0,
+            reason: null,
+            stoppedAt: null,
+          };
+        return {
+          dispatchStopped: status.dispatchStopped === true,
+          unacknowledgedStops: status.unacknowledged?.length ?? 0,
+          quarantinedHosts: status.quarantinedHosts?.length ?? 0,
+          revokedConnections: status.revokedConnections?.length ?? 0,
+          reason: status.reason ?? null,
+          stoppedAt: status.stoppedAt ?? null,
+        };
+      },
+      {
+        dispatchStopped: false,
+        unacknowledgedStops: 0,
+        quarantinedHosts: 0,
+        reason: null,
+        stoppedAt: null,
+      },
+    ),
+    // Health level plus the top alerts. The snapshot is cached for
+    // HEALTH_CACHE_MS because it stats the database file, and the global
+    // channel re-broadcasts on every recorded event.
+    health: section("health", () => cachedHealth(services), {
+      status: "unknown",
+      alerts: [],
+      alertCount: 0,
+      checkedAt: null,
+    }),
     settings: section(
       "settings",
       () => services.settings?.publicSubset?.() ?? {},

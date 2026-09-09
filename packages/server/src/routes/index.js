@@ -1,3 +1,7 @@
+import opsRoutes from "./ops.js";
+import webhookRoutes from "./webhooks.js";
+import searchRoutes from "./search.js";
+import connectorRoutes from "./connectors.js";
 import connectionRoutes from "./connections.js";
 import sessionRoutes from "./sessions.js";
 import runRoutes from "./runs.js";
@@ -22,8 +26,21 @@ import workspaceRoutes from "./workspaces.js";
  * Handlers that claim /api/workspaces/:id/... sub-paths (runs, policy,
  * workflows, context, export) therefore must come first, and they return
  * false for any path that is not theirs so workspaceRoutes still gets it.
+ *
+ * Wave 2 additions (ops, webhooks, search) claim their own /api prefixes and
+ * are listed first so a missing service surfaces as a 503 from the owning
+ * module rather than a 404 from the catch-all.
+ *
+ * Route files named in the wave-2 plan that were never delivered — collab,
+ * evaluation, extensions — are deliberately NOT imported: a static
+ * import of a missing file would stop the server from booting. Add the import
+ * and one array entry above workspaceRoutes when such a file lands.
  */
 export const routes = [
+  opsRoutes, // /api/ops*
+  webhookRoutes, // /api/webhooks*
+  searchRoutes, // /api/search*
+  connectorRoutes, // /api/connectors*
   connectionRoutes, // /api/providers, /api/connections*
   sessionRoutes, // /api/sessions*, /api/observation*
   runRoutes, // /api/workspaces/:id/tasks/:taskId/run, /api/runs/:id*

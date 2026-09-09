@@ -45,8 +45,11 @@ const VALIDATORS = {
   "budget.dailyRunLimit": nullableIntRange(1, 100000),
 };
 
+// Matches keys that would hold a credential. Deliberately narrow around
+// "token" so ordinary settings such as budget.dailyTokenLimit are storable
+// while auth_token / apiToken / accessToken remain refused.
 const SECRET_KEY =
-  /token|secret|password|authorization|credential|apikey|api_key/i;
+  /(^|[._-])(auth|api|access|refresh|bearer|session)[._-]?tokens?($|[._-])|tokens?[._-]?(value|secret)|secret|password|authorization|credential|apikey|api_key/i;
 
 function bool(value, key) {
   if (typeof value !== "boolean")

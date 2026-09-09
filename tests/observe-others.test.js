@@ -898,3 +898,108 @@ test("gemini: logs.json prompts become sessions when no chat file exists; bare a
     ["prompt", "message"],
   );
 });
+
+test("gemini: reads the real projects.json / history/<alias> layout", () => {
+  const home = path.join(tempHome("gemini-projects"), ".gemini");
+  const alias = "a1b2c3";
+  const cwd = "C:\\work\\probe\\gemini";
+  fs.mkdirSync(path.join(home, "history", alias), { recursive: true });
+  fs.mkdirSync(path.join(home, "tmp", alias), { recursive: true });
+  // projects.json maps a LOWER-CASED absolute cwd to the short alias.
+  fs.writeFileSync(
+    path.join(home, "projects.json"),
+    JSON.stringify({ [cwd.toLowerCase()]: alias }),
+  );
+  const chat = path.join(home, "history", alias, "chat-1.json");
+  fs.writeFileSync(
+    chat,
+    JSON.stringify({
+      sessionId: "gem-hist-1",
+      messages: [
+        { role: "user", parts: [{ text: "list the files" }] },
+        {
+          role: "model",
+          model: "gemini-2.5-pro",
+          parts: [
+            {
+              functionCall: {
+                name: "list_directory",
+                args: { path: cwd },
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  setMtime(chat, Date.parse("2026-09-09T12:00:00.000Z"));
+  // A prompt log in tmp/<alias>/ for a different session.
+  fs.writeFileSync(
+    path.join(home, "tmp", alias, "logs.json"),
+    JSON.stringify([
+      {
+        sessionId: "gem-tmp-1",
+        messageId: 0,
+        type: "user",
+        message: "second session",
+        timestamp: "2026-09-09T11:00:00.000Z",
+      },
+    ]),
+  );
+
+  const observer = createGemini({
+    home,
+    env: {},
+    now: () => Date.parse("2026-09-09T12:00:30.000Z"),
+  });
+  const info = observer.status();
+  assert.equal(info.installed, true);
+  assert.equal(info.unverified, true);
+  assert.ok(info.projectsFile && info.historyDir && info.tmpDir);
+  // No settings.json and no auth env → not logged in, with the CLI's own fix.
+  assert.equal(info.auth.loggedIn, false);
+  assert.equal(info.auth.category, "not-logged-in");
+  assert.match(info.auth.fix, /GEMINI_API_KEY/);
+  assert.equal(info.capabilities.launch, "experimental");
+  assert.equal(info.capabilities.stream, "unknown");
+
+  const sessions = observer.scanSessions();
+  assert.deepEqual(sessions.map((s) => s.sessionId).sort(), [
+    "gem-hist-1",
+    "gem-tmp-1",
+  ]);
+  const history = sessions.find((s) => s.sessionId === "gem-hist-1");
+  assert.equal(
+    history.cwd,
+    path.normalize(cwd.toLowerCase()),
+    "the alias is resolved back to the cwd projects.json recorded (lower-cased)",
+  );
+  assert.equal(history.metadata.projectAlias, alias);
+  assert.equal(history.metadata.unverified, true);
+  assert.equal(history.live, true, "modified 30 s ago → inferred live");
+  const { events } = observer.readEvents(history, 0);
+  assert.deepEqual(
+    events.map((e) => e.kind),
+    ["prompt", "tool.start", "search"],
+  );
+  assert.ok(events.every((e) => e.data.unverified === true));
+  assert.equal(events[0].cwd, path.normalize(cwd.toLowerCase()));
+
+  const log = sessions.find((s) => s.sessionId === "gem-tmp-1");
+  assert.equal(log.cwd, path.normalize(cwd.toLowerCase()));
+  assert.equal(log.metadata.source, "logs.json");
+
+  // settings.json existing is the authoritative "an auth method is chosen".
+  fs.writeFileSync(path.join(home, "settings.json"), "{}");
+  assert.equal(observer.status().auth.loggedIn, true);
+  assert.equal(observer.status().auth.category, null);
+
+  // An env credential counts too, with no file at all.
+  const bare = path.join(tempHome("gemini-env"), ".gemini");
+  fs.mkdirSync(bare, { recursive: true });
+  const withEnv = createGemini({ home: bare, env: { GEMINI_API_KEY: "x" } });
+  assert.equal(withEnv.status().auth.loggedIn, true);
+  assert.deepEqual(withEnv.status().auth.envVars, ["GEMINI_API_KEY"]);
+  assert.equal(withEnv.status().installed, false);
+  assert.deepEqual([...withEnv.scanSessions()], []);
+});

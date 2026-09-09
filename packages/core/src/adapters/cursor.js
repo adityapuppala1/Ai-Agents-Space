@@ -1,43 +1,59 @@
 import { defineAdapter, tolerantParse, tolerantFinalize } from "./base.js";
+import { InputError } from "../TaskStore.js";
 
 const PROVIDER = "cursor";
 
 /**
- * Cursor adapter. `cursor-agent -p "<prompt>" --output-format stream-json`
- * follows Cursor's docs but the CLI is not installed here, so the adapter is
- * `experimental`: the command is built as documented and the parser accepts
- * any JSON line. When the binary is missing the worker refuses the launch
- * with "install cursor-agent for managed runs".
+ * Cursor adapter: detect-only.
+ *
+ * `cursor-agent` is genuinely not installed on this machine — only the Cursor
+ * IDE launcher (`cursor.cmd` 3.14.27), which cannot run a headless task. The
+ * documented headless command (`cursor-agent -p "<prompt>"
+ * --output-format stream-json`) has therefore never been observed here, so
+ * `build()` refuses instead of producing a command line that would launch the
+ * IDE. Observation stays experimental (conversation summaries only).
  */
+
+export const CURSOR_LAUNCH_REFUSAL =
+  "cursor-agent is not installed; the Cursor IDE launcher cannot run headless tasks";
+
+export const CURSOR_INSTALL_FIX = "https://docs.cursor.com/en/cli";
+
 export const cursorAdapter = defineAdapter({
   id: PROVIDER,
   provider: PROVIDER,
   name: "Cursor",
   capabilities: {
-    launch: "experimental",
-    stream: "experimental",
-    interrupt: "experimental",
+    launch: "unsupported",
+    stream: "unknown",
+    interrupt: "unknown",
     resume: "unsupported",
     approve: "unknown",
     reportModel: "unknown",
     reportUsage: "unknown",
-    artifacts: "verified",
+    artifacts: "unknown",
     attach: "unsupported",
     fork: "unknown",
     delegate: "unknown",
   },
   supportsResume: false,
   launchBinaries: ["cursor-agent"],
-  missingBinaryHint: "install cursor-agent for managed runs",
+  missingBinaryHint: CURSOR_LAUNCH_REFUSAL,
+  refusal: CURSOR_LAUNCH_REFUSAL,
+  fix: CURSOR_INSTALL_FIX,
 
-  build({ prompt, binary, cwd, model, policy }) {
-    const args = [...(binary.args ?? [])];
-    args.push("-p", prompt, "--output-format", "stream-json");
-    if (model) args.push("--model", String(model));
-    if (policy?.autonomy && policy.autonomy !== "propose") args.push("--force");
-    return { command: binary.command, args, cwd, stdin: "ignore" };
+  /** Always refuses: there is no verified headless Cursor CLI here. */
+  build() {
+    const error = new InputError(CURSOR_LAUNCH_REFUSAL, 409);
+    error.fix = CURSOR_INSTALL_FIX;
+    error.provider = PROVIDER;
+    throw error;
   },
 
+  /**
+   * Kept tolerant so a future `cursor-agent` stream can be inspected without
+   * pretending we know its vocabulary.
+   */
   parse(line, state) {
     return tolerantParse(PROVIDER, line, state);
   },

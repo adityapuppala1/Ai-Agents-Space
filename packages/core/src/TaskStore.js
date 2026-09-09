@@ -94,6 +94,29 @@ function validateExtras(input, db, workspaceId) {
         throw new InputError("target.files must be an array of paths");
       target.files = t.files.map((f) => f.trim()).filter(Boolean);
     }
+    // Document inputs: reference material the run should read but not treat as
+    // code. RunWorker lists these in the prompt and the context manifest.
+    if (t.documents !== undefined) {
+      if (!Array.isArray(t.documents) || t.documents.length > 100)
+        throw new InputError("target.documents must be an array");
+      target.documents = t.documents.map((d) => {
+        const doc = typeof d === "string" ? { path: d } : d;
+        if (
+          !doc ||
+          typeof doc !== "object" ||
+          typeof doc.path !== "string" ||
+          !doc.path.trim() ||
+          doc.path.length > 500
+        )
+          throw new InputError(
+            "each document needs a path under 500 characters",
+          );
+        const entry = { path: doc.path.trim() };
+        const label = optionalText(doc.label, "document.label", 120);
+        if (label) entry.label = label;
+        return entry;
+      });
+    }
     if (t.range !== undefined && t.range !== null) {
       const r = t.range;
       if (

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { InputError } from "../TaskStore.js";
+import { assertDispatchAllowed } from "../ops/Incident.js";
 import {
   PROVIDERS,
   DEFAULT_POLICY,
@@ -16,19 +17,26 @@ import {
 } from "../adapters/base.js";
 import { resolveBinary, spawnProvider, killTree, isAlive } from "./process.js";
 import { isWithin } from "../policy/Policy.js";
-import {
-  isGitRepo,
-  repoRoot,
-  currentBranch,
-  createWorktree,
-  removeWorktree,
-} from "./worktree.js";
+import { repoRoot, currentBranch, removeWorktree } from "./worktree.js";
 import {
   captureGitDiff,
   captureTestOutput,
   finalMessage,
   formatTestOutput,
 } from "./artifacts.js";
+import { RunQueue } from "./queue.js";
+import { BudgetTracker } from "./budget.js";
+import {
+  classifyFailure,
+  retryPolicy,
+  SIDE_EFFECT_REVIEW_REASON,
+} from "./retry.js";
+import {
+  resolveRunScope,
+  releaseRunScope,
+  pinRange,
+  rangeIsStale,
+} from "./outputScope.js";
 
 const ACTIVE_STATUSES = ["running", "waiting_approval", "blocked", "stale"];
 const RECONCILE_STATUSES = [...ACTIVE_STATUSES, "queued"];
@@ -37,6 +45,34 @@ export const DISCONNECTED_ERROR =
 export const CANCEL_MESSAGE =
   "Run cancelled by user; side effects already made are not undone";
 export const SHUTDOWN_ERROR = "server shut down while the run was active";
+
+const TASK_PRIORITY_WEIGHT = { CRITICAL: 3, HIGH: 2, MEDIUM: 1, LOW: 0 };
+
+/** Keys a provider may use to say when a rate limit resets. */
+const RESET_KEYS = [
+  "resetsAt",
+  "resets_at",
+  "resetAt",
+  "reset_at",
+  "retryAfter",
+  "retry_after",
+  "retryAt",
+];
+
+function resetHint(events = [], text = "") {
+  for (const event of events) {
+    const data = event?.data;
+    if (!data || typeof data !== "object") continue;
+    for (const key of RESET_KEYS)
+      if (data[key] !== undefined && data[key] !== null) return data[key];
+    const nested = data.rate_limit ?? data.rateLimit ?? data.error;
+    if (nested && typeof nested === "object")
+      for (const key of RESET_KEYS)
+        if (nested[key] !== undefined && nested[key] !== null)
+          return nested[key];
+  }
+  return text || null;
+}
 
 /** Isolation the policy engine (or the preset, without one) requires. */
 function enforcedIsolation(effective, requested) {
@@ -76,6 +112,34 @@ function rowToTask(row) {
   };
 }
 
+/** Document inputs attached to the task target: [{ path, label }]. */
+function documentsFor(task) {
+  const raw = task?.target?.documents;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((doc) =>
+      typeof doc === "string"
+        ? { path: doc, label: null }
+        : doc && typeof doc === "object" && doc.path
+          ? {
+              path: String(doc.path),
+              label: doc.label ? String(doc.label) : null,
+            }
+          : null,
+    )
+    .filter(Boolean)
+    .slice(0, 50);
+}
+
+/** Adds the document inputs to the prompt as an explicit, ordered list. */
+function withDocuments(prompt, documents) {
+  if (!documents.length) return prompt;
+  const list = documents
+    .map((doc) => `- ${doc.path}${doc.label ? ` (${doc.label})` : ""}`)
+    .join("\n");
+  return `${prompt}\n\nInput documents (read these; they are the inputs for this task):\n${list}`;
+}
+
 /**
  * Executes managed runs: validates the launch against workspace policy,
  * queues per-workspace concurrency, spawns the provider CLI through its
@@ -110,9 +174,52 @@ export class RunWorker {
     );
     this.children = new Map(); // runId → entry
     this.specs = new Map(); // runId → launch spec (queued or running)
-    this.queues = new Map(); // workspaceId → [runId]
     this.waiters = new Map(); // runId → [resolve]
+    this.starting = new Map(); // runId → workspaceId (launch in flight)
+    this.retryTimers = new Map(); // runId → automatic-retry timer
+    this.wakeTimer = null;
+    this.closing = false;
+    /** Fair, rate-limit aware queue with per-provider circuit breakers. */
+    this.queue =
+      options.queue ??
+      new RunQueue({
+        maxConcurrentPerWorkspace: DEFAULT_POLICY.maxConcurrentRuns,
+        fairness: "round-robin",
+        now: this.now,
+        ...(options.queueOptions ?? {}),
+      });
+    /** Token budgets: reservations up front, honest post-hoc enforcement. */
+    this.budget =
+      options.budget ??
+      services.budget ??
+      new BudgetTracker(services, { now: this.now });
+    // Injected so tests can assert an exact retry backoff.
+    this.random = options.random ?? Math.random;
     services.onClose?.(() => this.close());
+  }
+
+  // ------------------------------------------------------- queue + health
+
+  /** Provider circuit-breaker state for the connections panel. */
+  providerHealth() {
+    return this.queue.providerHealth();
+  }
+
+  /** Current provider outages for the UI banner. */
+  outage() {
+    return this.queue.outage();
+  }
+
+  retryPolicyFor(policy) {
+    return retryPolicy({ policy, random: this.random });
+  }
+
+  /** Runs occupying a slot: recorded as active plus launches in flight. */
+  activeSlots(workspaceId) {
+    let inFlight = 0;
+    for (const id of this.starting.values())
+      if (id === workspaceId) inFlight += 1;
+    return this.activeCount(workspaceId) + inFlight;
   }
 
   // ---------------------------------------------------------------- lookups
@@ -295,6 +402,9 @@ export class RunWorker {
       throw new InputError("workspaceId is required");
     if (!taskId || typeof taskId !== "string")
       throw new InputError("taskId is required");
+    // An operator stop-all halts every new dispatch, however it is requested
+    // (API, workflow auto-dispatch, retry). No-op when ops is not composed.
+    assertDispatchAllowed(this.services);
     const workspace = this.hub.get(workspaceId);
     const task = this.taskRecord(workspaceId, taskId);
     const provider = input.provider ?? task.provider;
@@ -410,7 +520,12 @@ export class RunWorker {
         409,
       );
 
-    const prompt =
+    // Pin the code range to the exact bytes it was chosen against and write
+    // the pinned target back to the task, so every later attempt (and the
+    // review) refers to the same revision.
+    const pin = await this.pinTaskRange(task, cwd);
+    const documents = documentsFor(task);
+    const basePrompt =
       typeof promptOverride === "string" && promptOverride.trim()
         ? promptOverride
         : buildPrompt({
@@ -419,14 +534,67 @@ export class RunWorker {
             agent,
             context: task.context,
           });
+    const prompt = withDocuments(basePrompt, documents);
+    let manifest = null;
+    if (documents.length || task.target?.files?.length) {
+      try {
+        manifest = this.services.context?.build?.({
+          workspaceId,
+          taskId,
+          agentId: agent.id,
+          documents: documents.map((doc) => ({
+            title: doc.label ?? doc.path,
+            ref: doc.path,
+          })),
+        });
+      } catch {
+        manifest = null;
+      }
+    }
     const context = {
       ...(task.context ?? {}),
       target: task.target ?? {},
       files: task.target?.files ?? [],
       folder: task.target?.folder ?? null,
+      documents,
+      range: task.target?.range ?? null,
+      rangePinnedNow: pin?.pinnedNow ?? false,
+      manifest: manifest
+        ? {
+            hash: manifest.hash,
+            files: manifest.files?.length ?? 0,
+            documents: manifest.documents?.length ?? 0,
+            estimatedTokens: manifest.estimatedTokens ?? null,
+            estimateLabel: manifest.estimateLabel ?? "estimate",
+          }
+        : null,
       promptSource: promptOverride ? "user" : "task",
     };
-    const queued = this.activeCount(workspaceId) >= effective.maxConcurrentRuns;
+
+    // Budget: book estimated headroom before anything is spawned. The
+    // estimate is labelled an estimate; real totals arrive afterwards.
+    const estimateTokens =
+      manifest?.estimatedTokens ?? Math.ceil(prompt.length / 4);
+    const preflight = this.budget.reserve({
+      workspaceId,
+      runId: null,
+      estimateTokens,
+    });
+    if (!preflight.ok) {
+      this.audit(
+        "run.refused",
+        null,
+        { workspaceId, taskId, provider, reason: preflight.reason },
+        "deny",
+        actor,
+      );
+      throw new InputError(preflight.reason, 429);
+    }
+
+    const providerState = this.queue.available(provider);
+    const atLimit =
+      this.activeSlots(workspaceId) >= effective.maxConcurrentRuns;
+    const queued = atLimit || !providerState.ok;
     const run = this.recorder.ensureRun({
       workspaceId,
       agentId: agent.id,
@@ -460,6 +628,47 @@ export class RunWorker {
       parentRunId,
       attempt,
     });
+    const reservation = this.budget.reserve({
+      workspaceId,
+      runId: run.id,
+      estimateTokens,
+    });
+    if (reservation.limit !== null)
+      this.system(
+        run.id,
+        `Reserved ${reservation.estimateTokens} estimated tokens; ${reservation.remaining} of the ${reservation.limit} daily token budget remain (estimate: token totals are only known after the run).`,
+        {
+          estimateTokens: reservation.estimateTokens,
+          limit: reservation.limit,
+          remaining: reservation.remaining,
+          basis: "estimate",
+        },
+        "status",
+      );
+    if (pin?.pinnedNow)
+      this.system(
+        run.id,
+        `Pinned ${pin.file} lines ${pin.start}-${pin.end} to revision ${pin.revision}`,
+        { range: pin, basis: pin.revisionBasis ?? null },
+        "status",
+      );
+    else if (pin?.stale)
+      this.system(
+        run.id,
+        `The pinned range in ${pin.file} no longer matches revision ${pin.revision}: the file changed since the range was chosen. The run uses the current contents.`,
+        { range: pin },
+        "status",
+      );
+    if (documents.length)
+      this.system(
+        run.id,
+        `${documents.length} document input${documents.length === 1 ? "" : "s"} listed in the prompt: ${documents
+          .map((doc) => doc.label ?? doc.path)
+          .join(", ")
+          .slice(0, 200)}`,
+        { documents },
+        "status",
+      );
     if (task.status === "BLOCKED") {
       try {
         workspace.store.update(task.id, { status: "IN_PROGRESS" });
@@ -494,22 +703,114 @@ export class RunWorker {
       actor,
     });
     if (queued) {
-      const queue = this.queues.get(workspaceId) ?? [];
-      queue.push(run.id);
-      this.queues.set(workspaceId, queue);
-      this.system(
-        run.id,
-        `Queued: workspace already runs ${effective.maxConcurrentRuns} managed run${
-          effective.maxConcurrentRuns === 1 ? "" : "s"
-        }; will start when a slot frees`,
-        { maxConcurrentRuns: effective.maxConcurrentRuns },
-        "status",
+      this.queue.enqueue({
+        workspaceId,
+        runId: run.id,
+        provider,
+        priority: TASK_PRIORITY_WEIGHT[task.priority] ?? 0,
+      });
+      if (atLimit)
+        this.system(
+          run.id,
+          `Queued: workspace already runs ${effective.maxConcurrentRuns} managed run${
+            effective.maxConcurrentRuns === 1 ? "" : "s"
+          }; will start when a slot frees`,
+          { maxConcurrentRuns: effective.maxConcurrentRuns },
+          "status",
+        );
+      else
+        this.system(
+          run.id,
+          `Queued: ${PROVIDERS[provider].name} is unavailable (${providerState.reason ?? providerState.state}); the run starts when the provider is usable again${
+            providerState.until
+              ? ` (not before ${new Date(providerState.until).toISOString()})`
+              : ""
+          }`,
+          {
+            provider,
+            breaker: providerState.state,
+            until: providerState.until ?? null,
+            reason: providerState.reason ?? null,
+          },
+          "status",
+        );
+      this.audit(
+        "run.queue",
+        run,
+        {
+          provider,
+          taskId,
+          reason: atLimit ? "concurrency" : `provider-${providerState.state}`,
+        },
+        "allow",
+        actor,
       );
-      this.audit("run.queue", run, { provider, taskId }, "allow", actor);
+      this.scheduleWake();
       return this.recorder.get(run.id);
     }
+    this.starting.set(run.id, workspaceId);
     await this.launch(run.id);
     return this.recorder.get(run.id);
+  }
+
+  /**
+   * Pins `task.target.range` to the file revision it was chosen against and
+   * writes the pinned target back to the task. An existing pin is checked for
+   * staleness instead of being overwritten.
+   */
+  async pinTaskRange(task, cwd) {
+    const range = task?.target?.range;
+    if (!range?.file) return null;
+    if (range.revision) {
+      let stale = false;
+      try {
+        stale = await rangeIsStale({ ...range, cwd }, { cwd });
+      } catch {
+        stale = false;
+      }
+      return { ...range, pinnedNow: false, stale };
+    }
+    let pinned = null;
+    try {
+      pinned = await pinRange({
+        cwd,
+        file: range.file,
+        start: range.start ?? null,
+        end: range.end ?? null,
+      });
+    } catch {
+      pinned = null;
+    }
+    if (!pinned?.revision) return { ...range, pinnedNow: false, stale: false };
+    const target = {
+      ...(task.target ?? {}),
+      range: {
+        ...range,
+        revision: pinned.revision,
+        pinnedAt: pinned.pinnedAt,
+      },
+    };
+    task.target = target;
+    try {
+      this.db
+        .prepare("UPDATE tasks SET target = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(target), this.now(), task.id);
+    } catch {
+      /* the task row may have been removed; the run still uses the pin */
+    }
+    this.audit(
+      "task.range.pinned",
+      null,
+      {
+        workspaceId: task.workspaceId,
+        taskId: task.id,
+        range: target.range,
+        basis: pinned.revisionBasis ?? null,
+      },
+      null,
+      "system",
+    );
+    return { ...target.range, pinnedNow: true, stale: false };
   }
 
   async launch(runId) {
@@ -521,33 +822,43 @@ export class RunWorker {
     let worktree = null;
     let branch = null;
     try {
-      const gitRepo = await isGitRepo(cwd);
-      if (gitRepo) branch = await currentBranch(cwd);
-      if (spec.isolation === "worktree") {
-        if (gitRepo) {
-          const root = await repoRoot(cwd);
-          const created = await createWorktree(root, runId, this.dataDir);
-          cwd = created.path;
-          worktree = created.path;
-          branch = created.branch;
-          recorder.update(runId, {
-            context: { ...recorder.get(runId).context, repoRoot: root },
-          });
-          this.system(
-            runId,
-            `Created isolated worktree on branch ${created.branch}`,
-            { worktree: created.path, branch: created.branch, repoRoot: root },
-          );
-        } else {
-          this.system(
-            runId,
-            "Worktree isolation requested but the folder is not a Git repository; running in place",
-            { cwd },
-            "status",
-          );
-        }
+      const scope = await resolveRunScope({
+        cwd,
+        isolation: spec.isolation,
+        dataDir: this.dataDir,
+        runId,
+      });
+      if (scope.isRepo) branch = await currentBranch(cwd);
+      if (scope.mode === "worktree") {
+        cwd = scope.cwd;
+        worktree = scope.worktree;
+        branch = scope.branch;
+        recorder.update(runId, {
+          context: { ...recorder.get(runId).context, repoRoot: scope.repoRoot },
+        });
+        this.system(runId, `Created isolated worktree on branch ${branch}`, {
+          worktree,
+          branch,
+          repoRoot: scope.repoRoot,
+        });
+      } else if (scope.mode === "output-folder") {
+        spec.outputDir = scope.outputDir;
+        recorder.update(runId, {
+          context: {
+            ...recorder.get(runId).context,
+            outputDir: scope.outputDir,
+          },
+        });
+        this.system(
+          runId,
+          `Not a Git repository, so writes are scoped to an output folder instead of a worktree. ${scope.note}`,
+          { outputDir: scope.outputDir, cwd },
+          "status",
+        );
       }
-      const extraDirs = spec.extraDirs ?? [];
+      const extraDirs = [
+        ...new Set([...(spec.extraDirs ?? []), ...(scope.extraDirs ?? [])]),
+      ];
       let hooksInstalled = false;
       try {
         hooksInstalled =
@@ -588,8 +899,11 @@ export class RunWorker {
           extraDirs,
           queued: false,
           transport: adapter.transport,
+          outputDir: spec.outputDir ?? null,
         },
       });
+      this.starting.delete(runId);
+      this.queue.beginAttempt(spec.provider);
       const state = { sessionId: spec.resumeSessionId ?? null, model: null };
       const entry = {
         runId,
@@ -652,12 +966,29 @@ export class RunWorker {
       }
     } catch (error) {
       this.specs.delete(runId);
+      this.starting.delete(runId);
+      this.budget.release(runId);
       recorder.setStatus(runId, "failed", {
         error: `Could not start ${spec.provider}: ${error.message}`.slice(
           0,
           500,
         ),
       });
+      // A launch that never produced a process is a transport failure by
+      // definition: nothing ran, so an automatic retry cannot duplicate work.
+      const classification = classifyFailure({
+        exitCode: null,
+        error,
+        events: [],
+        adapter: spec.adapter,
+      });
+      this.queue.recordFailure(spec.provider, classification, {
+        error: error.message,
+      });
+      this.considerAutoRetry(
+        { runId, spec, workspaceId: spec.workspaceId },
+        classification,
+      );
       this.audit(
         "run.failed",
         recorder.get(runId),
@@ -714,6 +1045,10 @@ export class RunWorker {
       !entry.sessionRecorded
     )
       this.recordSession(entry);
+    // Provider-reported usage is the only honest trigger for budget
+    // enforcement, and it always arrives after the tokens were spent.
+    if (event.usage && typeof event.usage === "object")
+      Promise.resolve(this.budget.enforce(entry.runId)).catch(() => {});
   }
 
   recordSession(entry) {
@@ -906,6 +1241,271 @@ export class RunWorker {
         }
       }
     }
+    await this.afterFinish(entry, { exitCode: code, spawnError, final });
+  }
+
+  /**
+   * Everything that happens once a run's status is final: release the scoped
+   * output folder, settle the token budget, update the provider's circuit
+   * breaker, and decide about a bounded automatic retry.
+   */
+  async afterFinish(entry, { exitCode = null, spawnError = null } = {}) {
+    const recorder = this.recorder;
+    let run = null;
+    try {
+      run = recorder.get(entry.runId);
+    } catch {
+      return;
+    }
+    const provider = entry.spec?.provider ?? run.provider;
+
+    if (entry.spec?.outputDir) {
+      const release = releaseRunScope({ outputDir: entry.spec.outputDir });
+      this.system(
+        entry.runId,
+        release.removed
+          ? `Scoped output folder ${entry.spec.outputDir} was empty and has been removed`
+          : `Scoped output folder ${entry.spec.outputDir} kept: ${release.reason}. Copy what you want back into the source folder after review.`,
+        { outputDir: entry.spec.outputDir, ...release },
+        "status",
+      );
+    }
+
+    try {
+      await this.budget.consume(entry.runId, run.usage ?? null);
+    } catch {
+      /* budget accounting is best effort; never fail a finished run */
+    }
+
+    const status = (() => {
+      try {
+        return recorder.get(entry.runId).status;
+      } catch {
+        return run.status;
+      }
+    })();
+    this.notifyOrchestration(entry, run, status);
+    if (status === "completed") {
+      this.queue.recordSuccess(provider);
+      return;
+    }
+    if (status === "cancelled" || entry.cancelled) {
+      this.queue.recordFailure(provider, "user-cancelled");
+      return;
+    }
+    let events = [];
+    try {
+      events = recorder.events(entry.runId, { limit: 2000 });
+    } catch {
+      events = [];
+    }
+    const classification = classifyFailure({
+      exitCode,
+      error: run.error,
+      events,
+      adapter: entry.adapter ?? entry.spec?.adapter ?? null,
+      sessionId: run.providerSessionId ?? entry.state?.sessionId ?? null,
+      spawnError,
+      stderr: entry.stderr ?? [],
+      timedOut: entry.timedOut === true,
+      retryableClasses: this.retryPolicyFor(
+        entry.spec?.policy ?? this.policyFor(run.workspaceId),
+      ).retryableClasses,
+    });
+    this.system(
+      entry.runId,
+      `Failure classified as “${classification.class}”: ${classification.reason} Side effects: ${
+        classification.sideEffects === "none"
+          ? "none recorded before the failure"
+          : `${classification.sideEffects} — files or commands were recorded before it failed`
+      }.`,
+      {
+        class: classification.class,
+        retryable: classification.retryable,
+        sideEffects: classification.sideEffects,
+        exitCode,
+      },
+      "status",
+    );
+    this.queue.recordFailure(provider, classification, {
+      error: run.error,
+      resetAt: resetHint(events, run.error ?? ""),
+    });
+    if (classification.class === "rate-limit") {
+      const parked = this.queue.available(provider);
+      if (!parked.ok)
+        this.system(
+          entry.runId,
+          `${PROVIDERS[provider]?.name ?? provider} is parked until ${
+            parked.until
+              ? new Date(parked.until).toISOString()
+              : "the cooldown ends"
+          }; queued runs for it wait rather than hammering the limit.`,
+          { provider, until: parked.until ?? null },
+          "status",
+        );
+    }
+    this.considerAutoRetry(entry, classification);
+    this.scheduleWake();
+  }
+
+  /**
+   * Tells the orchestration modules that a run ended. Both calls are optional
+   * and fully guarded: a container without a task graph or without webhooks
+   * behaves exactly as before.
+   *
+   *  - services.graph.recordResult() checks the task contract against what was
+   *    actually recorded (artifacts, events, final message) and opens a review
+   *    task when the contract is not met. It is called only for a completed
+   *    run: a failed run has no result to check.
+   *  - services.webhooks.emit() queues an outbound notification. The payload is
+   *    sanitized inside emit() to ids, statuses, and titles; nothing is
+   *    delivered until deliverDue() runs.
+   */
+  notifyOrchestration(entry, run, status) {
+    const runId = entry.runId;
+    if (status === "completed" && run.taskId) {
+      try {
+        const events = this.recorder.events(runId, { limit: 2000 });
+        this.services.graph?.recordResult?.(run.taskId, {
+          runId,
+          artifacts: this.recorder.artifacts?.(runId) ?? [],
+          events,
+          finalMessage: run.summary ?? null,
+          actor: "run-worker",
+        });
+      } catch (error) {
+        this.system(
+          runId,
+          `Contract check could not run: ${clip(error.message, 150)}`,
+          {},
+          "status",
+        );
+      }
+    }
+    try {
+      this.services.webhooks?.emit?.(
+        status === "completed" ? "run.completed" : "run.failed",
+        {
+          workspaceId: run.workspaceId,
+          taskId: run.taskId ?? null,
+          runId,
+          provider: run.provider,
+          status,
+          title: run.title ?? null,
+          attempt: run.attempt ?? 1,
+        },
+      );
+    } catch {
+      /* a webhook queue problem must never change a run's outcome */
+    }
+  }
+
+  /**
+   * Bounded automatic retry. A run whose side effects are anything but "none"
+   * is never retried automatically: it stays failed and therefore appears in
+   * the decision inbox with the reason spelled out.
+   */
+  considerAutoRetry(entry, classification) {
+    const runId = entry.runId;
+    let run = null;
+    try {
+      run = this.recorder.get(runId);
+    } catch {
+      return null;
+    }
+    const spec = entry.spec ?? this.specs.get(runId) ?? null;
+    const policy = spec?.policy ?? this.policyFor(run.workspaceId);
+    const rules = this.retryPolicyFor(policy);
+    const attempt = run.attempt ?? 1;
+    const decision = rules.shouldRetry({ classification, attempt });
+    if (!decision.retry) {
+      const fallback = rules.fallbackProvider(run.provider);
+      const extra =
+        classification.sideEffects !== "none"
+          ? ` Sent to the decision inbox instead: ${SIDE_EFFECT_REVIEW_REASON}.`
+          : fallback
+            ? ` The workspace policy permits falling back to ${PROVIDERS[fallback]?.name ?? fallback}; start that attempt yourself.`
+            : "";
+      this.system(
+        runId,
+        `No automatic retry: ${decision.reason}.${extra}`,
+        {
+          class: classification.class,
+          sideEffects: classification.sideEffects,
+          maxAttempts: rules.maxAttempts,
+          attempt,
+          fallbackAllowed: !!fallback,
+        },
+        "status",
+      );
+      this.audit(
+        "run.retry.refused",
+        run,
+        {
+          class: classification.class,
+          sideEffects: classification.sideEffects,
+          reason: decision.reason,
+        },
+        null,
+        "system",
+      );
+      return null;
+    }
+    this.system(
+      runId,
+      `Automatic retry ${attempt + 1} of ${rules.maxAttempts} in ${
+        Math.round(decision.delayMs / 100) / 10
+      } s: ${classification.reason} No file change or command was recorded before the failure, so re-running cannot duplicate side effects.`,
+      {
+        class: classification.class,
+        attempt,
+        maxAttempts: rules.maxAttempts,
+        delayMs: decision.delayMs,
+      },
+      "status",
+    );
+    this.audit(
+      "run.retry.scheduled",
+      run,
+      {
+        class: classification.class,
+        delayMs: decision.delayMs,
+        attempt,
+        maxAttempts: rules.maxAttempts,
+      },
+      null,
+      "system",
+    );
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(runId);
+      this.runAutoRetry(runId, classification);
+    }, decision.delayMs);
+    timer.unref?.();
+    this.retryTimers.set(runId, timer);
+    return decision;
+  }
+
+  async runAutoRetry(runId, classification) {
+    if (this.closing || this.services.closed) return null;
+    try {
+      const next = await this.retry(runId, { actor: "system", auto: true });
+      this.system(
+        next.id,
+        `Automatic retry of run ${runId} (previous failure: ${classification.class})`,
+        { parentRunId: runId, class: classification.class },
+        "status",
+      );
+      return next;
+    } catch (error) {
+      this.system(
+        runId,
+        `Automatic retry could not start: ${clip(error.message, 200)}`,
+        {},
+        "status",
+      );
+      return null;
+    }
   }
 
   async captureArtifacts(entry, final = {}) {
@@ -980,12 +1580,10 @@ export class RunWorker {
     )
       throw new InputError(`Run already ${run.status}`, 409);
     if (run.status === "queued") {
-      const queue = this.queues.get(run.workspaceId) ?? [];
-      this.queues.set(
-        run.workspaceId,
-        queue.filter((id) => id !== runId),
-      );
+      this.queue.remove(runId);
       this.specs.delete(runId);
+      this.starting.delete(runId);
+      this.budget.release(runId);
       this.recorder.setStatus(runId, "cancelled", { summary: CANCEL_MESSAGE });
       this.audit("run.cancel", run, { queued: true }, null, actor);
       this.settle(runId);
@@ -1027,7 +1625,7 @@ export class RunWorker {
 
   async retry(
     runId,
-    { actor = "local-user", prompt = null, force = false } = {},
+    { actor = "local-user", prompt = null, force = false, auto = false } = {},
   ) {
     const run = this.recorder.get(runId);
     if (run.mode !== "managed")
@@ -1062,7 +1660,13 @@ export class RunWorker {
       attempt: (run.attempt ?? 1) + 1,
       actor,
     });
-    this.audit("run.retry", next, { parentRunId: run.id }, null, actor);
+    this.audit(
+      "run.retry",
+      next,
+      { parentRunId: run.id, automatic: auto },
+      null,
+      actor,
+    );
     return next;
   }
 
@@ -1273,26 +1877,60 @@ export class RunWorker {
     for (const fn of waiters) fn();
   }
 
-  drain(workspaceId) {
-    const queue = this.queues.get(workspaceId);
-    if (!queue?.length) return;
-    while (queue.length) {
-      const nextId = queue[0];
-      const spec = this.specs.get(nextId);
-      if (!spec) {
-        queue.shift();
-        continue;
-      }
-      if (this.activeCount(workspaceId) >= spec.policy.maxConcurrentRuns) break;
-      queue.shift();
+  /**
+   * Starts whatever the queue says may run now. Round-robin across
+   * workspaces, so one busy workspace cannot starve another, and providers
+   * whose circuit breaker is open (or that are parked by a rate limit) are
+   * skipped until their cooldown passes. The `workspaceId` argument is kept
+   * for callers that drain after one workspace finished a run; the queue
+   * itself is global.
+   */
+  drain(_workspaceId = null) {
+    if (this.closing) return;
+    for (;;) {
+      const entry = this.queue.next({
+        canStart: (candidate) => {
+          const spec = this.specs.get(candidate.runId);
+          if (!spec) return true; // cancelled while queued; drop it below
+          const limit =
+            spec.policy?.maxConcurrentRuns ?? DEFAULT_POLICY.maxConcurrentRuns;
+          return this.activeSlots(candidate.workspaceId) < limit;
+        },
+      });
+      if (!entry) break;
+      const spec = this.specs.get(entry.runId);
+      if (!spec) continue;
+      this.starting.set(entry.runId, entry.workspaceId);
       this.system(
-        nextId,
+        entry.runId,
         "A slot freed up; starting the queued run",
         {},
         "status",
       );
-      this.launch(nextId).catch(() => {});
+      this.launch(entry.runId).catch(() => {});
     }
+    this.scheduleWake();
+  }
+
+  /** Re-drains when a parked provider's cooldown expires. */
+  scheduleWake() {
+    if (this.closing) return;
+    const at = this.queue.wakeAt();
+    if (this.wakeTimer) {
+      clearTimeout(this.wakeTimer);
+      this.wakeTimer = null;
+    }
+    if (at === null || !this.queue.size()) return;
+    const delay = Math.max(50, at - this.now());
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      try {
+        this.drain();
+      } catch {
+        /* database may be closed */
+      }
+    }, delay);
+    this.wakeTimer.unref?.();
   }
 
   /**
@@ -1301,6 +1939,15 @@ export class RunWorker {
    * closed) has nothing left to record.
    */
   async close() {
+    this.closing = true;
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
+    if (this.wakeTimer) {
+      clearTimeout(this.wakeTimer);
+      this.wakeTimer = null;
+    }
+    this.queue.clear();
+    this.starting.clear();
     const entries = [...this.children.values()];
     this.children.clear();
     for (const entry of entries) {
@@ -1331,6 +1978,7 @@ export function createRunWorker(services, options = {}) {
   const worker = new RunWorker(services, options);
   services.runWorker = worker;
   services.adapters = worker.adapters;
+  if (!services.budget) services.budget = worker.budget;
   if (!services.recorder) services.recorder = worker.recorder;
   return worker;
 }
