@@ -4,11 +4,9 @@ import { fileURLToPath } from "node:url";
 import { resolve, extname, sep } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { InputError } from "../../core/src/TaskStore.js";
-import {
-  WorkspaceHub,
-  DEMO_WORKSPACE_ID,
-} from "../../core/src/WorkspaceHub.js";
-import { openDatabase, schemaVersion } from "../../core/src/db.js";
+import { DEMO_WORKSPACE_ID } from "../../core/src/WorkspaceHub.js";
+import { createServices } from "../../core/src/services.js";
+import { routes as defaultRoutes } from "./routes/index.js";
 
 const webRoot = fileURLToPath(
   new URL("../../../apps/web/dist/", import.meta.url),
@@ -19,6 +17,8 @@ const mime = {
   ".css": "text/css",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
 };
 
 function allowedHost(host) {
@@ -31,14 +31,15 @@ function allowedHost(host) {
   }
 }
 
-async function body(req) {
+async function readBody(req, limit = 16384) {
   if (req.headers["content-type"]?.split(";")[0].trim() !== "application/json")
     throw new InputError("Use application/json", 415);
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 16384) throw new InputError("Request exceeds 16 KB", 413);
+    if (size > limit)
+      throw new InputError(`Request exceeds ${limit / 1024} KB`, 413);
     chunks.push(chunk);
   }
   try {
@@ -49,143 +50,93 @@ async function body(req) {
 }
 
 /**
- * Creates the local HTTP + WebSocket server.
+ * Local HTTP + WebSocket server.
  *
- * Routes are workspace-scoped under /api/workspaces/:id/... . The legacy
- * unscoped routes (/api/tasks, /api/workspace, /api/demo) target the demo
- * workspace, or the one named by a ?workspace=<id> query parameter.
+ * options: { db, dbPath, demo, services, routes, token, allowRemote }
+ *  - services: a pre-built container from createServices(); otherwise one is
+ *    created from db/dbPath/demo.
+ *  - token: when set, every request and socket must carry
+ *    `Authorization: Bearer <token>` or `?token=` (shared/remote mode).
+ *  - allowRemote: accept non-loopback Host headers (requires token).
+ *
+ * WebSocket channels:
+ *  - /ws?workspace=<id>   → { event: "workspace:snapshot", payload }
+ *  - /ws?channel=global   → { event: "global:snapshot", payload }
  */
 export function createWorkspaceServer(options = {}) {
-  const ownsDatabase = !options.db;
-  const db = options.db ?? openDatabase(options.dbPath ?? ":memory:");
-  const hub = new WorkspaceHub(db, { demo: options.demo ?? false });
+  const services =
+    options.services ??
+    createServices({
+      db: options.db,
+      dbPath: options.dbPath,
+      demo: options.demo,
+    });
+  const { hub, db, bus } = services;
+  const routes = options.routes ?? defaultRoutes;
+  const token = options.token ?? process.env.AGENT_SPACE_TOKEN ?? null;
+  const allowRemote =
+    options.allowRemote ??
+    (process.env.HOST !== undefined && process.env.HOST !== "127.0.0.1");
 
-  const workspaceRoutes = (method, rest, workspace, req) => {
-    const send = req.send;
-    if (method === "GET" && rest === "/workspace")
-      return send(200, hub.snapshot(workspace.id));
-    if (method === "GET" && rest === "/tasks")
-      return send(200, workspace.store.list());
-    if (method === "POST" && rest === "/tasks")
-      return body(req).then((input) => send(201, workspace.create(input)));
-    if (method === "GET" && rest === "/runs")
-      return send(200, workspace.runs());
-    if (method === "POST" && rest === "/demo")
-      return body(req).then((input) => {
-        if (input?.action === "reset") workspace.loadDemo();
-        else workspace.setDemo(input?.running);
-        return send(200, hub.snapshot(workspace.id));
-      });
-    const assignment = rest.match(/^\/tasks\/([^/]+)\/assign$/);
-    if (method === "POST" && assignment)
-      return body(req).then((input) =>
-        send(200, workspace.assign(assignment[1], input?.agentId)),
-      );
-    const task = rest.match(/^\/tasks\/([^/]+)$/);
-    if (method === "PATCH" && task)
-      return body(req).then((input) =>
-        send(200, workspace.update(task[1], input)),
-      );
-    if (method === "GET" && rest === "/agents")
-      return send(
-        200,
-        workspace.profiles.list({
-          includeArchived: req.query.get("archived") === "1",
-        }),
-      );
-    if (method === "POST" && rest === "/agents")
-      return body(req).then((input) => send(201, workspace.createAgent(input)));
-    const agent = rest.match(/^\/agents\/([^/]+)$/);
-    if (method === "PATCH" && agent)
-      return body(req).then((input) =>
-        send(200, workspace.updateAgent(agent[1], input)),
-      );
-    const agentAction = rest.match(
-      /^\/agents\/([^/]+)\/(duplicate|archive|restore)$/,
-    );
-    if (method === "POST" && agentAction) {
-      const [, id, verb] = agentAction;
-      const result =
-        verb === "duplicate"
-          ? workspace.duplicateAgent(id)
-          : verb === "archive"
-            ? workspace.archiveAgent(id)
-            : workspace.restoreAgent(id);
-      return send(verb === "duplicate" ? 201 : 200, result);
-    }
-    return send(404, { error: "Route not found" });
+  const authorized = (req, url) => {
+    if (!token) return true;
+    const header = req.headers.authorization ?? "";
+    if (header === `Bearer ${token}`) return true;
+    if (url.searchParams.get("token") === token) return true;
+    return false;
+  };
+  const hostOk = (req) =>
+    allowedHost(req.headers.host) || (allowRemote && token);
+  const originOk = (req) => {
+    if (!req.headers.origin) return true;
+    if (req.headers.origin === `http://${req.headers.host}`) return true;
+    if (req.headers.origin === `https://${req.headers.host}`) return true;
+    return false;
   };
 
   const server = createServer(async (req, res) => {
-    const send = (status, data) => {
+    const send = (status, data, headers = {}) => {
       res.writeHead(status, {
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
+        ...headers,
       });
       res.end(JSON.stringify(data));
     };
-    req.send = send;
+    let url;
     try {
-      if (!allowedHost(req.headers.host))
-        throw new InputError("Host not allowed", 403);
-      // Reject browser requests from unrelated origins; service binds to loopback.
-      if (
-        req.headers.origin &&
-        req.headers.origin !== `http://${req.headers.host}`
-      )
-        throw new InputError("Origin not allowed", 403);
-      const url = new URL(req.url, "http://localhost");
-      const path = url.pathname;
-      req.query = url.searchParams;
-
-      if (req.method === "GET" && path === "/api/health")
-        return send(200, {
-          status: "ok",
-          mode: hub.get(DEMO_WORKSPACE_ID).demoRunning ? "demo" : "manual",
-          taskCount: hub.get(DEMO_WORKSPACE_ID).store.list().length,
-          workspaces: hub.list().length,
-          schemaVersion: schemaVersion(db),
-        });
-      if (path === "/api/workspaces") {
-        if (req.method === "GET")
-          return send(
-            200,
-            hub.list({
-              includeArchived: url.searchParams.get("archived") === "1",
-            }),
-          );
-        if (req.method === "POST")
-          return send(201, hub.create(await body(req)));
+      url = new URL(req.url, "http://localhost");
+      if (!hostOk(req)) throw new InputError("Host not allowed", 403);
+      if (!originOk(req)) throw new InputError("Origin not allowed", 403);
+      if (url.pathname.startsWith("/api/") && !authorized(req, url))
+        throw new InputError("Unauthorized", 401);
+      let parsedBody;
+      const ctx = {
+        req,
+        res,
+        method: req.method,
+        path: url.pathname,
+        url,
+        query: url.searchParams,
+        send,
+        body: async (limit) => (parsedBody ??= await readBody(req, limit)),
+        services,
+        hub,
+        db,
+        bus,
+        actor: token ? "token" : "local-user",
+      };
+      for (const route of routes) {
+        if (await route(ctx)) return;
       }
-      const scoped = path.match(/^\/api\/workspaces\/([^/]+)(\/.*)?$/);
-      if (scoped && !scoped[2]) {
-        if (req.method === "GET") return send(200, hub.get(scoped[1]).record);
-        if (req.method === "PATCH")
-          return send(200, hub.update(scoped[1], await body(req)));
-      }
-      if (scoped && req.method === "POST" && scoped[2] === "/archive")
-        return send(200, hub.archive(scoped[1]));
-      if (scoped && req.method === "POST" && scoped[2] === "/restore")
-        return send(200, hub.restore(scoped[1]));
-
-      if (path.startsWith("/api/")) {
-        const workspaceId = scoped
-          ? scoped[1]
-          : (url.searchParams.get("workspace") ?? DEMO_WORKSPACE_ID);
-        const rest = scoped ? scoped[2] : path.slice("/api".length);
-        return await workspaceRoutes(
-          req.method,
-          rest,
-          hub.get(workspaceId),
-          req,
-        );
-      }
-
-      if (req.method === "GET") {
+      if (req.method === "GET" && !url.pathname.startsWith("/api/")) {
         const target = resolve(
           webRoot,
-          "." + decodeURIComponent(path === "/" ? "/index.html" : path),
+          "." +
+            decodeURIComponent(
+              url.pathname === "/" ? "/index.html" : url.pathname,
+            ),
         );
         if (!target.startsWith(resolve(webRoot) + sep))
           return send(403, { error: "Forbidden" });
@@ -202,7 +153,7 @@ export function createWorkspaceServer(options = {}) {
           if (error.code !== "ENOENT" && error.code !== "EISDIR") throw error;
           return send(404, {
             error:
-              path === "/"
+              url.pathname === "/"
                 ? "Build the web app with npm run build first."
                 : "File not found",
           });
@@ -211,64 +162,108 @@ export function createWorkspaceServer(options = {}) {
       return send(404, { error: "Route not found" });
     } catch (error) {
       if (!(error instanceof InputError)) console.error(error);
-      send(error instanceof InputError ? error.status : 500, {
-        error:
-          error instanceof InputError ? error.message : "Internal server error",
-      });
+      if (!res.headersSent)
+        send(error instanceof InputError ? error.status : 500, {
+          error:
+            error instanceof InputError
+              ? error.message
+              : "Internal server error",
+        });
     }
   });
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16384 });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url, "http://localhost");
+    const channel = url.searchParams.get("channel");
     const workspaceId = url.searchParams.get("workspace") ?? DEMO_WORKSPACE_ID;
     if (
-      !allowedHost(req.headers.host) ||
+      !hostOk(req) ||
       url.pathname !== "/ws" ||
-      !hub.has(workspaceId) ||
-      (req.headers.origin &&
-        req.headers.origin !== `http://${req.headers.host}`)
+      !originOk(req) ||
+      !authorized(req, url) ||
+      (channel !== "global" && !hub.has(workspaceId))
     )
       return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {
-      ws.workspaceId = workspaceId;
+      ws.channel = channel === "global" ? "global" : "workspace";
+      ws.workspaceId = ws.channel === "workspace" ? workspaceId : null;
       wss.emit("connection", ws, req);
     });
   });
-  const deliver = (ws, snapshot) => {
+  const deliver = (ws, event, payload) => {
     if (ws.bufferedAmount > 1024 * 1024) return ws.terminate();
     if (ws.readyState === WebSocket.OPEN)
-      ws.send(
-        JSON.stringify({ event: "workspace:snapshot", payload: snapshot }),
-      );
+      ws.send(JSON.stringify({ event, payload }));
   };
-  const broadcast = (workspaceId, snapshot) => {
+  const broadcastWorkspace = (workspaceId, snapshot) => {
     const payload = { ...snapshot, workspaces: hub.list() };
     for (const ws of wss.clients)
-      if (ws.workspaceId === workspaceId) deliver(ws, payload);
+      if (ws.channel === "workspace" && ws.workspaceId === workspaceId)
+        deliver(ws, "workspace:snapshot", payload);
   };
-  const broadcastAll = () => {
+  const broadcastAllWorkspaces = () => {
     const cache = new Map();
     for (const ws of wss.clients) {
-      if (!cache.has(ws.workspaceId))
-        cache.set(ws.workspaceId, hub.snapshot(ws.workspaceId));
-      deliver(ws, cache.get(ws.workspaceId));
+      if (ws.channel !== "workspace") continue;
+      if (!cache.has(ws.workspaceId)) {
+        try {
+          cache.set(ws.workspaceId, hub.snapshot(ws.workspaceId));
+        } catch {
+          continue;
+        }
+      }
+      deliver(ws, "workspace:snapshot", cache.get(ws.workspaceId));
     }
   };
-  hub.on("change", broadcast);
-  hub.on("workspaces", broadcastAll);
+  let globalTimer = null;
+  const broadcastGlobal = () => {
+    // Coalesce bursts of global changes into one broadcast per tick.
+    if (globalTimer) return;
+    globalTimer = setTimeout(() => {
+      globalTimer = null;
+      let payload;
+      try {
+        payload = services.globalSnapshot();
+      } catch (error) {
+        console.error(error);
+        return;
+      }
+      for (const ws of wss.clients)
+        if (ws.channel === "global") deliver(ws, "global:snapshot", payload);
+    }, 50);
+    globalTimer.unref?.();
+  };
+  const forceWorkspace = (workspaceId) => {
+    try {
+      broadcastWorkspace(workspaceId, hub.get(workspaceId).snapshot());
+    } catch {
+      /* unknown workspace */
+    }
+  };
+  hub.on("change", broadcastWorkspace);
+  hub.on("workspaces", () => {
+    broadcastAllWorkspaces();
+    broadcastGlobal();
+  });
+  bus.on("global", broadcastGlobal);
+  bus.on("workspace", forceWorkspace);
   wss.on("connection", (ws) => {
     ws.on("error", () => ws.terminate());
-    deliver(ws, hub.snapshot(ws.workspaceId));
+    if (ws.channel === "global")
+      deliver(ws, "global:snapshot", services.globalSnapshot());
+    else deliver(ws, "workspace:snapshot", hub.snapshot(ws.workspaceId));
   });
   const timer = setInterval(() => hub.tick(), 8000);
   timer.unref();
   server.on("close", () => {
     clearInterval(timer);
-    hub.removeListener("change", broadcast);
-    hub.removeListener("workspaces", broadcastAll);
+    clearTimeout(globalTimer);
+    hub.removeListener("change", broadcastWorkspace);
+    bus.removeListener("global", broadcastGlobal);
+    bus.removeListener("workspace", forceWorkspace);
     wss.close();
-    if (ownsDatabase) db.close();
+    services.close();
   });
   const close = server.close.bind(server);
   server.close = (callback) => {
@@ -276,5 +271,6 @@ export function createWorkspaceServer(options = {}) {
     return close(callback);
   };
   server.hub = hub;
+  server.services = services;
   return server;
 }

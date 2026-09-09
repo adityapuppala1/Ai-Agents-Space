@@ -1,0 +1,20 @@
+{
+ "pid": 99999,
+ "sessionId": "ce11cc5e-2683-42ee-9cd7-5a482281ff3e",
+ "cwd": "c:\\xampp\\htdocs\\Ai_Agents_View",
+ "startedAt": 1788962716224,
+ "procStart": "134334363148207034",
+ "version": "2.1.266",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "artifact_yield"
+ ],
+ "kind": "interactive",
+ "entrypoint": "claude-vscode",
+ "pidDomain": "win32:adys_rog",
+ "name": "ai-agents-view-94",
+ "nameSource": "derived",
+ "nameSince": 1788962716224,
+ "bridgeSessionId": "session_01EMbCDwSKvhyCwW8EX6FGT1"
+}

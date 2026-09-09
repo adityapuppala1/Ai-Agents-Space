@@ -101,6 +101,158 @@ const migrations = [
       );
     `,
   },
+  {
+    // Roadmap R2–R5: observed/managed runs, connections, approvals, audit,
+    // policies, workflows, context manifests, settings.
+    version: 2,
+    sql: `
+      ALTER TABLE workspaces ADD COLUMN auto_created INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE workspaces ADD COLUMN policy TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE workspaces ADD COLUMN theme TEXT NOT NULL DEFAULT 'studio';
+      ALTER TABLE workspaces ADD COLUMN settings TEXT NOT NULL DEFAULT '{}';
+
+      ALTER TABLE agent_profiles ADD COLUMN provider TEXT;
+      ALTER TABLE agent_profiles ADD COLUMN auto_created INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE agent_profiles ADD COLUMN connection_id TEXT;
+      ALTER TABLE agent_profiles ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE agent_profiles ADD COLUMN avatar TEXT;
+
+      ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE tasks ADD COLUMN deliverable TEXT NOT NULL DEFAULT '';
+      ALTER TABLE tasks ADD COLUMN target TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE tasks ADD COLUMN provider TEXT;
+      ALTER TABLE tasks ADD COLUMN execution_policy TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE tasks ADD COLUMN template_id TEXT;
+      ALTER TABLE tasks ADD COLUMN workflow_id TEXT;
+      ALTER TABLE tasks ADD COLUMN context TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE tasks ADD COLUMN updated_at INTEGER;
+      ALTER TABLE tasks ADD COLUMN review TEXT NOT NULL DEFAULT '{}';
+
+      ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'manual';
+      ALTER TABLE runs ADD COLUMN provider_session_id TEXT;
+      ALTER TABLE runs ADD COLUMN cwd TEXT;
+      ALTER TABLE runs ADD COLUMN branch TEXT;
+      ALTER TABLE runs ADD COLUMN worktree TEXT;
+      ALTER TABLE runs ADD COLUMN host TEXT NOT NULL DEFAULT 'local';
+      ALTER TABLE runs ADD COLUMN label TEXT;
+      ALTER TABLE runs ADD COLUMN title TEXT;
+      ALTER TABLE runs ADD COLUMN current_action TEXT;
+      ALTER TABLE runs ADD COLUMN current_file TEXT;
+      ALTER TABLE runs ADD COLUMN activity TEXT;
+      ALTER TABLE runs ADD COLUMN last_event_at INTEGER;
+      ALTER TABLE runs ADD COLUMN usage TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE runs ADD COLUMN cost TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE runs ADD COLUMN exit_code INTEGER;
+      ALTER TABLE runs ADD COLUMN error TEXT;
+      ALTER TABLE runs ADD COLUMN pid INTEGER;
+      ALTER TABLE runs ADD COLUMN source_path TEXT;
+      ALTER TABLE runs ADD COLUMN source_offset INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE runs ADD COLUMN summary TEXT;
+      ALTER TABLE runs ADD COLUMN orchestration_owner TEXT NOT NULL DEFAULT 'agent-space';
+      ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE runs ADD COLUMN parent_run_id TEXT;
+      ALTER TABLE runs ADD COLUMN config_snapshot TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE runs ADD COLUMN context TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE runs ADD COLUMN prompt TEXT;
+      CREATE UNIQUE INDEX runs_provider_session ON runs(provider, provider_session_id)
+        WHERE provider_session_id IS NOT NULL;
+      CREATE INDEX runs_workspace_status ON runs(workspace_id, status);
+
+      ALTER TABLE events ADD COLUMN provenance TEXT NOT NULL DEFAULT 'system';
+      ALTER TABLE events ADD COLUMN data TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE events ADD COLUMN tool TEXT;
+      ALTER TABLE events ADD COLUMN file TEXT;
+      ALTER TABLE events ADD COLUMN provider_event_id TEXT;
+      ALTER TABLE events ADD COLUMN task_id TEXT;
+      CREATE UNIQUE INDEX events_provider_event ON events(provider_event_id)
+        WHERE provider_event_id IS NOT NULL;
+      CREATE INDEX events_run ON events(run_id, sequence);
+
+      ALTER TABLE connections ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE connections ADD COLUMN version TEXT;
+      ALTER TABLE connections ADD COLUMN binary_path TEXT;
+      ALTER TABLE connections ADD COLUMN home_path TEXT;
+      ALTER TABLE connections ADD COLUMN last_probe_at INTEGER;
+      ALTER TABLE connections ADD COLUMN last_event_at INTEGER;
+      ALTER TABLE connections ADD COLUMN error TEXT;
+      ALTER TABLE connections ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE connections ADD COLUMN observe INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE connections ADD COLUMN owner TEXT;
+      ALTER TABLE connections ADD COLUMN allowed_workspaces TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE connections ADD COLUMN details TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE connections ADD COLUMN updated_at INTEGER;
+      CREATE UNIQUE INDEX connections_provider_alias ON connections(provider, alias);
+
+      ALTER TABLE approvals ADD COLUMN workspace_id TEXT;
+      ALTER TABLE approvals ADD COLUMN task_id TEXT;
+      ALTER TABLE approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'tool';
+      ALTER TABLE approvals ADD COLUMN payload TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE approvals ADD COLUMN reason TEXT;
+      ALTER TABLE approvals ADD COLUMN decision TEXT;
+      ALTER TABLE approvals ADD COLUMN decided_by TEXT;
+      ALTER TABLE approvals ADD COLUMN expires_at INTEGER;
+      ALTER TABLE approvals ADD COLUMN provider TEXT;
+      ALTER TABLE approvals ADD COLUMN provider_ref TEXT;
+      CREATE INDEX approvals_status ON approvals(status, requested_at);
+
+      ALTER TABLE artifacts ADD COLUMN workspace_id TEXT;
+      ALTER TABLE artifacts ADD COLUMN task_id TEXT;
+      ALTER TABLE artifacts ADD COLUMN title TEXT;
+      ALTER TABLE artifacts ADD COLUMN content TEXT;
+      ALTER TABLE artifacts ADD COLUMN size INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE artifacts ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+
+      CREATE TABLE audit_log (
+        id TEXT PRIMARY KEY,
+        timestamp INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target TEXT,
+        workspace_id TEXT,
+        run_id TEXT,
+        policy_decision TEXT,
+        details TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX audit_log_time ON audit_log(timestamp DESC);
+
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE observed_sessions (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        cwd TEXT,
+        title TEXT,
+        source_path TEXT,
+        source_offset INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER,
+        updated_at INTEGER,
+        ended_at INTEGER,
+        live INTEGER NOT NULL DEFAULT 0,
+        model TEXT,
+        run_id TEXT,
+        workspace_id TEXT,
+        agent_id TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX observed_sessions_provider ON observed_sessions(provider, updated_at DESC);
+
+      CREATE TABLE workflows (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        name TEXT NOT NULL,
+        template_id TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        definition TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export function openDatabase(path = ":memory:") {

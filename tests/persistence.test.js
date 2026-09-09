@@ -18,7 +18,7 @@ function tempDb(t) {
 test("renamed agents, workspaces, and tasks survive a restart", (t) => {
   const path = tempDb(t);
   let db = openDatabase(path);
-  assert.equal(schemaVersion(db), 1);
+  assert.equal(schemaVersion(db), 2);
   let hub = new WorkspaceHub(db, { demo: true });
   const project = hub.create({ name: "Storefront", rootPath: "C:/work/store" });
   const runtime = hub.get(project.id);
@@ -269,5 +269,5 @@ test("HTTP API exposes workspaces and agents with isolation across sockets", asy
   assert.equal(workspaces.length, 2);
   const [health, info] = await json("/api/health");
   assert.equal(health, 200);
-  assert.equal(info.schemaVersion, 1);
+  assert.equal(info.schemaVersion, 2);
 });
