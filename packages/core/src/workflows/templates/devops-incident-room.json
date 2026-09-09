@@ -1,0 +1,102 @@
+{
+  "id": "devops-incident-room",
+  "name": "DevOps incident room",
+  "domain": "Operations",
+  "priority": "Growth",
+  "description": "Alert -> collect evidence -> propose mitigation -> approve -> verify. Produces an incident timeline, approved change, and verification.",
+  "roles": [
+    {
+      "key": "responder",
+      "name": "Incident responder",
+      "workingState": "RESEARCHING",
+      "description": "Collects evidence."
+    },
+    {
+      "key": "engineer",
+      "name": "Operations engineer",
+      "workingState": "DEBUGGING",
+      "description": "Proposes and applies mitigation."
+    },
+    {
+      "key": "approver",
+      "name": "Incident commander",
+      "workingState": "REVIEWING",
+      "description": "Approves changes."
+    }
+  ],
+  "steps": [
+    {
+      "key": "evidence",
+      "title": "Collect evidence for {{incident}}",
+      "role": "responder",
+      "deliverable": "Timeline with logs and metrics references",
+      "acceptance": "Every timeline entry references a log line, metric, or command output.",
+      "dependsOn": [],
+      "instructions": "Collect evidence for {{incident}}: logs, metrics, recent changes. Build a timestamped timeline. Read-only."
+    },
+    {
+      "key": "mitigation",
+      "title": "Propose mitigation for {{incident}}",
+      "role": "engineer",
+      "deliverable": "Mitigation proposal with rollback plan",
+      "acceptance": "Proposal names exact commands/changes and their rollback.",
+      "dependsOn": ["evidence"],
+      "instructions": "Propose a mitigation for {{incident}} with exact steps and rollback. Do not apply it."
+    },
+    {
+      "key": "approve",
+      "title": "Approve mitigation for {{incident}}",
+      "role": "approver",
+      "deliverable": "Approval decision",
+      "acceptance": "Human decision recorded.",
+      "dependsOn": ["mitigation"],
+      "instructions": "Review the proposal for {{incident}} and approve or deny.",
+      "requiresApproval": true
+    },
+    {
+      "key": "apply",
+      "title": "Apply mitigation for {{incident}}",
+      "role": "engineer",
+      "deliverable": "Applied change with command output",
+      "acceptance": "Only the approved steps were executed.",
+      "dependsOn": ["approve"],
+      "instructions": "Apply the approved mitigation for {{incident}} exactly as approved. Record output."
+    },
+    {
+      "key": "verify",
+      "title": "Verify recovery from {{incident}}",
+      "role": "responder",
+      "deliverable": "Verification evidence",
+      "acceptance": "Recovery shown by the same metrics/logs used for detection.",
+      "dependsOn": ["apply"],
+      "instructions": "Verify the mitigation for {{incident}} using the original evidence sources."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["timeline", "mitigation", "approval", "verification"],
+    "properties": {
+      "timeline": {
+        "type": "array"
+      },
+      "mitigation": {
+        "type": "string"
+      },
+      "approval": {
+        "type": "string"
+      },
+      "verification": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": [
+    "Evidence before action",
+    "Approval before mutation",
+    "Verification uses detection signals"
+  ],
+  "requiredTools": ["shell", "file.read", "approval"],
+  "sampleInputs": {
+    "incident": "API latency spike after deploy"
+  }
+}

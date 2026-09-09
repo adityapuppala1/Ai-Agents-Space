@@ -1,0 +1,92 @@
+{
+  "id": "bug-clinic",
+  "name": "Bug clinic",
+  "domain": "Software engineering",
+  "priority": "Launch",
+  "description": "Issue -> reproduce -> diagnose -> fix -> regression test. Produces reproduction evidence and a verified fix.",
+  "roles": [
+    {
+      "key": "investigator",
+      "name": "Investigator",
+      "workingState": "DEBUGGING",
+      "description": "Reproduces and diagnoses the issue."
+    },
+    {
+      "key": "developer",
+      "name": "Developer",
+      "workingState": "CODING",
+      "description": "Implements the fix."
+    },
+    {
+      "key": "qa",
+      "name": "QA engineer",
+      "workingState": "TESTING",
+      "description": "Adds the regression test."
+    }
+  ],
+  "steps": [
+    {
+      "key": "reproduce",
+      "title": "Reproduce: {{issue}}",
+      "role": "investigator",
+      "deliverable": "Reproduction steps and captured output",
+      "acceptance": "Failure reproduced with an exact command or steps and captured output.",
+      "dependsOn": [],
+      "instructions": "Reproduce {{issue}}. Record the exact command, environment, and observed vs expected output. If you cannot reproduce, say so."
+    },
+    {
+      "key": "diagnose",
+      "title": "Diagnose root cause of {{issue}}",
+      "role": "investigator",
+      "deliverable": "Root cause note with file/line references",
+      "acceptance": "Root cause points to specific code and explains the mechanism.",
+      "dependsOn": ["reproduce"],
+      "instructions": "Find the root cause of {{issue}} using the reproduction. Cite files and lines."
+    },
+    {
+      "key": "fix",
+      "title": "Fix {{issue}}",
+      "role": "developer",
+      "deliverable": "Patch",
+      "acceptance": "Fix addresses the diagnosed cause; diff is minimal.",
+      "dependsOn": ["diagnose"],
+      "instructions": "Implement the smallest fix for the diagnosed cause of {{issue}}."
+    },
+    {
+      "key": "regression",
+      "title": "Regression test for {{issue}}",
+      "role": "qa",
+      "deliverable": "Test that fails before and passes after the fix",
+      "acceptance": "Test output shows failure on the old code and success on the fix.",
+      "dependsOn": ["fix"],
+      "instructions": "Add a regression test for {{issue}}. Run it and record the output."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["reproduction", "rootCause", "patch", "testOutput"],
+    "properties": {
+      "reproduction": {
+        "type": "string"
+      },
+      "rootCause": {
+        "type": "string"
+      },
+      "patch": {
+        "type": "string"
+      },
+      "testOutput": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": [
+    "Reproduction captured before fixing",
+    "Root cause cites code",
+    "Regression test present and executed"
+  ],
+  "requiredTools": ["file.read", "file.edit", "shell.test"],
+  "sampleInputs": {
+    "issue": "Task progress resets after reload"
+  }
+}

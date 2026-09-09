@@ -1,0 +1,80 @@
+{
+  "id": "research-desk",
+  "name": "Research desk",
+  "domain": "Research",
+  "priority": "Growth",
+  "description": "Question -> sources -> evidence comparison -> cited brief. Produces citations, uncertainties, and an inspectable source set.",
+  "roles": [
+    {
+      "key": "researcher",
+      "name": "Researcher",
+      "workingState": "RESEARCHING",
+      "description": "Finds and records sources."
+    },
+    {
+      "key": "analyst",
+      "name": "Analyst",
+      "workingState": "ANALYZING",
+      "description": "Compares evidence."
+    },
+    {
+      "key": "writer",
+      "name": "Writer",
+      "workingState": "CODING",
+      "description": "Writes the brief."
+    }
+  ],
+  "steps": [
+    {
+      "key": "sources",
+      "title": "Gather sources: {{question}}",
+      "role": "researcher",
+      "deliverable": "Source list with URLs/paths and retrieval dates",
+      "acceptance": "Each source is retrievable; retrieved vs verified is stated.",
+      "dependsOn": [],
+      "instructions": "Collect sources for {{question}}. Record URL or path, retrieval time, and a one-line summary. Mark each as retrieved only."
+    },
+    {
+      "key": "compare",
+      "title": "Compare evidence: {{question}}",
+      "role": "analyst",
+      "deliverable": "Evidence table (claim, source, agreement, uncertainty)",
+      "acceptance": "Each claim maps to at least one source; disagreements noted.",
+      "dependsOn": ["sources"],
+      "instructions": "Compare the sources for {{question}}. Build a claim table and flag uncertainties."
+    },
+    {
+      "key": "brief",
+      "title": "Cited brief: {{question}}",
+      "role": "writer",
+      "deliverable": "Brief with inline citations",
+      "acceptance": "Every claim cites the evidence table; uncertainties preserved.",
+      "dependsOn": ["compare"],
+      "instructions": "Write a brief answering {{question}} with inline citations and an uncertainty section."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["brief", "sources", "uncertainties"],
+    "properties": {
+      "brief": {
+        "type": "string"
+      },
+      "sources": {
+        "type": "array"
+      },
+      "uncertainties": {
+        "type": "array"
+      }
+    }
+  },
+  "rubric": [
+    "Sources inspectable",
+    "Retrieved vs verified distinguished",
+    "Uncertainties stated"
+  ],
+  "requiredTools": ["web.fetch", "file.read"],
+  "sampleInputs": {
+    "question": "How do Codex approval requests differ from Claude hooks?"
+  }
+}

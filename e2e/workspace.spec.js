@@ -39,7 +39,8 @@ test("office renders and manual task lifecycle synchronizes across tabs", async 
   await expect(
     page.getByRole("button", { name: "Inspect Nova", exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".office-canvas canvas")).toBeVisible();
+  // The office now also renders a minimap canvas; the 3D scene canvas is first.
+  await expect(page.locator(".office-canvas canvas").first()).toBeVisible();
   await page.waitForFunction(
     () => document.querySelector(".scene-label")?.style.left,
   );

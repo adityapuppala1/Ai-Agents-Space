@@ -1,0 +1,92 @@
+{
+  "id": "data-engineering",
+  "name": "Data engineering",
+  "domain": "Data",
+  "priority": "Growth",
+  "description": "Ingest -> transform -> validate -> publish artifact. Produces a dataset version, lineage, and validation report.",
+  "roles": [
+    {
+      "key": "ingest",
+      "name": "Ingestion engineer",
+      "workingState": "CODING",
+      "description": "Loads source data."
+    },
+    {
+      "key": "transform",
+      "name": "Transformation engineer",
+      "workingState": "CODING",
+      "description": "Builds transformations."
+    },
+    {
+      "key": "validator",
+      "name": "Data validator",
+      "workingState": "TESTING",
+      "description": "Validates outputs."
+    },
+    {
+      "key": "publisher",
+      "name": "Publisher",
+      "workingState": "REVIEWING",
+      "description": "Publishes the versioned artifact."
+    }
+  ],
+  "steps": [
+    {
+      "key": "ingest",
+      "title": "Ingest {{dataset}}",
+      "role": "ingest",
+      "deliverable": "Raw snapshot with source lineage",
+      "acceptance": "Source, row count, and checksum recorded.",
+      "dependsOn": [],
+      "instructions": "Ingest {{dataset}} from {{source}}. Record source location, row count, and a checksum."
+    },
+    {
+      "key": "transform",
+      "title": "Transform {{dataset}}",
+      "role": "transform",
+      "deliverable": "Transformation code and output sample",
+      "acceptance": "Transformations are reproducible from code.",
+      "dependsOn": ["ingest"],
+      "instructions": "Write reproducible transformations for {{dataset}}. Include a sample of the output."
+    },
+    {
+      "key": "validate",
+      "title": "Validate {{dataset}}",
+      "role": "validator",
+      "deliverable": "Validation report",
+      "acceptance": "Checks executed with pass/fail counts.",
+      "dependsOn": ["transform"],
+      "instructions": "Run schema and quality checks on the transformed {{dataset}}. Report each check result."
+    },
+    {
+      "key": "publish",
+      "title": "Publish {{dataset}} version",
+      "role": "publisher",
+      "deliverable": "Versioned dataset artifact with lineage",
+      "acceptance": "Version id, lineage chain, and validation report attached.",
+      "dependsOn": ["validate"],
+      "instructions": "Publish {{dataset}} with a version id and lineage back to the raw snapshot."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["version", "lineage", "validationReport"],
+    "properties": {
+      "version": {
+        "type": "string"
+      },
+      "lineage": {
+        "type": "array"
+      },
+      "validationReport": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": ["Lineage complete", "Validation executed", "Artifact versioned"],
+  "requiredTools": ["file.read", "file.edit", "shell"],
+  "sampleInputs": {
+    "dataset": "orders",
+    "source": "data/raw/orders.csv"
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "id": "marketing-operations",
+  "name": "Marketing operations",
+  "domain": "Marketing",
+  "priority": "Explore",
+  "description": "Research -> draft content -> fact/brand review -> publishing approval. Produces approved campaign artifacts; never sends unsolicited outreach automatically.",
+  "roles": [
+    {
+      "key": "researcher",
+      "name": "Researcher",
+      "workingState": "RESEARCHING",
+      "description": "Gathers audience and product facts."
+    },
+    {
+      "key": "writer",
+      "name": "Content writer",
+      "workingState": "CODING",
+      "description": "Drafts content."
+    },
+    {
+      "key": "reviewer",
+      "name": "Brand reviewer",
+      "workingState": "REVIEWING",
+      "description": "Checks facts and brand."
+    },
+    {
+      "key": "approver",
+      "name": "Publishing approver",
+      "workingState": "REVIEWING",
+      "description": "Approves publishing."
+    }
+  ],
+  "steps": [
+    {
+      "key": "research",
+      "title": "Research for {{campaign}}",
+      "role": "researcher",
+      "deliverable": "Fact sheet with sources",
+      "acceptance": "Every fact has a source.",
+      "dependsOn": [],
+      "instructions": "Gather facts for {{campaign}} with sources. Do not contact anyone."
+    },
+    {
+      "key": "draft",
+      "title": "Draft content for {{campaign}}",
+      "role": "writer",
+      "deliverable": "Draft assets",
+      "acceptance": "Drafts use only facts from the fact sheet.",
+      "dependsOn": ["research"],
+      "instructions": "Draft the content for {{campaign}} using the fact sheet."
+    },
+    {
+      "key": "review",
+      "title": "Fact and brand review for {{campaign}}",
+      "role": "reviewer",
+      "deliverable": "Review notes",
+      "acceptance": "Facts checked; brand issues listed.",
+      "dependsOn": ["draft"],
+      "instructions": "Review {{campaign}} drafts for factual accuracy and brand fit."
+    },
+    {
+      "key": "approve",
+      "title": "Publishing approval for {{campaign}}",
+      "role": "approver",
+      "deliverable": "Approval decision",
+      "acceptance": "Human approval recorded; no automatic publishing or outreach.",
+      "dependsOn": ["review"],
+      "instructions": "Approve or deny publishing of {{campaign}}. Publishing and outreach are manual actions after approval.",
+      "requiresApproval": true
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["factSheet", "assets", "review", "approval"],
+    "properties": {
+      "factSheet": {
+        "type": "array"
+      },
+      "assets": {
+        "type": "array"
+      },
+      "review": {
+        "type": "string"
+      },
+      "approval": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": [
+    "Facts sourced",
+    "No unsolicited outreach",
+    "Approval before publishing"
+  ],
+  "requiredTools": ["web.fetch", "file.edit", "approval"],
+  "sampleInputs": {
+    "campaign": "Launch announcement"
+  }
+}

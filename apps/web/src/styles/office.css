@@ -1,0 +1,99 @@
+/* Living office additions. Base .office-* / .scene-* rules live in styles.css. */
+.office-canvas:focus-visible {
+  outline: 2px solid #84a0d0;
+  outline-offset: -2px;
+}
+.office-follow {
+  font-style: normal;
+  margin-left: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e8f0f9;
+  color: #4d6a8c;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+}
+.scene-label > .scene-provider {
+  display: inline;
+  color: #6f8196;
+  font-size: 8px;
+  border-left: 1px solid #e3e8ef;
+  padding-left: 6px;
+  text-transform: none;
+  letter-spacing: 0.2px;
+}
+.scene-label.tone-amber {
+  border-color: #c6a064;
+}
+.scene-label.tone-red {
+  border-color: #c8524a;
+}
+.dot.red {
+  background: #c8524a;
+}
+.scene-cluster {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, -100%);
+  background: #ffffffed;
+  border: 1px dashed #b7c4d1;
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 10px;
+  color: #405367;
+  white-space: nowrap;
+  box-shadow: 0 2px 5px #28405a14;
+}
+.scene-cluster-collapse {
+  transform: none;
+  left: auto;
+  right: 16px;
+  top: 16px;
+}
+.office-minimap {
+  position: absolute;
+  left: 16px;
+  bottom: 52px;
+  z-index: 3;
+  width: 150px;
+  height: 110px;
+  border: 1px solid #dfe6ed;
+  border-radius: 7px;
+  background: #ffffffe6;
+  box-shadow: 0 2px 4px #44607809;
+}
+.office-theme-operations.office-wrap {
+  background: radial-gradient(ellipse at 50% 38%, #3a4658 0, #1e2530 100%);
+}
+.office-theme-operations .office-meta span,
+.office-theme-operations .office-bottom > span {
+  color: #c9d6e2;
+}
+.office-theme-operations .office-minimap {
+  background: #1e2530e6;
+  border-color: #3a4658;
+}
+[data-theme="dark"] .office-minimap {
+  background: #243243e6;
+  border-color: #3a4a5e;
+}
+[data-theme="dark"] .office-follow {
+  background: #2f4058;
+  color: #c9d9ee;
+}
+@media (max-width: 700px) {
+  .office-minimap {
+    width: 96px;
+    height: 70px;
+    bottom: 48px;
+    left: 12px;
+  }
+  .scene-label > .scene-provider {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scene-label {
+    transition: none;
+  }
+}

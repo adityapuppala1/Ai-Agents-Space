@@ -1,0 +1,94 @@
+{
+  "id": "security-review",
+  "name": "Security review",
+  "domain": "Security",
+  "priority": "Growth",
+  "description": "Scoped scan -> triage -> suggested remediation -> retest. Produces findings with evidence and explicit scope.",
+  "roles": [
+    {
+      "key": "scanner",
+      "name": "Security analyst",
+      "workingState": "RESEARCHING",
+      "description": "Scans the scope."
+    },
+    {
+      "key": "triager",
+      "name": "Triager",
+      "workingState": "ANALYZING",
+      "description": "Prioritizes findings."
+    },
+    {
+      "key": "developer",
+      "name": "Developer",
+      "workingState": "CODING",
+      "description": "Proposes remediation."
+    },
+    {
+      "key": "tester",
+      "name": "Tester",
+      "workingState": "TESTING",
+      "description": "Retests."
+    }
+  ],
+  "steps": [
+    {
+      "key": "scan",
+      "title": "Scan {{scope}}",
+      "role": "scanner",
+      "deliverable": "Raw findings with file/line evidence",
+      "acceptance": "Scope stated explicitly; every finding has evidence.",
+      "dependsOn": [],
+      "instructions": "Scan {{scope}} for security issues (secrets, injection, unsafe file access). Read-only. Record file and line for each finding."
+    },
+    {
+      "key": "triage",
+      "title": "Triage findings for {{scope}}",
+      "role": "triager",
+      "deliverable": "Prioritized findings",
+      "acceptance": "Each finding has severity and rationale; false positives marked.",
+      "dependsOn": ["scan"],
+      "instructions": "Triage the findings for {{scope}}. Assign severity and mark false positives with reasons."
+    },
+    {
+      "key": "remediate",
+      "title": "Remediation for {{scope}}",
+      "role": "developer",
+      "deliverable": "Patch or remediation notes",
+      "acceptance": "Changes address triaged findings only.",
+      "dependsOn": ["triage"],
+      "instructions": "Propose or implement remediation for the triaged findings in {{scope}}."
+    },
+    {
+      "key": "retest",
+      "title": "Retest {{scope}}",
+      "role": "tester",
+      "deliverable": "Retest evidence",
+      "acceptance": "Original findings re-checked with results recorded.",
+      "dependsOn": ["remediate"],
+      "instructions": "Re-run the checks for {{scope}} and record which findings are resolved."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["scope", "findings", "remediation", "retest"],
+    "properties": {
+      "scope": {
+        "type": "string"
+      },
+      "findings": {
+        "type": "array"
+      },
+      "remediation": {
+        "type": "string"
+      },
+      "retest": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": ["Scope explicit", "Evidence per finding", "Retest recorded"],
+  "requiredTools": ["file.read", "search", "shell.test"],
+  "sampleInputs": {
+    "scope": "packages/server/src/routes"
+  }
+}

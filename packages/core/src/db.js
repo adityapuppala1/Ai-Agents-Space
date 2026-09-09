@@ -259,7 +259,12 @@ export function openDatabase(path = ":memory:") {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA foreign_keys = ON");
-  if (path !== ":memory:") db.exec("PRAGMA journal_mode = WAL");
+  if (path !== ":memory:") {
+    db.exec("PRAGMA journal_mode = WAL");
+    // WAL is durable at checkpoint; NORMAL skips the per-commit fsync that
+    // otherwise dominates the observation poll (one commit per event).
+    db.exec("PRAGMA synchronous = NORMAL");
+  }
   db.exec(
     "CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
   );

@@ -1,472 +1,546 @@
-import React, { useEffect, useRef, useState } from "react";
+/**
+ * Living office (Three.js). Renders every agent as a figure that moves to the
+ * zone matching its recorded activity. Walking is a visual transition only.
+ *
+ * Props
+ * - agents: [{ id, name, color, initials, state, activity, currentFile,
+ *     currentAction, provider, runStatus, runMode, taskTitle, role?,
+ *     completed?, activityProvenance? }]. When `activity` is missing the legacy
+ *     `state` is used (CODING/ANALYZING/TESTING/DEBUGGING/RESEARCHING/BLOCKED/IDLE).
+ * - selected: agent id highlighted in the scene.
+ * - onSelect(agentId): called from figure clicks, label buttons, minimap and the fallback list.
+ * - running: boolean; false freezes ambient motion (demo paused).
+ * - theme: "studio" | "operations" (default "studio"). Switching rebuilds decoration only.
+ * - graphics: "low" | "medium" | "high" (default "medium"): shadows, pixel ratio, particles, frame cap.
+ * - followAgentId: agent id the camera should track smoothly (null = free camera).
+ * - reducedMotion: boolean; disables walking tweens, bobbing, particles.
+ * - onZoneHover?(agentId|null): hover over a figure (3D canvas or minimap).
+ *
+ * Keyboard (focus the canvas area): arrows pan, + / - zoom, F toggles follow of
+ * the selected agent. Controls: Zoom in, Zoom out, Reset camera, Fullscreen.
+ * Accessibility: every agent has an "Inspect <name>" button; when WebGL is
+ * unavailable a `.scene-fallback` list replaces the canvas.
+ */
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { Minus, Plus, RotateCcw, Maximize2, MousePointer2 } from "lucide-react";
+import {
+  Minus,
+  Plus,
+  RotateCcw,
+  Maximize2,
+  MousePointer2,
+  Crosshair,
+} from "lucide-react";
+import {
+  Resources,
+  createRenderer,
+  createLights,
+  applyGraphics,
+} from "./office/scene.js";
+import { getTheme, buildRoom } from "./office/themes.js";
+import { computeLayout, buildZones, zoneForActivity } from "./office/zones.js";
+import {
+  createFigure,
+  applyAgentState,
+  animateFigure,
+  createCelebration,
+  activityOf,
+  activityLabel,
+  providerLabel,
+  statusTone,
+} from "./office/avatars.js";
+import { createCamera } from "./office/camera.js";
+import { createMinimap } from "./office/minimap.js";
+import "./styles/office.css";
 
-const POSITIONS = [
-  [-3.7, -1.7],
-  [-0.2, -1.7],
-  [3.3, -1.7],
-  [-3.7, 1.8],
-  [-0.2, 1.8],
-  [3.3, 1.8],
-];
+const IDLE_CLUSTER_THRESHOLD = 12;
+const TYPING = new Set(["CODING", "COMMANDING", "DEBUGGING"]);
+const SLOT_COUNT = 8;
 
-function makeOffice(scene, agents) {
-  const material = (color, extra = {}) =>
-    new THREE.MeshStandardMaterial({ color, roughness: 0.72, ...extra });
-  const palette = {
-    white: material("#f5f5ef"),
-    floor: material("#dedfda"),
-    wood: material("#d1ba9c"),
-    metal: material("#727f8b"),
-    dark: material("#303f51"),
-    wall: material("#e2eaf0"),
-    blue: material("#8aa8bd"),
-    green: material("#6e967a"),
-  };
-  function mesh(geometry, mat, x, y, z, parent = scene) {
-    const m = new THREE.Mesh(geometry, mat);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    parent.add(m);
-    return m;
-  }
-  const box = (w, h, d, mat, x, y, z, p) =>
-    mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z, p);
-  const cylinder = (r, rb, h, mat, x, y, z, p) =>
-    mesh(new THREE.CylinderGeometry(r, rb, h, 20), mat, x, y, z, p);
-  const sphere = (r, mat, x, y, z, p) =>
-    mesh(new THREE.SphereGeometry(r, 16, 12), mat, x, y, z, p);
-  function textTexture(lines, bg, fg, w = 512, h = 256) {
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const c = canvas.getContext("2d");
-    c.fillStyle = bg;
-    c.fillRect(0, 0, w, h);
-    c.fillStyle = fg;
-    lines.forEach((line, i) => {
-      c.font = i === 0 ? "bold 32px sans-serif" : "24px monospace";
-      c.fillText(line, 30, 54 + i * 40);
-    });
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    return texture;
-  }
-  function plant(x, z, scale = 1) {
-    const g = new THREE.Group();
-    g.position.set(x, 0.12, z);
-    g.scale.setScalar(scale);
-    scene.add(g);
-    cylinder(0.28, 0.21, 0.55, palette.white, 0, 0.275, 0, g);
-    cylinder(0.04, 0.055, 0.8, palette.wood, 0, 0.8, 0, g);
-    for (let i = 0; i < 7; i++) {
-      const angle = i * 2.4;
-      const leaf = sphere(
-        0.24,
-        i % 2 ? palette.green : material("#88a888"),
-        Math.cos(angle) * 0.22,
-        0.9 + i * 0.07,
-        Math.sin(angle) * 0.22,
-        g,
-      );
-      leaf.scale.set(0.65, 1.65, 0.6);
-      leaf.rotation.z = Math.cos(angle) * 0.7;
-    }
-  }
-
-  box(14.5, 0.28, 10.7, palette.white, 0, -0.18, 0);
-  box(14.15, 0.08, 10.3, palette.floor, 0, 0.005, 0);
-  for (let i = 0; i < 23; i++)
-    box(0.013, 0.012, 10.2, material("#cbd0ce"), -6.9 + i * 0.62, 0.052, 0);
-  box(14.2, 3.1, 0.17, palette.wall, 0, 1.54, -5.12);
-  box(0.17, 3.1, 10.3, palette.wall, -7.03, 1.54, 0);
-  box(14.2, 0.12, 0.24, palette.white, 0, 3.13, -5.12);
-  box(0.24, 0.12, 10.3, palette.white, -7.03, 3.13, 0);
-  box(14, 0.11, 0.09, palette.white, 0, 0.1, -4.99);
-  box(0.09, 0.11, 10, palette.white, -6.92, 0.1, 0);
-  // Window recesses and mullions make the open room feel architectural.
-  for (let i = 0; i < 3; i++) {
-    const x = -0.1 + i * 2.1;
-    box(
-      1.94,
-      1.8,
-      0.07,
-      material("#bad4e2", { metalness: 0.12, roughness: 0.25 }),
-      x,
-      1.95,
-      -4.99,
-    );
-    box(0.055, 1.83, 0.11, palette.white, x, 1.95, -4.92);
-    box(1.96, 0.06, 0.11, palette.white, x, 1.94, -4.92);
-    box(2.05, 0.09, 0.3, palette.white, x, 1.03, -4.87);
-  }
-  const sign = new THREE.MeshBasicMaterial({
-    map: textTexture(
-      ["AGENT SPACE", "Good work happens together."],
-      "#e2eaf0",
-      "#556b82",
-      640,
-      150,
-    ),
-  });
-  mesh(new THREE.PlaneGeometry(3.2, 0.75), sign, -4.45, 2.35, -4.99);
-  // Whiteboard, pinned notes, and shelving on the left wall.
-  box(0.08, 1.18, 2.65, palette.white, -6.91, 1.87, -2.7);
-  for (let i = 0; i < 5; i++)
-    box(
-      0.02,
-      0.16,
-      0.24,
-      material(["#dfbd79", "#94b6cb", "#b7c8a3"][i % 3]),
-      -6.85,
-      2.12 - (i % 2) * 0.34,
-      -3.5 + i * 0.4,
-    );
-  box(0.63, 1.08, 2.4, palette.wood, -6.6, 0.59, 0.75);
-  for (let i = 0; i < 3; i++)
-    box(0.68, 0.06, 2.48, palette.white, -6.58, 0.13 + i * 0.48, 0.75);
-  for (let i = 0; i < 9; i++)
-    box(
-      0.37,
-      0.29 + (i % 3) * 0.06,
-      0.12,
-      material(["#849bab", "#d5bca3", "#889c83"][i % 3]),
-      -6.43,
-      0.78,
-      -0.15 + i * 0.2,
-    );
-  plant(-6.1, -4.1, 1.2);
-  plant(6.1, -4.1, 1.15);
-  plant(-6.1, 4, 0.95);
-  plant(6.2, 3.9, 1.3);
-  // Quiet lounge nook, with a floor lamp and a round coffee table.
-  box(1.1, 0.5, 2.3, material("#9eaebc"), 5.85, 0.42, -0.9);
-  box(0.3, 0.8, 2.4, palette.blue, 6.36, 0.77, -0.9);
-  for (const z of [-2.02, 0.22])
-    box(1.18, 0.56, 0.18, palette.blue, 5.89, 0.75, z);
-  cylinder(0.42, 0.42, 0.08, palette.wood, 5.8, 0.65, 1.1);
-  cylinder(0.06, 0.09, 0.58, palette.metal, 5.8, 0.31, 1.1);
-  cylinder(0.23, 0.23, 0.05, palette.metal, 6.15, 0.12, -2.8);
-  cylinder(0.025, 0.025, 1.8, palette.metal, 6.15, 1, -2.8);
-  cylinder(0.22, 0.37, 0.36, palette.white, 6.15, 1.95, -2.8);
-  const figures = [];
-  agents.forEach((agent, i) => {
-    const [x, z] = POSITIONS[i];
-    const group = new THREE.Group();
-    group.position.set(x, 0.08, z);
-    scene.add(group);
-    const accent = material(agent.color);
-    box(
-      2.75,
-      0.025,
-      2.8,
-      material(i < 3 ? "#c2cfd7" : "#c9d3d8"),
-      0,
-      0.005,
-      0.25,
-      group,
-    );
-    box(2.45, 0.13, 1.16, palette.wood, 0, 0.94, -0.2, group);
-    for (const dx of [-1.05, 1.05])
-      for (const dz of [-0.67, 0.23])
-        box(0.065, 0.89, 0.065, palette.white, dx, 0.43, dz, group);
-    box(0.8, 0.05, 0.3, palette.metal, -0.17, 1.04, -0.46, group);
-    box(0.055, 0.27, 0.055, palette.metal, -0.17, 1.19, -0.49, group);
-    box(1.15, 0.69, 0.07, palette.dark, -0.17, 1.54, -0.49, group);
-    const screen = new THREE.MeshBasicMaterial({
-      map: textTexture(
-        [
-          i === 3
-            ? "✓  TEST SUITE"
-            : i === 0
-              ? "WORKSPACE / PLAN"
-              : "> agent.run()",
-          "  task: workspace",
-          "  status: active",
-          "  ███████░░░",
-        ],
-        "#263748",
-        agent.color,
-      ),
-    });
-    mesh(
-      new THREE.PlaneGeometry(1.06, 0.6),
-      screen,
-      -0.17,
-      1.54,
-      -0.447,
-      group,
-    );
-    box(0.72, 0.035, 0.27, palette.white, -0.17, 1.027, 0.12, group);
-    for (let row = 0; row < 3; row++)
-      for (let key = 0; key < 8; key++)
-        box(
-          0.06,
-          0.006,
-          0.045,
-          palette.metal,
-          -0.45 + key * 0.08,
-          1.049,
-          0.04 + row * 0.065,
-          group,
-        );
-    cylinder(0.085, 0.075, 0.16, accent, 0.85, 1.08, -0.35, group);
-    box(0.29, 0.035, 0.36, material("#b4c2cf"), 0.85, 1.029, 0.08, group);
-    box(0.67, 0.15, 0.66, accent, 0, 0.59, 0.9, group);
-    box(0.72, 0.68, 0.14, accent, 0, 0.94, 1.23, group);
-    cylinder(0.06, 0.06, 0.38, palette.metal, 0, 0.33, 0.9, group);
-    box(0.7, 0.055, 0.09, palette.metal, 0, 0.15, 0.9, group);
-    box(0.09, 0.055, 0.7, palette.metal, 0, 0.15, 0.9, group);
-    const person = new THREE.Group();
-    group.add(person);
-    const skin = material(
-      ["#e5bd9f", "#bd8e74", "#e3b995", "#d6a889", "#a87961", "#ecc8a8"][i],
-    );
-    const hair = material(
-      ["#60534b", "#343e50", "#493d38", "#8f704b", "#48413f", "#665645"][i],
-    );
-    const torso = cylinder(0.23, 0.27, 0.52, accent, 0, 1.02, 0.82, person);
-    sphere(0.255, skin, 0, 1.52, 0.79, person);
-    const cap = sphere(0.26, hair, 0, 1.62, 0.83, person);
-    cap.scale.y = 0.65;
-    if (i === 1 || i === 5) box(0.44, 0.34, 0.17, hair, 0, 1.45, 0.99, person);
-    for (const dx of [-0.16, 0.16]) {
-      box(0.16, 0.36, 0.17, palette.dark, dx, 0.46, 0.6, person);
-      box(0.18, 0.1, 0.3, palette.dark, dx, 0.27, 0.53, person);
-      const arm = cylinder(
-        0.065,
-        0.075,
-        0.4,
-        accent,
-        dx * 1.6,
-        1.06,
-        0.57,
-        person,
-      );
-      arm.rotation.x = -1.15;
-      sphere(0.075, skin, dx * 1.6, 0.99, 0.36, person);
-    }
-    const ring = mesh(
-      new THREE.RingGeometry(0.47, 0.5, 48),
-      new THREE.MeshBasicMaterial({
-        color: agent.color,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.5,
-      }),
-      0,
-      0.025,
-      0.9,
-      group,
-    );
-    ring.rotation.x = -Math.PI / 2;
-    group.traverse((obj) => {
-      if (obj.isMesh) obj.userData.agentId = agent.id;
-    });
-    figures.push({
-      id: agent.id,
-      group,
-      person,
-      torso,
-      ring,
-      anchor: new THREE.Vector3(x, 2.35, z + 0.65),
-    });
-  });
-  return figures;
-}
-
-export default function Office({ agents, selected, onSelect, running }) {
-  const host = useRef(null),
-    sceneApi = useRef(null),
-    labels = useRef({}),
-    state = useRef({ agents, selected, running, onSelect });
+export default function Office({
+  agents = [],
+  selected,
+  onSelect,
+  running = true,
+  theme = "studio",
+  graphics = "medium",
+  followAgentId = null,
+  reducedMotion = false,
+  onZoneHover,
+}) {
+  const host = useRef(null);
+  const minimapRef = useRef(null);
+  const clusterRef = useRef(null);
+  const labels = useRef({});
+  const api = useRef(null);
   const [failed, setFailed] = useState(false);
-  state.current = { agents, selected, running, onSelect };
+  const [expanded, setExpanded] = useState(false);
+  // undefined = defer to the followAgentId prop; null = user turned follow off; id = user follow.
+  const [localFollow, setLocalFollow] = useState(undefined);
+  const followId = localFollow === undefined ? followAgentId : localFollow;
+  const toggleFollow = () =>
+    setLocalFollow(followId != null ? null : (selected ?? null));
+  const themeDef = getTheme(theme);
+  const state = useRef({});
+  state.current = {
+    agents,
+    selected,
+    running,
+    onSelect,
+    theme,
+    graphics,
+    followId,
+    reducedMotion,
+    onZoneHover,
+    expanded,
+  };
+  const agentKey = useMemo(() => agents.map((a) => a.id).join("|"), [agents]);
+  const idleCount = agents.filter((a) => activityOf(a) === "IDLE").length;
+  const clustering = idleCount > IDLE_CLUSTER_THRESHOLD && !expanded;
+
+  useEffect(() => {
+    setLocalFollow(undefined);
+  }, [followAgentId]);
+
   useEffect(() => {
     const container = host.current;
-    let renderer;
-    try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    } catch {
+    const renderer = createRenderer(container);
+    if (!renderer) {
       setFailed(true);
-      return;
+      return undefined;
     }
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.setClearColor("#edf2f6", 0);
-    container.prepend(renderer.domElement);
-    renderer.domElement.setAttribute(
-      "aria-label",
-      "Interactive 3D office. Use the agent buttons to inspect tasks.",
-    );
     const scene = new THREE.Scene();
-    const camera = new THREE.OrthographicCamera(-10, 10, 7, -7, 0.1, 100);
-    camera.position.set(16, 16, 21);
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 0.3, 0);
-    controls.enableDamping = true;
-    controls.enablePan = false;
-    controls.minZoom = 0.65;
-    controls.maxZoom = 2;
-    controls.minPolarAngle = 0.25;
-    controls.maxPolarAngle = 1.22;
-    controls.update();
-    controls.saveState();
-    scene.add(new THREE.HemisphereLight("#ffffff", "#9aa9b6", 2.7));
-    const sun = new THREE.DirectionalLight("#fff7e6", 3.1);
-    sun.position.set(1, 16, 8);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(sun.shadow.camera, {
-      left: -12,
-      right: 12,
-      top: 12,
-      bottom: -12,
-    });
-    sun.shadow.normalBias = 0.04;
-    scene.add(sun);
-    const figures = makeOffice(scene, state.current.agents);
-    const resize = () => {
-      const w = container.clientWidth,
-        h = container.clientHeight;
-      if (!w || !h) return;
-      const aspect = w / h;
-      const vertical = Math.max(7.4, 10.1 / aspect);
-      camera.left = -vertical * aspect;
-      camera.right = vertical * aspect;
-      camera.top = vertical;
-      camera.bottom = -vertical;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    const observer = new ResizeObserver(resize);
-    observer.observe(container);
-    resize();
-    const raycaster = new THREE.Raycaster(),
-      mouse = new THREE.Vector2();
-    let down;
+    const cam = createCamera(renderer, container);
+    const roomGroup = new THREE.Group();
+    const zoneGroup = new THREE.Group();
+    const figureGroup = new THREE.Group();
+    scene.add(roomGroup, zoneGroup, figureGroup);
+    const figureRes = new Resources();
+    let roomRes = new Resources();
+    let lights = createLights(scene, getTheme(state.current.theme), 1);
+    let preset = applyGraphics(
+      renderer,
+      scene,
+      lights.sun,
+      state.current.graphics,
+    );
+    let layout = computeLayout(state.current.agents.length);
+    let zones = null;
+    let figures = new Map();
+    let particles = [];
+    let visible = true;
+    let cameraScale = 0;
+    let caretOn = true;
+    const minimap = minimapRef.current
+      ? createMinimap(minimapRef.current, {
+          onSelect: (id) => state.current.onSelect?.(id),
+          onHover: (id) => state.current.onZoneHover?.(id),
+        })
+      : null;
+
+    function rebuild() {
+      const themeDef = getTheme(state.current.theme);
+      roomGroup.clear();
+      zoneGroup.clear();
+      roomRes.dispose();
+      roomRes = new Resources();
+      layout = computeLayout(state.current.agents.length);
+      buildRoom(roomGroup, themeDef, layout, roomRes);
+      zones = buildZones(
+        zoneGroup,
+        themeDef,
+        layout,
+        state.current.agents,
+        roomRes,
+      );
+      scene.remove(lights.hemi, lights.sun);
+      lights.sun.shadow.map?.dispose();
+      lights.sun.dispose();
+      lights.hemi.dispose();
+      lights = createLights(scene, themeDef, layout.scale);
+      preset = applyGraphics(
+        renderer,
+        scene,
+        lights.sun,
+        state.current.graphics,
+      );
+      minimap?.setLayout(layout);
+      if (layout.scale !== cameraScale) {
+        cameraScale = layout.scale;
+        cam.frame(layout.scale);
+      }
+      // Force monitors to redraw with current content.
+      sync(true);
+    }
+
+    function sync(force = false) {
+      const { agents, reducedMotion, expanded } = state.current;
+      const now = performance.now();
+      const ids = new Set(agents.map((a) => a.id));
+      for (const [id, fig] of figures) {
+        if (!ids.has(id)) {
+          figureGroup.remove(fig.group);
+          figures.delete(id);
+        }
+      }
+      const idle = agents.filter((a) => activityOf(a) === "IDLE");
+      const cluster = idle.length > IDLE_CLUSTER_THRESHOLD && !expanded;
+      const slots = {};
+      const testing = [];
+      const reviewing = [];
+      let clustered = 0;
+      agents.forEach((agent, i) => {
+        let fig = figures.get(agent.id);
+        if (!fig) {
+          fig = createFigure(agent, i, figureRes);
+          fig.color = agent.color;
+          figures.set(agent.id, fig);
+          figureGroup.add(fig.group);
+        }
+        const activity = activityOf(agent);
+        const zoneId = zoneForActivity(activity);
+        let target;
+        let isClustered = false;
+        if (cluster && activity === "IDLE") {
+          const slot = layout.zones.breakArea.slots[clustered % SLOT_COUNT];
+          target = { ...slot, zone: "breakArea" };
+          isClustered = true;
+          clustered++;
+        } else if (zoneId === "desk") {
+          target = {
+            ...(layout.desks[i] ?? layout.desks[layout.desks.length - 1]),
+            zone: "desk",
+          };
+        } else {
+          slots[zoneId] = (slots[zoneId] ?? 0) + 1;
+          const slot =
+            layout.zones[zoneId].slots[(slots[zoneId] - 1) % SLOT_COUNT];
+          target = { ...slot, zone: zoneId };
+        }
+        fig.clustered = isClustered;
+        fig.group.visible = !isClustered;
+        const completed = applyAgentState(fig, agent, target, {
+          now,
+          reducedMotion,
+        });
+        if (completed && preset.particles && !reducedMotion) {
+          fig.celebrateUntil = now + 900;
+          const burst = createCelebration(fig.pos, agent.color, now);
+          scene.add(burst.points);
+          particles.push(burst);
+        }
+        if (activity === "TESTING") testing.push(agent.name);
+        if (activity === "REVIEWING") reviewing.push(agent.name);
+        if (force) {
+          const m = zones?.monitors.get(agent.id);
+          if (m) m.key = "";
+        }
+        zones?.updateMonitor(agent.id, agent, {
+          typing: TYPING.has(activity),
+          caret: caretOn,
+          activityLabel: activityLabel(agent),
+        });
+      });
+      zones?.updateQa(testing);
+      zones?.updateReview(reviewing);
+      zones?.updateCluster(clustered);
+    }
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    function pick(event) {
+      const r = renderer.domElement.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      mouse.set(
+        ((event.clientX - r.left) / r.width) * 2 - 1,
+        -((event.clientY - r.top) / r.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(mouse, cam.camera);
+      const hit = raycaster.intersectObjects(figureGroup.children, true)[0];
+      return hit?.object.userData.agentId ?? null;
+    }
+    let down = null;
+    let hovered = null;
+    let lastMove = 0;
     const pointerdown = (e) => {
       down = [e.clientX, e.clientY];
     };
     const pointerup = (e) => {
       if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5)
         return;
-      const r = renderer.domElement.getBoundingClientRect();
-      mouse.set(
-        ((e.clientX - r.left) / r.width) * 2 - 1,
-        -((e.clientY - r.top) / r.height) * 2 + 1,
-      );
-      raycaster.setFromCamera(mouse, camera);
-      const hit = raycaster.intersectObjects(
-        figures.map((f) => f.group),
-        true,
-      )[0];
-      if (hit) state.current.onSelect(hit.object.userData.agentId);
+      const id = pick(e);
+      if (id != null) state.current.onSelect?.(id);
     };
-    renderer.domElement.addEventListener("pointerdown", pointerdown);
-    renderer.domElement.addEventListener("pointerup", pointerup);
+    const pointermove = (e) => {
+      if (!state.current.onZoneHover || e.timeStamp - lastMove < 80) return;
+      lastMove = e.timeStamp;
+      const id = pick(e);
+      if (id !== hovered) {
+        hovered = id;
+        state.current.onZoneHover(id);
+      }
+      renderer.domElement.style.cursor = id != null ? "pointer" : "";
+    };
     const lost = (event) => {
       event.preventDefault();
       setFailed(true);
     };
+    renderer.domElement.addEventListener("pointerdown", pointerdown);
+    renderer.domElement.addEventListener("pointerup", pointerup);
+    renderer.domElement.addEventListener("pointermove", pointermove);
     renderer.domElement.addEventListener("webglcontextlost", lost);
-    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
-    let frame,
-      last = 0;
-    function render(time) {
-      frame = requestAnimationFrame(render);
-      if (document.hidden || time - last < 32) return;
-      last = time;
-      controls.update();
-      figures.forEach((f, i) => {
-        const agent = state.current.agents.find((a) => a.id === f.id);
-        const active = agent && !["IDLE", "BLOCKED"].includes(agent.state);
-        f.person.rotation.x =
-          active && state.current.running && !reduceMotion.matches
-            ? Math.sin(time * 0.005 + i) * 0.022
-            : 0;
-        f.ring.material.opacity = state.current.selected === f.id ? 1 : 0.3;
-        f.ring.scale.setScalar(state.current.selected === f.id ? 1.3 : 1);
-        const point = f.anchor.clone().project(camera);
-        const label = labels.current[f.id];
-        if (label) {
-          label.style.left = `${(point.x * 0.5 + 0.5) * container.clientWidth}px`;
-          label.style.top = `${(-point.y * 0.5 + 0.5) * container.clientHeight}px`;
-          label.style.visibility = point.z > 1 ? "hidden" : "visible";
-        }
-      });
-      renderer.render(scene, camera);
+
+    const resizeObserver = new ResizeObserver(() => cam.resize());
+    resizeObserver.observe(container);
+    const intersection =
+      typeof IntersectionObserver === "function"
+        ? new IntersectionObserver((entries) => {
+            visible = entries.some((e) => e.isIntersecting);
+          })
+        : null;
+    intersection?.observe(container);
+
+    const anchor = new THREE.Vector3();
+    let frame = 0;
+    let last = 0;
+    let caretAt = 0;
+    function place(el, x, y, z) {
+      anchor.set(x, y, z).project(cam.camera);
+      el.style.left = `${(anchor.x * 0.5 + 0.5) * container.clientWidth}px`;
+      el.style.top = `${(-anchor.y * 0.5 + 0.5) * container.clientHeight}px`;
+      el.style.visibility = anchor.z > 1 ? "hidden" : "visible";
     }
-    frame = requestAnimationFrame(render);
-    sceneApi.current = {
-      zoom: (factor) => {
-        camera.zoom = THREE.MathUtils.clamp(camera.zoom * factor, 0.65, 2);
-        camera.updateProjectionMatrix();
+    function loop(time) {
+      frame = requestAnimationFrame(loop);
+      if (document.hidden) return;
+      // Off-screen: no GPU work, but keep labels placed at a slow tick so the
+      // accessible buttons stay positioned when the canvas scrolls back in.
+      if (time - last < (visible ? preset.frameMs : 500)) return;
+      const dt = Math.min(0.1, (time - last) / 1000 || 0.016);
+      last = time;
+      const { selected, running, reducedMotion, followId, agents } =
+        state.current;
+      if (time - caretAt > 500) {
+        caretAt = time;
+        caretOn = !caretOn;
+        for (const agent of agents) {
+          if (TYPING.has(activityOf(agent)))
+            zones?.updateMonitor(agent.id, agent, {
+              typing: true,
+              caret: caretOn && !reducedMotion,
+              activityLabel: activityLabel(agent),
+            });
+        }
+      }
+      const followed = followId != null ? figures.get(followId) : null;
+      cam.setFollow(followed && !followed.clustered ? followed.pos : null);
+      cam.update(reducedMotion);
+      for (const fig of figures.values()) {
+        if (fig.clustered) continue;
+        animateFigure(fig, time, {
+          reducedMotion,
+          running,
+          selected: selected === fig.id,
+        });
+        const label = labels.current[fig.id];
+        if (label) place(label, fig.pos.x, 2.4, fig.pos.z);
+      }
+      for (const [id, label] of Object.entries(labels.current)) {
+        if (label && figures.get(id)?.clustered)
+          label.style.visibility = "hidden";
+      }
+      if (clusterRef.current) {
+        const z = layout.zones.breakArea;
+        place(clusterRef.current, z.x, 2.5, z.z + 0.3);
+      }
+      particles = particles.filter((p) => {
+        const alive = p.update(time, dt);
+        if (!alive) p.dispose();
+        return alive;
+      });
+      minimap?.draw({
+        figures: figures.values(),
+        selected,
+        theme: getTheme(state.current.theme),
+        clusterCount: [...figures.values()].filter((f) => f.clustered).length,
+        clusterZone: layout.zones.breakArea,
+      });
+      if (visible) renderer.render(scene, cam.camera);
+    }
+    rebuild();
+    frame = requestAnimationFrame(loop);
+
+    api.current = {
+      rebuild,
+      sync,
+      zoom: (f) => cam.zoom(f),
+      reset: () => cam.reset(),
+      pan: (dx, dz) => cam.pan(dx * layout.scale, dz * layout.scale),
+      setGraphics: () => {
+        preset = applyGraphics(
+          renderer,
+          scene,
+          lights.sun,
+          state.current.graphics,
+        );
+        if (!preset.particles) {
+          particles.forEach((p) => p.dispose());
+          particles = [];
+        }
       },
-      reset: () => controls.reset(),
     };
     return () => {
       cancelAnimationFrame(frame);
-      observer.disconnect();
-      controls.dispose();
+      resizeObserver.disconnect();
+      intersection?.disconnect();
       renderer.domElement.removeEventListener("pointerdown", pointerdown);
       renderer.domElement.removeEventListener("pointerup", pointerup);
+      renderer.domElement.removeEventListener("pointermove", pointermove);
       renderer.domElement.removeEventListener("webglcontextlost", lost);
-      const geometries = new Set(),
-        materials = new Set(),
-        textures = new Set();
-      scene.traverse((obj) => {
-        if (obj.geometry) geometries.add(obj.geometry);
-        if (obj.material)
-          for (const m of [].concat(obj.material)) {
-            materials.add(m);
-            if (m.map) textures.add(m.map);
-          }
-      });
-      geometries.forEach((g) => g.dispose());
-      materials.forEach((m) => m.dispose());
-      textures.forEach((t) => t.dispose());
+      minimap?.dispose();
+      cam.dispose();
+      particles.forEach((p) => p.dispose());
+      roomRes.dispose();
+      figureRes.dispose();
+      lights.sun.shadow.map?.dispose();
+      lights.sun.dispose();
+      lights.hemi.dispose();
+      scene.clear();
       renderer.dispose();
       renderer.domElement.remove();
-      sceneApi.current = null;
+      api.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    api.current?.rebuild();
+  }, [theme, agentKey]);
+
+  useEffect(() => {
+    api.current?.sync();
+  }, [agents, expanded, reducedMotion]);
+
+  useEffect(() => {
+    api.current?.setGraphics();
+  }, [graphics]);
+
+  const keydown = (e) => {
+    const a = api.current;
+    if (!a) return;
+    const step = 0.6;
+    switch (e.key) {
+      case "ArrowLeft":
+        a.pan(-step, 0);
+        break;
+      case "ArrowRight":
+        a.pan(step, 0);
+        break;
+      case "ArrowUp":
+        a.pan(0, step);
+        break;
+      case "ArrowDown":
+        a.pan(0, -step);
+        break;
+      case "+":
+      case "=":
+        a.zoom(1.1);
+        break;
+      case "-":
+      case "_":
+        a.zoom(0.9);
+        break;
+      case "f":
+      case "F":
+        toggleFollow();
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+  };
+
+  const followedAgent = agents.find((a) => a.id === followId);
+  const clusteredCount = clustering ? idleCount : 0;
+
   return (
-    <div className="office-wrap">
+    <div className={`office-wrap office-theme-${themeDef.id}`}>
       <div className="office-meta">
         <span>
-          <i className="dot blue" /> Development studio
+          <i className="dot blue" /> {themeDef.label}
+          {followedAgent && (
+            <em className="office-follow">Following {followedAgent.name}</em>
+          )}
         </span>
-        <span>FLOOR 01</span>
+        <span>{themeDef.floorLabel}</span>
       </div>
-      <div className="office-canvas" ref={host}>
+      <div
+        className="office-canvas"
+        ref={host}
+        role="application"
+        tabIndex={failed ? -1 : 0}
+        onKeyDown={keydown}
+        aria-label="Office scene. Arrow keys pan, plus and minus zoom, F follows the selected agent."
+      >
         {!failed &&
-          agents.map((agent) => (
-            <button
-              key={agent.id}
-              ref={(el) => {
-                labels.current[agent.id] = el;
-              }}
-              className={`scene-label ${selected === agent.id ? "selected" : ""}`}
-              onClick={() => onSelect(agent.id)}
-              aria-label={`Inspect ${agent.name}`}
-              style={{ "--agent-color": agent.color }}
-            >
-              <i
-                className={`dot ${agent.state === "BLOCKED" ? "amber" : agent.state === "IDLE" ? "gray" : "green"}`}
-              />
-              {agent.name}
-              <span>
-                {agent.state === "IDLE"
-                  ? "Available"
-                  : agent.state.toLowerCase()}
-              </span>
-            </button>
-          ))}
+          agents.map((agent) => {
+            const tone = statusTone(agent);
+            const inferred = agent.activityProvenance === "inferred";
+            return (
+              <button
+                key={agent.id}
+                ref={(el) => {
+                  labels.current[agent.id] = el;
+                }}
+                className={`scene-label tone-${tone} ${selected === agent.id ? "selected" : ""}`}
+                onClick={() => onSelect?.(agent.id)}
+                onMouseEnter={() => onZoneHover?.(agent.id)}
+                onMouseLeave={() => onZoneHover?.(null)}
+                aria-label={`Inspect ${agent.name}`}
+                title={
+                  agent.taskTitle
+                    ? `${activityLabel(agent)} · ${agent.taskTitle}`
+                    : activityLabel(agent)
+                }
+                style={{ "--agent-color": agent.color }}
+              >
+                <i className={`dot ${tone}`} />
+                {agent.name}
+                <span className="scene-provider">{providerLabel(agent)}</span>
+                <span className="scene-activity">
+                  {activityLabel(agent)}
+                  {inferred ? " (inferred)" : ""}
+                </span>
+              </button>
+            );
+          })}
+        {!failed && clusteredCount > 0 && (
+          <button
+            ref={clusterRef}
+            className="scene-cluster"
+            onClick={() => setExpanded(true)}
+            aria-label={`Show ${clusteredCount} available agents`}
+          >
+            {themeDef.rooms.breakArea} · {clusteredCount} available
+          </button>
+        )}
+        {!failed && expanded && idleCount > IDLE_CLUSTER_THRESHOLD && (
+          <button
+            className="scene-cluster scene-cluster-collapse"
+            onClick={() => setExpanded(false)}
+            aria-label="Collapse available agents"
+          >
+            Collapse {idleCount} available
+          </button>
+        )}
+        {!failed && (
+          <canvas
+            ref={minimapRef}
+            className="office-minimap"
+            width={150}
+            height={110}
+            aria-label="Office minimap. Click an agent dot to select it."
+          />
+        )}
         {failed && (
           <div className="scene-fallback">
             <h3>The team is still here.</h3>
@@ -475,8 +549,8 @@ export default function Office({ agents, selected, onSelect, running }) {
               below to manage their work.
             </p>
             {agents.map((a) => (
-              <button key={a.id} onClick={() => onSelect(a.id)}>
-                {a.name} · {a.role}
+              <button key={a.id} onClick={() => onSelect?.(a.id)}>
+                {a.name} · {a.role ?? providerLabel(a)} · {activityLabel(a)}
               </button>
             ))}
           </div>
@@ -484,38 +558,50 @@ export default function Office({ agents, selected, onSelect, running }) {
       </div>
       <div className="office-bottom">
         <span>
-          <MousePointer2 size={13} /> Drag to orbit · Scroll to zoom
+          <MousePointer2 size={13} /> Drag to orbit · Scroll to zoom · Arrows
+          pan · F follows
         </span>
         <div className="camera-tools">
           <button
             title="Zoom out"
             aria-label="Zoom out"
-            onClick={() => sceneApi.current?.zoom(0.9)}
+            onClick={() => api.current?.zoom(0.9)}
           >
             <Minus size={16} />
           </button>
           <button
             title="Zoom in"
             aria-label="Zoom in"
-            onClick={() => sceneApi.current?.zoom(1.1)}
+            onClick={() => api.current?.zoom(1.1)}
           >
             <Plus size={16} />
           </button>
           <span />
           <button
+            title="Follow selected agent"
+            aria-label="Follow selected agent"
+            aria-pressed={followId != null}
+            onClick={toggleFollow}
+          >
+            <Crosshair size={15} />
+          </button>
+          <button
             title="Reset camera"
             aria-label="Reset camera"
-            onClick={() => sceneApi.current?.reset()}
+            onClick={() => {
+              setLocalFollow(null);
+              api.current?.reset();
+            }}
           >
             <RotateCcw size={15} />
           </button>
           <button
-            title="Expand office"
-            aria-label="Expand office"
+            title="Fullscreen"
+            aria-label="Fullscreen"
             onClick={() => {
-              const el = host.current.parentElement;
+              const el = host.current?.parentElement;
               if (document.fullscreenElement) document.exitFullscreen?.();
-              else el.requestFullscreen?.().catch(() => {});
+              else el?.requestFullscreen?.().catch(() => {});
             }}
           >
             <Maximize2 size={15} />

@@ -1,0 +1,112 @@
+{
+  "id": "feature-delivery",
+  "name": "Feature delivery",
+  "domain": "Software engineering",
+  "priority": "Launch",
+  "description": "Brief -> architect -> frontend/backend -> QA -> reviewer. Produces a reviewed patch, test results, and implementation notes.",
+  "roles": [
+    {
+      "key": "architect",
+      "name": "Architect",
+      "workingState": "ANALYZING",
+      "description": "Turns the brief into a bounded technical plan."
+    },
+    {
+      "key": "frontend",
+      "name": "Frontend developer",
+      "workingState": "CODING",
+      "description": "Implements UI changes within the plan."
+    },
+    {
+      "key": "backend",
+      "name": "Backend developer",
+      "workingState": "CODING",
+      "description": "Implements API and data changes within the plan."
+    },
+    {
+      "key": "qa",
+      "name": "QA engineer",
+      "workingState": "TESTING",
+      "description": "Writes and runs tests against the implementation."
+    },
+    {
+      "key": "reviewer",
+      "name": "Reviewer",
+      "workingState": "REVIEWING",
+      "description": "Reviews the combined patch and notes."
+    }
+  ],
+  "steps": [
+    {
+      "key": "plan",
+      "title": "Plan {{feature}}",
+      "role": "architect",
+      "deliverable": "Implementation plan (files, interfaces, risks)",
+      "acceptance": "Plan names concrete files and interfaces; open questions listed explicitly.",
+      "dependsOn": [],
+      "instructions": "Read the brief for {{feature}}. Produce a short plan listing files to change, interfaces, data changes, and risks. Do not write code."
+    },
+    {
+      "key": "frontend",
+      "title": "Implement UI for {{feature}}",
+      "role": "frontend",
+      "deliverable": "Frontend patch",
+      "acceptance": "UI compiles and matches the plan; no unrelated changes.",
+      "dependsOn": ["plan"],
+      "instructions": "Implement the UI part of the plan for {{feature}}. Keep the diff limited to the files named in the plan."
+    },
+    {
+      "key": "backend",
+      "title": "Implement backend for {{feature}}",
+      "role": "backend",
+      "deliverable": "Backend patch",
+      "acceptance": "API/data changes match the plan; migrations are additive.",
+      "dependsOn": ["plan"],
+      "instructions": "Implement the backend part of the plan for {{feature}}. Keep changes additive and covered by tests."
+    },
+    {
+      "key": "qa",
+      "title": "Test {{feature}}",
+      "role": "qa",
+      "deliverable": "Test results (command output)",
+      "acceptance": "Tests run with recorded output; failures reported truthfully.",
+      "dependsOn": ["frontend", "backend"],
+      "instructions": "Write or extend tests for {{feature}} and run the project test command. Report the exact command and output."
+    },
+    {
+      "key": "review",
+      "title": "Review {{feature}} patch",
+      "role": "reviewer",
+      "deliverable": "Review notes and accept/reject decision",
+      "acceptance": "Every changed file inspected; decision recorded with reasons.",
+      "dependsOn": ["qa"],
+      "instructions": "Review the combined diff and test output for {{feature}}. List defects, then accept or reject."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["patch", "testResults", "notes"],
+    "properties": {
+      "patch": {
+        "type": "string",
+        "description": "Unified diff"
+      },
+      "testResults": {
+        "type": "string"
+      },
+      "notes": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": [
+    "Diff limited to planned files",
+    "Tests executed with output captured",
+    "Reviewer decision recorded",
+    "No secrets or unrelated changes"
+  ],
+  "requiredTools": ["file.read", "file.edit", "shell.test", "git.diff"],
+  "sampleInputs": {
+    "feature": "Saved filters on the board view"
+  }
+}

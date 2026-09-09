@@ -1,0 +1,100 @@
+{
+  "id": "agency-delivery",
+  "name": "Agency delivery",
+  "domain": "Agency",
+  "priority": "Growth",
+  "description": "Client brief -> isolated workspace -> execution -> client review. Produces approved deliverables without other-client context.",
+  "roles": [
+    {
+      "key": "account",
+      "name": "Account lead",
+      "workingState": "ANALYZING",
+      "description": "Owns the brief."
+    },
+    {
+      "key": "builder",
+      "name": "Builder",
+      "workingState": "CODING",
+      "description": "Executes the work."
+    },
+    {
+      "key": "qa",
+      "name": "QA",
+      "workingState": "TESTING",
+      "description": "Checks deliverables."
+    },
+    {
+      "key": "client",
+      "name": "Client reviewer",
+      "workingState": "REVIEWING",
+      "description": "Approves deliverables."
+    }
+  ],
+  "steps": [
+    {
+      "key": "brief",
+      "title": "Scope brief for {{client}}",
+      "role": "account",
+      "deliverable": "Scoped brief with acceptance criteria",
+      "acceptance": "Criteria measurable; scope limited to this client workspace.",
+      "dependsOn": [],
+      "instructions": "Turn the brief for {{client}} into measurable acceptance criteria. Use only this workspace's context."
+    },
+    {
+      "key": "execute",
+      "title": "Deliver {{deliverable}} for {{client}}",
+      "role": "builder",
+      "deliverable": "Deliverable",
+      "acceptance": "Deliverable meets the criteria; no cross-client context used.",
+      "dependsOn": ["brief"],
+      "instructions": "Produce {{deliverable}} for {{client}} within this workspace only."
+    },
+    {
+      "key": "qa",
+      "title": "QA {{deliverable}} for {{client}}",
+      "role": "qa",
+      "deliverable": "QA report",
+      "acceptance": "Each criterion checked with evidence.",
+      "dependsOn": ["execute"],
+      "instructions": "Check {{deliverable}} against every acceptance criterion and record evidence."
+    },
+    {
+      "key": "client-review",
+      "title": "Client review of {{deliverable}}",
+      "role": "client",
+      "deliverable": "Approval decision",
+      "acceptance": "Client decision recorded.",
+      "dependsOn": ["qa"],
+      "instructions": "Present {{deliverable}} and the QA report to {{client}} for approval.",
+      "requiresApproval": true
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["criteria", "deliverable", "qaReport", "approval"],
+    "properties": {
+      "criteria": {
+        "type": "array"
+      },
+      "deliverable": {
+        "type": "string"
+      },
+      "qaReport": {
+        "type": "string"
+      },
+      "approval": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": [
+    "Workspace isolation kept",
+    "Criteria measurable",
+    "Client approval recorded"
+  ],
+  "requiredTools": ["file.read", "file.edit", "approval"],
+  "sampleInputs": {
+    "client": "Acme",
+    "deliverable": "landing page refresh"
+  }
+}

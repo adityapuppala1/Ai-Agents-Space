@@ -1,0 +1,95 @@
+{
+  "id": "repository-onboarding",
+  "name": "Repository onboarding",
+  "domain": "Software engineering",
+  "priority": "Launch",
+  "description": "Explore -> architecture map -> setup checks -> guide. Produces a source-linked onboarding document.",
+  "roles": [
+    {
+      "key": "explorer",
+      "name": "Explorer",
+      "workingState": "RESEARCHING",
+      "description": "Surveys the repository structure."
+    },
+    {
+      "key": "architect",
+      "name": "Architect",
+      "workingState": "ANALYZING",
+      "description": "Maps modules and their relationships."
+    },
+    {
+      "key": "operator",
+      "name": "Operator",
+      "workingState": "DEBUGGING",
+      "description": "Verifies setup commands actually run."
+    },
+    {
+      "key": "writer",
+      "name": "Technical writer",
+      "workingState": "CODING",
+      "description": "Writes the guide."
+    }
+  ],
+  "steps": [
+    {
+      "key": "explore",
+      "title": "Explore {{repository}}",
+      "role": "explorer",
+      "deliverable": "Inventory of top-level folders, entry points, and scripts",
+      "acceptance": "Every listed path exists in the repository.",
+      "dependsOn": [],
+      "instructions": "List the top-level structure of {{repository}}, entry points, package scripts, and test locations. Cite paths."
+    },
+    {
+      "key": "map",
+      "title": "Architecture map for {{repository}}",
+      "role": "architect",
+      "deliverable": "Module map with dependencies",
+      "acceptance": "Each module links to its source folder; relationships are derived from imports, not guessed.",
+      "dependsOn": ["explore"],
+      "instructions": "Describe the modules of {{repository}} and how they depend on each other, citing import statements."
+    },
+    {
+      "key": "setup",
+      "title": "Verify setup for {{repository}}",
+      "role": "operator",
+      "deliverable": "Setup checklist with command output",
+      "acceptance": "Commands were executed; failures reported verbatim.",
+      "dependsOn": ["explore"],
+      "instructions": "Run the install, build, and test commands for {{repository}} and record output. Do not claim a command works without running it."
+    },
+    {
+      "key": "guide",
+      "title": "Onboarding guide for {{repository}}",
+      "role": "writer",
+      "deliverable": "Onboarding document",
+      "acceptance": "Every claim links to a file path or a command output from earlier steps.",
+      "dependsOn": ["map", "setup"],
+      "instructions": "Write an onboarding guide for {{repository}} using the map and setup results. Link sources."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["guide", "sources"],
+    "properties": {
+      "guide": {
+        "type": "string"
+      },
+      "sources": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "rubric": [
+    "Paths verified",
+    "Setup commands executed",
+    "Guide cites sources"
+  ],
+  "requiredTools": ["file.read", "search", "shell"],
+  "sampleInputs": {
+    "repository": "Agent Space"
+  }
+}

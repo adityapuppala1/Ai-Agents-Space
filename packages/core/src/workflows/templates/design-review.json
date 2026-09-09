@@ -1,0 +1,67 @@
+{
+  "id": "design-review",
+  "name": "Design review",
+  "domain": "Design",
+  "priority": "Growth",
+  "description": "Screens -> accessibility/layout review -> proposed edits. Produces annotated findings and reviewable changes.",
+  "roles": [
+    {
+      "key": "reviewer",
+      "name": "Design reviewer",
+      "workingState": "REVIEWING",
+      "description": "Reviews screens."
+    },
+    {
+      "key": "developer",
+      "name": "Frontend developer",
+      "workingState": "CODING",
+      "description": "Proposes edits."
+    }
+  ],
+  "steps": [
+    {
+      "key": "accessibility",
+      "title": "Accessibility review of {{screen}}",
+      "role": "reviewer",
+      "deliverable": "Findings with WCAG references",
+      "acceptance": "Each finding cites the element and a criterion.",
+      "dependsOn": [],
+      "instructions": "Review {{screen}} for accessibility: contrast, focus order, labels, reduced motion. Cite elements."
+    },
+    {
+      "key": "layout",
+      "title": "Layout review of {{screen}}",
+      "role": "reviewer",
+      "deliverable": "Layout findings",
+      "acceptance": "Findings reference breakpoints and components.",
+      "dependsOn": [],
+      "instructions": "Review {{screen}} layout across breakpoints. Cite components."
+    },
+    {
+      "key": "edits",
+      "title": "Proposed edits for {{screen}}",
+      "role": "developer",
+      "deliverable": "Patch addressing findings",
+      "acceptance": "Each change maps to a finding; nothing else changed.",
+      "dependsOn": ["accessibility", "layout"],
+      "instructions": "Implement reviewable changes for the findings on {{screen}}. Map each change to a finding."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["findings", "patch"],
+    "properties": {
+      "findings": {
+        "type": "array"
+      },
+      "patch": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": ["Findings cite elements", "Edits map to findings"],
+  "requiredTools": ["file.read", "file.edit"],
+  "sampleInputs": {
+    "screen": "Decision inbox"
+  }
+}

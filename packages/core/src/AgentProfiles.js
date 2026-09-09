@@ -78,11 +78,28 @@ function rowToProfile(row) {
     workingState: row.working_state,
     runtime: row.runtime ?? null,
     model: row.model ?? null,
+    // Schema v2: provider-backed and auto-created profiles.
+    provider: row.provider ?? null,
+    autoCreated: row.auto_created === 1,
+    connectionId: row.connection_id ?? null,
+    skills: parseSkills(row.skills),
+    avatar: row.avatar ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at ?? null,
   };
 }
+
+function parseSkills(value) {
+  try {
+    const parsed = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+const PROVIDER_IDS = ["claude-code", "codex", "copilot", "cursor", "gemini"];
 
 function text(value, field, max, { required = false } = {}) {
   if (value === undefined) return undefined;
@@ -194,6 +211,13 @@ export class AgentProfiles {
         );
       fields.workingState = input.workingState;
     }
+    if (input.provider !== undefined) {
+      if (input.provider !== null && !PROVIDER_IDS.includes(input.provider))
+        throw new InputError(
+          `provider must be null or one of ${PROVIDER_IDS.join(", ")}`,
+        );
+      fields.provider = input.provider;
+    }
     if (!partial) {
       if (fields.name === undefined) throw new InputError("Name is required");
       if (fields.role === undefined) throw new InputError("Role is required");
@@ -214,8 +238,8 @@ export class AgentProfiles {
     const id = randomUUID().slice(0, 8);
     this.db
       .prepare(
-        `INSERT INTO agent_profiles (id, workspace_id, name, role, color, initials, specialty, instructions, working_state, runtime, model, position, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_profiles (id, workspace_id, name, role, color, initials, specialty, instructions, working_state, runtime, model, provider, position, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -229,6 +253,7 @@ export class AgentProfiles {
         fields.workingState ?? "CODING",
         fields.runtime ?? null,
         fields.model ?? null,
+        fields.provider ?? null,
         position,
         now,
         now,
@@ -247,7 +272,7 @@ export class AgentProfiles {
     if (fields.name) next.initials = initialsFor(fields.name);
     this.db
       .prepare(
-        `UPDATE agent_profiles SET name = ?, role = ?, color = ?, initials = ?, specialty = ?, instructions = ?, working_state = ?, runtime = ?, model = ?, updated_at = ?
+        `UPDATE agent_profiles SET name = ?, role = ?, color = ?, initials = ?, specialty = ?, instructions = ?, working_state = ?, runtime = ?, model = ?, provider = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -260,6 +285,7 @@ export class AgentProfiles {
         next.workingState,
         next.runtime,
         next.model,
+        next.provider ?? null,
         Date.now(),
         id,
       );
@@ -277,6 +303,7 @@ export class AgentProfiles {
       workingState: source.workingState,
       runtime: source.runtime ?? undefined,
       model: source.model ?? undefined,
+      provider: source.provider ?? undefined,
     });
   }
 

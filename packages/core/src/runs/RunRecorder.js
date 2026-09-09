@@ -2,6 +2,23 @@ import { randomUUID } from "node:crypto";
 import { InputError } from "../TaskStore.js";
 import { classifyTool, TERMINAL_RUN_STATUSES } from "../contracts.js";
 
+/** Event kinds whose summary is the agent's "current action" on cards. */
+const ACTION_KINDS = new Set([
+  "tool.start",
+  "tool.end",
+  "file.edit",
+  "file.write",
+  "file.read",
+  "search",
+  "web",
+  "command",
+  "test",
+  "message",
+  "prompt",
+  "delegation",
+  "approval.request",
+]);
+
 const ACTIVITY_BY_KIND = {
   "file.edit": "CODING",
   "file.write": "CODING",
@@ -389,7 +406,8 @@ export class RunRecorder {
     if (stored.activity && !TERMINAL_RUN_STATUSES.includes(run.status)) {
       fields.activity = stored.activity;
     }
-    if (event.summary)
+    // Usage/status/system notes must not displace the last real action.
+    if (event.summary && ACTION_KINDS.has(event.kind))
       fields.currentAction = String(event.summary).slice(0, 200);
     if (event.file) fields.currentFile = String(event.file).slice(0, 500);
     if (event.model) fields.actualModel = event.model;

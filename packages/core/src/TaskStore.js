@@ -16,6 +16,17 @@ export class InputError extends Error {
   }
 }
 
+const PROVIDER_IDS = ["claude-code", "codex", "copilot", "cursor", "gemini"];
+const AUTONOMIES = ["observe-only", "propose", "sandbox", "scoped"];
+
+function parseJson(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function rowToTask(row) {
   const task = {
     id: row.id,
@@ -26,11 +37,129 @@ function rowToTask(row) {
     progress: row.progress,
     source: row.source,
     createdAt: row.created_at,
+    // Schema v2 execution fields (roadmap R2–R5).
+    dependsOn: parseJson(row.depends_on, []),
+    deliverable: row.deliverable ?? "",
+    target: parseJson(row.target, {}),
+    provider: row.provider ?? null,
+    executionPolicy: parseJson(row.execution_policy, {}),
+    templateId: row.template_id ?? null,
+    workflowId: row.workflow_id ?? null,
+    review: parseJson(row.review, {}),
+    updatedAt: row.updated_at ?? null,
   };
   if (row.assigned_agent_id) task.assignedAgentId = row.assigned_agent_id;
   if (row.started_at) task.startedAt = row.started_at;
   if (row.completed_at) task.completedAt = row.completed_at;
   return task;
+}
+
+function optionalText(value, field, max) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || value.length > max)
+    throw new InputError(`${field} must be a string under ${max} characters`);
+  return value.trim();
+}
+
+/**
+ * Validates the optional schema v2 fields a task may be created with:
+ * deliverable, target ({ folder, files[], range }), provider, executionPolicy
+ * ({ autonomy, isolation, timeoutMs }), dependsOn (task ids in the same
+ * workspace), templateId, workflowId. Unknown keys are ignored.
+ */
+function validateExtras(input, db, workspaceId) {
+  const extras = {};
+  const deliverable = optionalText(input.deliverable, "Deliverable", 2000);
+  if (deliverable !== undefined) extras.deliverable = deliverable;
+  if (input.provider !== undefined && input.provider !== null) {
+    if (!PROVIDER_IDS.includes(input.provider))
+      throw new InputError(
+        `provider must be one of ${PROVIDER_IDS.join(", ")}`,
+      );
+    extras.provider = input.provider;
+  }
+  if (input.target !== undefined && input.target !== null) {
+    const t = input.target;
+    if (typeof t !== "object" || Array.isArray(t))
+      throw new InputError("target must be an object");
+    const target = {};
+    const folder = optionalText(t.folder, "target.folder", 500);
+    if (folder) target.folder = folder;
+    if (t.files !== undefined) {
+      if (
+        !Array.isArray(t.files) ||
+        t.files.length > 200 ||
+        !t.files.every((f) => typeof f === "string" && f.length <= 500)
+      )
+        throw new InputError("target.files must be an array of paths");
+      target.files = t.files.map((f) => f.trim()).filter(Boolean);
+    }
+    if (t.range !== undefined && t.range !== null) {
+      const r = t.range;
+      if (
+        typeof r !== "object" ||
+        typeof r.file !== "string" ||
+        !Number.isInteger(r.start) ||
+        !Number.isInteger(r.end) ||
+        r.start < 1 ||
+        r.end < r.start
+      )
+        throw new InputError("target.range needs { file, start, end }");
+      target.range = { file: r.file, start: r.start, end: r.end };
+      if (typeof r.revision === "string") target.range.revision = r.revision;
+    }
+    extras.target = target;
+  }
+  if (input.executionPolicy !== undefined && input.executionPolicy !== null) {
+    const p = input.executionPolicy;
+    if (typeof p !== "object" || Array.isArray(p))
+      throw new InputError("executionPolicy must be an object");
+    const policy = {};
+    if (p.autonomy !== undefined) {
+      if (!AUTONOMIES.includes(p.autonomy))
+        throw new InputError(
+          `executionPolicy.autonomy must be one of ${AUTONOMIES.join(", ")}`,
+        );
+      policy.autonomy = p.autonomy;
+    }
+    if (p.isolation !== undefined) {
+      if (!["none", "worktree"].includes(p.isolation))
+        throw new InputError(
+          'executionPolicy.isolation must be "none" or "worktree"',
+        );
+      policy.isolation = p.isolation;
+    }
+    if (p.timeoutMs !== undefined) {
+      if (!Number.isInteger(p.timeoutMs) || p.timeoutMs < 60000)
+        throw new InputError("executionPolicy.timeoutMs must be >= 60000");
+      policy.timeoutMs = p.timeoutMs;
+    }
+    extras.executionPolicy = policy;
+  }
+  if (input.dependsOn !== undefined && input.dependsOn !== null) {
+    if (
+      !Array.isArray(input.dependsOn) ||
+      input.dependsOn.length > 100 ||
+      !input.dependsOn.every((id) => typeof id === "string" && id)
+    )
+      throw new InputError("dependsOn must be an array of task ids");
+    const ids = [...new Set(input.dependsOn)];
+    for (const id of ids) {
+      const exists = db
+        .prepare("SELECT id FROM tasks WHERE id = ? AND workspace_id = ?")
+        .get(id, workspaceId);
+      if (!exists)
+        throw new InputError(
+          `Dependency ${id} does not exist in this workspace`,
+        );
+    }
+    extras.dependsOn = ids;
+  }
+  const templateId = optionalText(input.templateId, "templateId", 120);
+  if (templateId) extras.templateId = templateId;
+  const workflowId = optionalText(input.workflowId, "workflowId", 120);
+  if (workflowId) extras.workflowId = workflowId;
+  return extras;
 }
 
 /**
@@ -97,31 +226,33 @@ export class TaskStore {
       (typeof input.description !== "string" || input.description.length > 2000)
     )
       throw new InputError("Description must be under 2000 characters");
-    const task = {
-      id: randomUUID(),
-      title: input.title.trim(),
-      description: input.description ?? "",
-      priority,
-      status: "QUEUE",
-      progress: 0,
-      source,
-      createdAt: Date.now(),
-    };
+    const extras = validateExtras(input, this.db, this.workspaceId);
+    const id = randomUUID();
+    const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, workspace_id, title, description, priority, status, progress, source, created_at)
-         VALUES (?, ?, ?, ?, ?, 'QUEUE', 0, ?, ?)`,
+        `INSERT INTO tasks (id, workspace_id, title, description, priority, status, progress, source, created_at,
+           depends_on, deliverable, target, provider, execution_policy, template_id, workflow_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'QUEUE', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        task.id,
+        id,
         this.workspaceId,
-        task.title,
-        task.description,
-        task.priority,
-        task.source,
-        task.createdAt,
+        input.title.trim(),
+        input.description ?? "",
+        priority,
+        source,
+        createdAt,
+        JSON.stringify(extras.dependsOn ?? []),
+        extras.deliverable ?? "",
+        JSON.stringify(extras.target ?? {}),
+        extras.provider ?? null,
+        JSON.stringify(extras.executionPolicy ?? {}),
+        extras.templateId ?? null,
+        extras.workflowId ?? null,
+        createdAt,
       );
-    return task;
+    return this.get(id);
   }
 
   assign(id, agentId) {
@@ -132,9 +263,9 @@ export class TaskStore {
     const startedAt = Date.now();
     this.db
       .prepare(
-        "UPDATE tasks SET assigned_agent_id = ?, status = 'IN_PROGRESS', started_at = ? WHERE id = ?",
+        "UPDATE tasks SET assigned_agent_id = ?, status = 'IN_PROGRESS', started_at = ?, updated_at = ? WHERE id = ?",
       )
-      .run(agentId, startedAt, id);
+      .run(agentId, startedAt, startedAt, id);
     return this.get(id);
   }
 
@@ -199,10 +330,11 @@ export class TaskStore {
       .prepare(
         `UPDATE tasks SET status = ?, progress = ?,
            started_at = CASE WHEN ? = 'IN_PROGRESS' THEN COALESCE(started_at, ?) ELSE started_at END,
-           completed_at = CASE WHEN ? = 'COMPLETED' THEN ? ELSE completed_at END
+           completed_at = CASE WHEN ? = 'COMPLETED' THEN ? ELSE completed_at END,
+           updated_at = ?
          WHERE id = ?`,
       )
-      .run(next, nextProgress, next, now, next, now, id);
+      .run(next, nextProgress, next, now, next, now, now, id);
     return this.get(id);
   }
 }

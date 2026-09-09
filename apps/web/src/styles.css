@@ -2154,3 +2154,346 @@ pre {
     max-width: 130px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* R2–R6 integration: rail badges, full-width views, provider badges,   */
+/* run spotlight, settings rows, shortcuts, focus/presentation modes.   */
+/* ------------------------------------------------------------------ */
+.rail {
+  gap: 22px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.rail nav {
+  gap: 6px;
+}
+.rail nav button,
+.rail-bottom button {
+  width: 42px;
+  height: 40px;
+  border-radius: 10px;
+}
+.rail-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #d9822b;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.rail-badge.live {
+  background: #3f9a6a;
+}
+.workspace-layout.full-view {
+  grid-template-columns: minmax(0, 1fr);
+}
+.view-panel {
+  padding: 18px 20px 22px;
+  min-height: 320px;
+}
+.view-panel + .view-panel,
+.api-card + .view-panel {
+  margin-top: 18px;
+}
+.api-card {
+  padding: 20px;
+}
+.api-card pre {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 11px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+.api-card .modal-intro {
+  margin-top: 12px;
+}
+.board-modes {
+  margin-left: 6px;
+}
+.board-modes button {
+  height: 32px;
+}
+.board-wrap {
+  padding: 16px 18px 20px;
+  overflow-x: auto;
+}
+.template-drawer {
+  border-bottom: 1px solid var(--line);
+  padding: 14px 18px 18px;
+  background: var(--soft);
+}
+.agent-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.auto-tag {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #7a8794;
+  border: 1px dashed #b8c3cd;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.agent-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  margin-top: 3px;
+}
+.agent-meta .agent-state {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+  flex-wrap: wrap;
+}
+.agent-meta .as-provider {
+  align-self: flex-start;
+}
+.agent-file,
+.agent-elapsed {
+  display: block;
+  font-size: 9px;
+  color: #8b99a5;
+  margin-top: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.identity-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.identity-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #6e87ab;
+  margin-top: 6px;
+}
+.spotlight-run {
+  padding: 12px 14px 16px;
+  max-height: 640px;
+  overflow: auto;
+}
+.spotlight-run .as-inspector-title {
+  font-size: 13px;
+}
+.spotlight-run .as-controls .button {
+  padding: 5px 8px;
+  font-size: 10px;
+}
+.run-summary {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.run-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.run-summary .task-properties {
+  margin-top: 0;
+}
+.run-summary .form-note {
+  margin: 0;
+}
+.task-deliverable {
+  font-size: 11px;
+  color: #6c7d8c;
+  margin-top: 8px;
+  line-height: 1.6;
+}
+.task-kicker {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.task-row p .as-provider {
+  margin-left: 4px;
+}
+.activity-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+}
+.activity-preview .activity-meta .as-activity {
+  display: none;
+}
+.settings-row select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--text);
+  min-width: 130px;
+}
+.help-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 18px 0 10px;
+}
+.shortcut-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 14px;
+  margin: 0 0 18px;
+  font-size: 11px;
+}
+.shortcut-list dt {
+  margin: 0;
+}
+.shortcut-list dd {
+  margin: 0;
+  color: #6c7d8c;
+  align-self: center;
+}
+.shortcut-list kbd {
+  font-family: inherit;
+  font-size: 10px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.modal.modal-wide {
+  width: min(960px, 96vw);
+  max-width: none;
+}
+.loading-state .button {
+  margin-top: 16px;
+}
+.stat-icon.violet {
+  background: #f0eef9;
+  color: #9a89bf;
+}
+/* Focus mode: no ambient decoration; the run is what matters. */
+.focus-mode .sparkline,
+.focus-mode .demo-note,
+.focus-mode .scene-caption {
+  display: none;
+}
+.focus-mode .page-heading h1 {
+  font-size: 22px;
+}
+/* Presentation mode: soften identity hints on screen. */
+.presentation .agent-id {
+  visibility: hidden;
+}
+.reduced-motion .agent-card,
+.reduced-motion .agent-card:hover {
+  transition: none;
+  transform: none;
+}
+[data-theme="dark"] .auto-tag {
+  color: #98a6b3;
+  border-color: #3c4a58;
+}
+[data-theme="dark"] .rail-badge {
+  box-shadow: 0 0 0 2px #1a2430;
+}
+[data-theme="dark"] .settings-row select,
+[data-theme="dark"] .api-card pre,
+[data-theme="dark"] .shortcut-list kbd {
+  background: #1f2a36;
+  border-color: #33414f;
+  color: #dde5ee;
+}
+[data-theme="dark"] .template-drawer {
+  background: #172029;
+}
+@media (max-width: 960px) {
+  .workspace-layout.full-view {
+    grid-template-columns: 1fr;
+  }
+  .board-tools {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 680px) {
+  .rail {
+    gap: 14px;
+  }
+  .rail nav {
+    gap: 4px;
+  }
+  .rail nav button,
+  .rail-bottom button {
+    width: 38px;
+    height: 36px;
+  }
+  .spotlight-run {
+    max-height: none;
+  }
+  .modal.modal-wide {
+    width: 100vw;
+  }
+}
+@media (max-height: 760px) {
+  .rail {
+    gap: 12px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+  .rail nav {
+    gap: 2px;
+  }
+  .rail nav button,
+  .rail-bottom button {
+    height: 36px;
+  }
+  .user-avatar {
+    margin-top: 6px;
+  }
+}
+.last-run {
+  width: 100%;
+  text-align: left;
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+.last-run h4 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.last-run .run-summary {
+  margin-top: 8px;
+}

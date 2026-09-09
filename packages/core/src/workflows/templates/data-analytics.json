@@ -1,0 +1,95 @@
+{
+  "id": "data-analytics",
+  "name": "Data analytics",
+  "domain": "Data",
+  "priority": "Growth",
+  "description": "Question -> scoped query -> analyze -> chart -> review. Produces query, results, chart, assumptions, and a reproducible report.",
+  "roles": [
+    {
+      "key": "analyst",
+      "name": "Analyst",
+      "workingState": "ANALYZING",
+      "description": "Scopes and runs the analysis."
+    },
+    {
+      "key": "visualizer",
+      "name": "Visualizer",
+      "workingState": "CODING",
+      "description": "Builds the chart."
+    },
+    {
+      "key": "reviewer",
+      "name": "Reviewer",
+      "workingState": "REVIEWING",
+      "description": "Checks assumptions and reproducibility."
+    }
+  ],
+  "steps": [
+    {
+      "key": "scope",
+      "title": "Scope query for: {{question}}",
+      "role": "analyst",
+      "deliverable": "Query text and assumptions",
+      "acceptance": "Query is written; execution status stated separately from generation.",
+      "dependsOn": [],
+      "instructions": "Write a query answering {{question}}. List assumptions. State clearly whether the query has been executed."
+    },
+    {
+      "key": "analyze",
+      "title": "Run and analyze: {{question}}",
+      "role": "analyst",
+      "deliverable": "Executed results and findings",
+      "acceptance": "Results come from an actual execution with row counts.",
+      "dependsOn": ["scope"],
+      "instructions": "Execute the query for {{question}}, record results and row counts, then summarize findings."
+    },
+    {
+      "key": "chart",
+      "title": "Chart results for: {{question}}",
+      "role": "visualizer",
+      "deliverable": "Chart file and generating code",
+      "acceptance": "Chart is generated from the executed results.",
+      "dependsOn": ["analyze"],
+      "instructions": "Build a chart from the executed results for {{question}}. Save the chart and the code that produced it."
+    },
+    {
+      "key": "review",
+      "title": "Review analysis: {{question}}",
+      "role": "reviewer",
+      "deliverable": "Review notes",
+      "acceptance": "Assumptions checked; report reproducible from query + code.",
+      "dependsOn": ["chart"],
+      "instructions": "Review the analysis for {{question}}: assumptions, query correctness, reproducibility."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["query", "executed", "results", "chart", "assumptions"],
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "executed": {
+        "type": "boolean"
+      },
+      "results": {
+        "type": "string"
+      },
+      "chart": {
+        "type": "string"
+      },
+      "assumptions": {
+        "type": "array"
+      }
+    }
+  },
+  "rubric": [
+    "Generated query distinguished from executed result",
+    "Assumptions listed",
+    "Chart traceable to results"
+  ],
+  "requiredTools": ["sql.read", "file.edit", "shell"],
+  "sampleInputs": {
+    "question": "Which providers have the highest retry rate?"
+  }
+}

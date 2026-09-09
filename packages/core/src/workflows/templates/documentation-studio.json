@@ -1,0 +1,76 @@
+{
+  "id": "documentation-studio",
+  "name": "Documentation studio",
+  "domain": "Documentation",
+  "priority": "Growth",
+  "description": "Code/doc inputs -> draft -> fact check -> review. Produces a versioned document with source references.",
+  "roles": [
+    {
+      "key": "writer",
+      "name": "Writer",
+      "workingState": "CODING",
+      "description": "Drafts the document."
+    },
+    {
+      "key": "checker",
+      "name": "Fact checker",
+      "workingState": "RESEARCHING",
+      "description": "Verifies claims against code."
+    },
+    {
+      "key": "reviewer",
+      "name": "Reviewer",
+      "workingState": "REVIEWING",
+      "description": "Approves the document."
+    }
+  ],
+  "steps": [
+    {
+      "key": "draft",
+      "title": "Draft {{document}}",
+      "role": "writer",
+      "deliverable": "Draft document",
+      "acceptance": "Draft covers the requested scope with source references.",
+      "dependsOn": [],
+      "instructions": "Draft {{document}} from the provided code and documents. Reference source files inline."
+    },
+    {
+      "key": "check",
+      "title": "Fact check {{document}}",
+      "role": "checker",
+      "deliverable": "Fact-check table",
+      "acceptance": "Every claim verified against a file or command output; mismatches listed.",
+      "dependsOn": ["draft"],
+      "instructions": "Verify every claim in the draft of {{document}} against the code. List mismatches."
+    },
+    {
+      "key": "review",
+      "title": "Review {{document}}",
+      "role": "reviewer",
+      "deliverable": "Reviewed, versioned document",
+      "acceptance": "Mismatches resolved; version recorded.",
+      "dependsOn": ["check"],
+      "instructions": "Apply fact-check corrections to {{document}} and record the version."
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": ["document", "version", "references"],
+    "properties": {
+      "document": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "references": {
+        "type": "array"
+      }
+    }
+  },
+  "rubric": ["Claims verified", "References present", "Version recorded"],
+  "requiredTools": ["file.read", "file.edit"],
+  "sampleInputs": {
+    "document": "Hook installation guide"
+  }
+}

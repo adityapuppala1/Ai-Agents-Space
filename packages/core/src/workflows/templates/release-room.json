@@ -1,0 +1,117 @@
+{
+  "id": "release-room",
+  "name": "Release room",
+  "domain": "Software engineering",
+  "priority": "Growth",
+  "description": "Changes -> build -> tests -> release notes -> deployment approval. Produces versioned release artifacts and an approval trail.",
+  "roles": [
+    {
+      "key": "release-manager",
+      "name": "Release manager",
+      "workingState": "ANALYZING",
+      "description": "Collects changes and drafts notes."
+    },
+    {
+      "key": "builder",
+      "name": "Build engineer",
+      "workingState": "DEBUGGING",
+      "description": "Runs the build."
+    },
+    {
+      "key": "qa",
+      "name": "QA engineer",
+      "workingState": "TESTING",
+      "description": "Runs the test suite."
+    },
+    {
+      "key": "approver",
+      "name": "Approver",
+      "workingState": "REVIEWING",
+      "description": "Approves deployment."
+    }
+  ],
+  "steps": [
+    {
+      "key": "collect",
+      "title": "Collect changes for {{version}}",
+      "role": "release-manager",
+      "deliverable": "Change list from version control",
+      "acceptance": "Every item references a commit or PR.",
+      "dependsOn": [],
+      "instructions": "List the changes since the last release for {{version}} using git log. Cite commits."
+    },
+    {
+      "key": "build",
+      "title": "Build {{version}}",
+      "role": "builder",
+      "deliverable": "Build output and artifact paths",
+      "acceptance": "Build command executed with captured output.",
+      "dependsOn": ["collect"],
+      "instructions": "Run the build for {{version}} and record output and artifact locations."
+    },
+    {
+      "key": "test",
+      "title": "Test {{version}}",
+      "role": "qa",
+      "deliverable": "Test results",
+      "acceptance": "Test command executed; failures listed.",
+      "dependsOn": ["build"],
+      "instructions": "Run the full test suite for {{version}} and record results."
+    },
+    {
+      "key": "notes",
+      "title": "Release notes for {{version}}",
+      "role": "release-manager",
+      "deliverable": "Release notes",
+      "acceptance": "Notes match the change list; no invented items.",
+      "dependsOn": ["collect", "test"],
+      "instructions": "Write release notes for {{version}} from the change list and test results."
+    },
+    {
+      "key": "approve",
+      "title": "Deployment approval for {{version}}",
+      "role": "approver",
+      "deliverable": "Approval decision",
+      "acceptance": "Explicit approve/deny recorded by a person; no automatic deployment.",
+      "dependsOn": ["notes"],
+      "instructions": "Review build, tests, and notes for {{version}}. Record the decision. Deployment itself requires a separate approved action.",
+      "requiresApproval": true
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "required": [
+      "changes",
+      "buildOutput",
+      "testResults",
+      "releaseNotes",
+      "approval"
+    ],
+    "properties": {
+      "changes": {
+        "type": "array"
+      },
+      "buildOutput": {
+        "type": "string"
+      },
+      "testResults": {
+        "type": "string"
+      },
+      "releaseNotes": {
+        "type": "string"
+      },
+      "approval": {
+        "type": "string"
+      }
+    }
+  },
+  "rubric": [
+    "Changes trace to commits",
+    "Build and tests executed",
+    "Human approval recorded before deployment"
+  ],
+  "requiredTools": ["git.log", "shell.build", "shell.test"],
+  "sampleInputs": {
+    "version": "v0.2.0"
+  }
+}

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { resolve, extname, sep } from "node:path";
+import { timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { InputError } from "../../core/src/TaskStore.js";
 import { DEMO_WORKSPACE_ID } from "../../core/src/WorkspaceHub.js";
@@ -21,14 +22,32 @@ const mime = {
   ".woff2": "font/woff2",
 };
 
+const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"];
+const LOOPBACK_ADDRESSES = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+const HOOK_PATH = "/api/hooks/claude-code";
+
 function allowedHost(host) {
   try {
-    return ["127.0.0.1", "localhost", "[::1]"].includes(
-      new URL(`http://${host}`).hostname,
-    );
+    return LOOPBACK_HOSTS.includes(new URL(`http://${host}`).hostname);
   } catch {
     return false;
   }
+}
+
+/** True when the TCP peer is this machine (not just a spoofable Host header). */
+function loopbackSocket(req) {
+  return LOOPBACK_ADDRESSES.includes(req.socket?.remoteAddress ?? "");
+}
+
+function sameSecret(given, expected) {
+  const a = Buffer.from(String(given ?? ""));
+  const b = Buffer.from(String(expected ?? ""));
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Whether the process binds to something other than loopback. */
+export function remoteBind(host) {
+  return host !== undefined && !LOOPBACK_HOSTS.includes(host);
 }
 
 async function readBody(req, limit = 16384) {
@@ -74,19 +93,30 @@ export function createWorkspaceServer(options = {}) {
   const { hub, db, bus } = services;
   const routes = options.routes ?? defaultRoutes;
   const token = options.token ?? process.env.AGENT_SPACE_TOKEN ?? null;
-  const allowRemote =
-    options.allowRemote ??
-    (process.env.HOST !== undefined && process.env.HOST !== "127.0.0.1");
+  const allowRemote = options.allowRemote ?? remoteBind(process.env.HOST);
+  if (allowRemote && !token)
+    throw new Error(
+      "HOST is not loopback; set AGENT_SPACE_TOKEN before accepting remote clients (every API route would otherwise be open to the network)",
+    );
 
   const authorized = (req, url) => {
     if (!token) return true;
     const header = req.headers.authorization ?? "";
-    if (header === `Bearer ${token}`) return true;
-    if (url.searchParams.get("token") === token) return true;
+    if (header.startsWith("Bearer ") && sameSecret(header.slice(7), token))
+      return true;
+    if (sameSecret(url.searchParams.get("token"), token)) return true;
     return false;
   };
+  // The Claude Code hook runs on this machine with no credential of its
+  // own; in token mode a hook POST from a loopback peer is accepted so the
+  // policy keeps applying (it can only record and ask, never launch).
+  const localHook = (req, url) =>
+    req.method === "POST" &&
+    url.pathname === HOOK_PATH &&
+    loopbackSocket(req) &&
+    allowedHost(req.headers.host);
   const hostOk = (req) =>
-    allowedHost(req.headers.host) || (allowRemote && token);
+    allowedHost(req.headers.host) || (allowRemote && !!token);
   const originOk = (req) => {
     if (!req.headers.origin) return true;
     if (req.headers.origin === `http://${req.headers.host}`) return true;
@@ -109,7 +139,11 @@ export function createWorkspaceServer(options = {}) {
       url = new URL(req.url, "http://localhost");
       if (!hostOk(req)) throw new InputError("Host not allowed", 403);
       if (!originOk(req)) throw new InputError("Origin not allowed", 403);
-      if (url.pathname.startsWith("/api/") && !authorized(req, url))
+      if (
+        url.pathname.startsWith("/api/") &&
+        !authorized(req, url) &&
+        !localHook(req, url)
+      )
         throw new InputError("Unauthorized", 401);
       let parsedBody;
       const ctx = {
@@ -174,22 +208,35 @@ export function createWorkspaceServer(options = {}) {
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16384 });
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url, "http://localhost");
-    const channel = url.searchParams.get("channel");
-    const workspaceId = url.searchParams.get("workspace") ?? DEMO_WORKSPACE_ID;
-    if (
-      !hostOk(req) ||
-      url.pathname !== "/ws" ||
-      !originOk(req) ||
-      !authorized(req, url) ||
-      (channel !== "global" && !hub.has(workspaceId))
-    )
+    // A malformed request-target must not become an uncaught exception.
+    socket.on("error", () => {});
+    let url;
+    try {
+      url = new URL(req.url, "http://localhost");
+    } catch {
       return socket.destroy();
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      ws.channel = channel === "global" ? "global" : "workspace";
-      ws.workspaceId = ws.channel === "workspace" ? workspaceId : null;
-      wss.emit("connection", ws, req);
-    });
+    }
+    try {
+      const channel = url.searchParams.get("channel");
+      const workspaceId =
+        url.searchParams.get("workspace") ?? DEMO_WORKSPACE_ID;
+      if (
+        !hostOk(req) ||
+        url.pathname !== "/ws" ||
+        !originOk(req) ||
+        !authorized(req, url) ||
+        (channel !== "global" && !hub.has(workspaceId))
+      )
+        return socket.destroy();
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        ws.channel = channel === "global" ? "global" : "workspace";
+        ws.workspaceId = ws.channel === "workspace" ? workspaceId : null;
+        wss.emit("connection", ws, req);
+      });
+    } catch (error) {
+      console.error(error);
+      socket.destroy();
+    }
   });
   const deliver = (ws, event, payload) => {
     if (ws.bufferedAmount > 1024 * 1024) return ws.terminate();
@@ -249,6 +296,10 @@ export function createWorkspaceServer(options = {}) {
   bus.on("global", broadcastGlobal);
   bus.on("workspace", forceWorkspace);
   wss.on("connection", (ws) => {
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
     ws.on("error", () => ws.terminate());
     if (ws.channel === "global")
       deliver(ws, "global:snapshot", services.globalSnapshot());
@@ -256,8 +307,26 @@ export function createWorkspaceServer(options = {}) {
   });
   const timer = setInterval(() => hub.tick(), 8000);
   timer.unref();
+  // Heartbeat: half-open clients (sleep, network switch) are reaped instead
+  // of lingering until the OS TCP timeout.
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        ws.terminate();
+      }
+    }
+  }, 30000);
+  heartbeat.unref();
   server.on("close", () => {
     clearInterval(timer);
+    clearInterval(heartbeat);
     clearTimeout(globalTimer);
     hub.removeListener("change", broadcastWorkspace);
     bus.removeListener("global", broadcastGlobal);

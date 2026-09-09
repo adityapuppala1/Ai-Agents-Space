@@ -3,16 +3,45 @@ import { randomUUID } from "node:crypto";
 import { InputError, TaskStore } from "./TaskStore.js";
 import { AgentProfiles, DEFAULT_AGENTS } from "./AgentProfiles.js";
 import { transaction } from "./db.js";
+import { ACTIVITIES } from "./contracts.js";
+import { mergePolicy } from "./policy/Policy.js";
 
 // Kept for scripts that imported the fixed roster from earlier versions.
 export const AGENTS = DEFAULT_AGENTS;
 
-function rowToRun(row) {
+/** Run statuses that keep an agent busy (queued runs are waiting for a slot). */
+export const ACTIVE_RUN_STATUSES = [
+  "queued",
+  "running",
+  "blocked",
+  "waiting_approval",
+  "stale",
+];
+
+/** Task sources a client may set on creation; anything else becomes "manual". */
+const CLIENT_SOURCE = /^[a-z][a-z0-9-]{0,23}$/;
+const RESERVED_SOURCES = new Set(["demo", "observed", "simulated"]);
+
+function parseJson(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Run row → snapshot shape. Deliberately lighter than RunRecorder.rowToRun:
+ * prompt, config snapshot, and context stay behind GET /api/runs/:id.
+ */
+export function rowToRun(row, now = Date.now()) {
+  const active = ACTIVE_RUN_STATUSES.includes(row.status);
   return {
     id: row.id,
+    workspaceId: row.workspace_id,
     taskId: row.task_id,
     agentId: row.agent_id,
-    agentSnapshot: JSON.parse(row.agent_snapshot),
+    agentSnapshot: parseJson(row.agent_snapshot, {}),
     connectionId: row.connection_id ?? null,
     provider: row.provider,
     requestedModel: row.requested_model ?? null,
@@ -20,10 +49,36 @@ function rowToRun(row) {
     status: row.status,
     startedAt: row.started_at,
     endedAt: row.ended_at ?? null,
+    mode: row.mode ?? "manual",
+    providerSessionId: row.provider_session_id ?? null,
+    cwd: row.cwd ?? null,
+    branch: row.branch ?? null,
+    worktree: row.worktree ?? null,
+    host: row.host ?? "local",
+    label: row.label ?? null,
+    title: row.title ?? null,
+    currentAction: row.current_action ?? null,
+    currentFile: row.current_file ?? null,
+    activity: row.activity ?? null,
+    lastEventAt: row.last_event_at ?? null,
+    usage: parseJson(row.usage, {}),
+    cost: parseJson(row.cost, {}),
+    exitCode: row.exit_code ?? null,
+    error: row.error ?? null,
+    pid: row.pid ?? null,
+    summary: row.summary ?? null,
+    attempt: row.attempt ?? 1,
+    parentRunId: row.parent_run_id ?? null,
+    orchestrationOwner: row.orchestration_owner ?? "agent-space",
+    elapsedMs: active
+      ? Math.max(0, now - row.started_at)
+      : row.ended_at
+        ? Math.max(0, row.ended_at - row.started_at)
+        : null,
   };
 }
 
-function rowToWorkspace(row) {
+export function rowToWorkspace(row) {
   return {
     id: row.id,
     name: row.name,
@@ -31,6 +86,42 @@ function rowToWorkspace(row) {
     rootPath: row.root_path ?? null,
     createdAt: row.created_at,
     archivedAt: row.archived_at ?? null,
+    autoCreated: row.auto_created === 1,
+    theme: row.theme ?? "studio",
+    policy: mergePolicy({}, parseJson(row.policy, {})),
+    settings: parseJson(row.settings, {}),
+  };
+}
+
+/**
+ * Visible state of an agent. Observed and managed runs report what the
+ * provider actually did (activity inferred from tool names, labelled as
+ * such); manual and simulated tasks keep the profile's working state; a
+ * BLOCKED task always wins.
+ */
+function agentState(agent, task, run) {
+  if (!task) return { state: "IDLE", activityProvenance: null };
+  if (task.status === "BLOCKED")
+    return { state: "BLOCKED", activityProvenance: "user" };
+  if (run && (run.mode === "observed" || run.mode === "managed")) {
+    if (run.status === "waiting_approval")
+      return { state: "WAITING_APPROVAL", activityProvenance: "system" };
+    if (run.status === "stale")
+      return { state: "STALE", activityProvenance: "system" };
+    if (run.status === "queued")
+      return { state: "IDLE", activityProvenance: "system" };
+    if (
+      run.activity &&
+      run.activity !== "IDLE" &&
+      ACTIVITIES.includes(run.activity)
+    )
+      return { state: run.activity, activityProvenance: "inferred" };
+    // Running, but the provider has not reported a tool or message yet.
+    return { state: "IDLE", activityProvenance: "system" };
+  }
+  return {
+    state: agent.workingState,
+    activityProvenance: task.source === "demo" ? "system" : "user",
   };
 }
 
@@ -80,38 +171,74 @@ export class Workspace extends EventEmitter {
         kind: row.kind,
         agentId: row.agent_id ?? undefined,
         runId: row.run_id ?? undefined,
+        taskId: row.task_id ?? undefined,
         timestamp: row.timestamp,
+        provenance: row.provenance ?? "system",
+        tool: row.tool ?? null,
+        file: row.file ?? null,
+        activity: parseJson(row.data, {}).activity ?? null,
       }));
   }
 
   runs(limit = 100) {
+    const now = Date.now();
     return this.db
       .prepare(
         "SELECT * FROM runs WHERE workspace_id = ? ORDER BY started_at DESC LIMIT ?",
       )
       .all(this.id, limit)
-      .map(rowToRun);
+      .map((row) => rowToRun(row, now));
+  }
+
+  /** Runs that currently occupy an agent (queued, running, blocked, waiting, stale). */
+  activeRuns() {
+    const now = Date.now();
+    const placeholders = ACTIVE_RUN_STATUSES.map(() => "?").join(",");
+    return this.db
+      .prepare(
+        `SELECT * FROM runs WHERE workspace_id = ? AND status IN (${placeholders}) ORDER BY started_at DESC`,
+      )
+      .all(this.id, ...ACTIVE_RUN_STATUSES)
+      .map((row) => rowToRun(row, now));
   }
 
   snapshot() {
+    const now = Date.now();
     const tasks = this.store.list();
+    const activeRuns = this.activeRuns();
     const agents = this.profiles.list().map((agent) => {
       const task = tasks.find(
         (task) =>
           task.assignedAgentId === agent.id &&
           !["COMPLETED", "QUEUE"].includes(task.status),
       );
+      const run = task
+        ? (activeRuns.find(
+            (r) => r.taskId === task.id && r.agentId === agent.id,
+          ) ??
+          activeRuns.find((r) => r.taskId === task.id) ??
+          null)
+        : null;
+      const { state, activityProvenance } = agentState(agent, task, run);
       return {
         ...agent,
-        state: task
-          ? task.status === "BLOCKED"
-            ? "BLOCKED"
-            : agent.workingState
-          : "IDLE",
+        state,
         taskId: task?.id,
+        taskTitle: task?.title ?? null,
         completed: tasks.filter(
           (t) => t.assignedAgentId === agent.id && t.status === "COMPLETED",
         ).length,
+        activity: run?.activity ?? null,
+        activityProvenance,
+        currentFile: run?.currentFile ?? null,
+        currentAction: run?.currentAction ?? null,
+        runId: run?.id ?? null,
+        runStatus: run?.status ?? null,
+        runMode: run?.mode ?? null,
+        runProvider: run?.provider ?? null,
+        actualModel: run?.actualModel ?? null,
+        lastEventAt: run?.lastEventAt ?? null,
+        elapsedMs: run ? Math.max(0, now - run.startedAt) : null,
       };
     });
     return {
@@ -130,7 +257,7 @@ export class Workspace extends EventEmitter {
     this.sequence++;
     this.db
       .prepare(
-        "INSERT INTO events (id, sequence, workspace_id, run_id, kind, message, agent_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO events (id, sequence, workspace_id, run_id, kind, message, agent_id, timestamp, provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'system')",
       )
       .run(
         randomUUID(),
@@ -162,6 +289,7 @@ export class Workspace extends EventEmitter {
 
   #startRun(task, agent) {
     const id = randomUUID();
+    const now = Date.now();
     const snapshot = {
       name: agent.name,
       role: agent.role,
@@ -172,11 +300,13 @@ export class Workspace extends EventEmitter {
       workingState: agent.workingState,
       runtime: agent.runtime ?? null,
       model: agent.model ?? null,
+      provider: agent.provider ?? null,
     };
+    const mode = task.source === "demo" ? "simulated" : "manual";
     this.db
       .prepare(
-        `INSERT INTO runs (id, workspace_id, task_id, agent_id, agent_snapshot, provider, requested_model, status, started_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
+        `INSERT INTO runs (id, workspace_id, task_id, agent_id, agent_snapshot, provider, requested_model, status, started_at, mode, title, last_event_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -184,9 +314,12 @@ export class Workspace extends EventEmitter {
         task.id,
         agent.id,
         JSON.stringify(snapshot),
-        task.source === "demo" ? "simulated" : "manual",
+        mode,
         agent.model ?? null,
-        Date.now(),
+        now,
+        mode,
+        task.title,
+        now,
       );
     return id;
   }
@@ -200,25 +333,45 @@ export class Workspace extends EventEmitter {
     return row ? rowToRun(row) : null;
   }
 
+  /**
+   * Mirrors a task status change onto its manual/simulated run. Observed and
+   * managed runs are owned by the observation service and the run worker,
+   * which record their own lifecycle; only the id is returned for them.
+   */
   #syncRun(task) {
     const run = this.activeRun(task.id);
     if (!run) return undefined;
+    if (run.mode === "observed" || run.mode === "managed") return run.id;
     const status =
       task.status === "COMPLETED"
         ? "completed"
         : task.status === "BLOCKED"
           ? "blocked"
           : "running";
+    const now = Date.now();
     this.db
-      .prepare("UPDATE runs SET status = ?, ended_at = ? WHERE id = ?")
-      .run(status, task.status === "COMPLETED" ? Date.now() : null, run.id);
+      .prepare(
+        "UPDATE runs SET status = ?, ended_at = ?, last_event_at = ? WHERE id = ?",
+      )
+      .run(status, task.status === "COMPLETED" ? now : null, now, run.id);
     return run.id;
+  }
+
+  #sourceFrom(input) {
+    const source = input?.source;
+    if (
+      typeof source === "string" &&
+      CLIENT_SOURCE.test(source) &&
+      !RESERVED_SOURCES.has(source)
+    )
+      return source;
+    return "manual";
   }
 
   create(input) {
     return transaction(this.db, () => {
       const agent = input?.agentId ? this.availableAgent(input.agentId) : null;
-      let task = this.store.create(input);
+      let task = this.store.create(input, this.#sourceFrom(input));
       let runId;
       if (agent) {
         task = this.store.assign(task.id, agent.id);

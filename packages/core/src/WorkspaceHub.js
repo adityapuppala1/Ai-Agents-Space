@@ -3,8 +3,10 @@ import { randomBytes } from "node:crypto";
 import { InputError, TaskStore } from "./TaskStore.js";
 import { Workspace } from "./Workspace.js";
 import { openDatabase } from "./db.js";
+import { mergePolicy, validatePolicy } from "./policy/Policy.js";
 
 export const DEMO_WORKSPACE_ID = "demo";
+export const THEMES = ["studio", "operations"];
 
 function slug(name) {
   return (
@@ -14,6 +16,14 @@ function slug(name) {
       .replace(/^-+|-+$/g, "")
       .slice(0, 24) || "workspace"
   );
+}
+
+function parseJson(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function validate(input, { partial = false } = {}) {
@@ -37,6 +47,14 @@ function validate(input, { partial = false } = {}) {
       throw new InputError("Root path must be a string under 500 characters");
     fields.rootPath = input.rootPath?.trim() || null;
   }
+  if (input.theme !== undefined) {
+    if (!THEMES.includes(input.theme))
+      throw new InputError(`theme must be one of ${THEMES.join(", ")}`);
+    fields.theme = input.theme;
+  }
+  if (input.policy !== undefined) {
+    fields.policy = validatePolicy(input.policy, { partial: true });
+  }
   return fields;
 }
 
@@ -50,6 +68,7 @@ export class WorkspaceHub extends EventEmitter {
     super();
     this.db = db;
     this.runtimes = new Map();
+    this.policyService = null;
     this.db
       .prepare(
         "INSERT OR IGNORE INTO workspaces (id, name, kind, created_at) VALUES (?, 'Demo workspace', 'demo', ?)",
@@ -57,6 +76,14 @@ export class WorkspaceHub extends EventEmitter {
       .run(DEMO_WORKSPACE_ID, Date.now());
     const demoWorkspace = this.get(DEMO_WORKSPACE_ID);
     if (demo) demoWorkspace.loadDemo();
+  }
+
+  /**
+   * Lets the policy engine own policy writes (validation, audit, broadcast).
+   * Without one, PATCH {policy} merges and stores the validated fields directly.
+   */
+  setPolicyService(service) {
+    this.policyService = service ?? null;
   }
 
   #row(id) {
@@ -86,6 +113,9 @@ export class WorkspaceHub extends EventEmitter {
       rootPath: row.root_path ?? null,
       createdAt: row.created_at,
       archivedAt: row.archived_at ?? null,
+      autoCreated: row.auto_created === 1,
+      theme: row.theme ?? "studio",
+      policy: mergePolicy({}, parseJson(row.policy, {})),
       activeRuns: row.active,
       attention: row.attention,
       agents: row.agents,
@@ -113,34 +143,71 @@ export class WorkspaceHub extends EventEmitter {
       id = `${slug(fields.name)}-${randomBytes(2).toString("hex")}`;
     this.db
       .prepare(
-        "INSERT INTO workspaces (id, name, kind, root_path, created_at) VALUES (?, ?, 'project', ?, ?)",
+        "INSERT INTO workspaces (id, name, kind, root_path, created_at, theme, policy) VALUES (?, ?, 'project', ?, ?, ?, ?)",
       )
-      .run(id, fields.name, fields.rootPath ?? null, Date.now());
+      .run(
+        id,
+        fields.name,
+        fields.rootPath ?? null,
+        Date.now(),
+        fields.theme ?? "studio",
+        JSON.stringify(fields.policy ?? {}),
+      );
     const runtime = this.get(id);
     runtime.changed(`Workspace “${fields.name}” created`, "system");
     this.emit("workspaces");
     return runtime.record;
   }
 
-  update(id, input) {
+  update(id, input, { actor = "local-user" } = {}) {
     const runtime = this.get(id);
     const fields = validate(input, { partial: true });
     if (!Object.keys(fields).length)
-      throw new InputError("Provide a name or root path to update");
-    const current = runtime.record;
-    this.db
-      .prepare("UPDATE workspaces SET name = ?, root_path = ? WHERE id = ?")
-      .run(
-        fields.name ?? current.name,
-        fields.rootPath === undefined ? current.rootPath : fields.rootPath,
-        id,
+      throw new InputError(
+        "Provide a name, root path, theme, or policy to update",
       );
-    runtime.changed(
-      fields.name && fields.name !== current.name
-        ? `Workspace renamed to “${fields.name}”`
-        : "Workspace settings updated",
-      "system",
-    );
+    const current = runtime.record;
+    const sets = [];
+    const params = [];
+    if (fields.name !== undefined) {
+      sets.push("name = ?");
+      params.push(fields.name);
+    }
+    if (fields.rootPath !== undefined) {
+      sets.push("root_path = ?");
+      params.push(fields.rootPath);
+    }
+    if (fields.theme !== undefined) {
+      sets.push("theme = ?");
+      params.push(fields.theme);
+    }
+    if (sets.length) {
+      params.push(id);
+      this.db
+        .prepare(`UPDATE workspaces SET ${sets.join(", ")} WHERE id = ?`)
+        .run(...params);
+    }
+    let policyHandled = false;
+    if (fields.policy !== undefined) {
+      if (this.policyService?.setForWorkspace) {
+        this.policyService.setForWorkspace(id, fields.policy, { actor });
+        policyHandled = true;
+      } else {
+        this.db
+          .prepare("UPDATE workspaces SET policy = ? WHERE id = ?")
+          .run(JSON.stringify(mergePolicy(current.policy, fields.policy)), id);
+      }
+    }
+    if (sets.length || !policyHandled) {
+      runtime.changed(
+        fields.name && fields.name !== current.name
+          ? `Workspace renamed to “${fields.name}”`
+          : fields.theme && fields.theme !== current.theme
+            ? `Office theme set to ${fields.theme}`
+            : "Workspace settings updated",
+        "system",
+      );
+    }
     this.emit("workspaces");
     return runtime.record;
   }
