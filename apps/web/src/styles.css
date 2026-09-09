@@ -2054,3 +2054,103 @@ pre {
     scroll-behavior: auto !important;
   }
 }
+
+/* Workspace switcher and agent management (R1) */
+.brand-name .workspace-name {
+  position: relative;
+  gap: 6px;
+}
+.workspace-select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 4px 2px;
+  max-width: 220px;
+  cursor: pointer;
+}
+.workspace-select:focus-visible {
+  outline: 3px solid #91b7fb;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.agent-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.agent-toolbar .button {
+  font-size: 10px;
+  padding: 6px 10px;
+}
+.agent-toolbar .text-button {
+  font-size: 10px;
+}
+.agent-tools {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  align-self: flex-start;
+}
+.agent-tools .icon-button {
+  width: 30px;
+  height: 30px;
+}
+.archived-list {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+.archived-list h3 {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.archived-list p {
+  font-size: 10px;
+  color: var(--muted);
+}
+.archived-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  padding: 6px 0;
+}
+.archived-row > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archived-row .button {
+  font-size: 10px;
+  padding: 6px 10px;
+}
+.color-field {
+  padding: 2px;
+  height: 38px;
+  cursor: pointer;
+}
+.run-passport {
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+}
+.settings-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+@media (max-width: 720px) {
+  .workspace-select {
+    max-width: 130px;
+  }
+}

@@ -101,10 +101,14 @@ test("HTTP API creates, updates and lists tasks; validates input", async (t) => 
     403,
   );
   const rejectedHostStatus = await new Promise((resolve, reject) => {
-    const request = get(base + "/api/tasks", { headers: { Host: "unrelated.example" } }, response => {
-      response.resume();
-      resolve(response.statusCode);
-    });
+    const request = get(
+      base + "/api/tasks",
+      { headers: { Host: "unrelated.example" } },
+      (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      },
+    );
     request.on("error", reject);
   });
   assert.equal(rejectedHostStatus, 403);

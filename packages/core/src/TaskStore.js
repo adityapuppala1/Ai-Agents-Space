@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { openDatabase } from "./db.js";
 
 const priorities = ["critical", "high", "medium", "low"];
 const transitions = {
@@ -15,17 +16,67 @@ export class InputError extends Error {
   }
 }
 
+function rowToTask(row) {
+  const task = {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    priority: row.priority,
+    status: row.status,
+    progress: row.progress,
+    source: row.source,
+    createdAt: row.created_at,
+  };
+  if (row.assigned_agent_id) task.assignedAgentId = row.assigned_agent_id;
+  if (row.started_at) task.startedAt = row.started_at;
+  if (row.completed_at) task.completedAt = row.completed_at;
+  return task;
+}
+
+/**
+ * Task records for one workspace, persisted in SQLite. Without arguments it
+ * creates a private in-memory database with a single demo-capable workspace,
+ * which is convenient for tests and scripts.
+ */
 export class TaskStore {
-  #tasks = new Map();
+  constructor(db, workspaceId) {
+    if (!db) {
+      db = openDatabase();
+      workspaceId = "local";
+      db.prepare(
+        "INSERT INTO workspaces (id, name, kind, created_at) VALUES (?, ?, 'demo', ?)",
+      ).run(workspaceId, "Local workspace", Date.now());
+    }
+    this.db = db;
+    this.workspaceId = workspaceId;
+    const exists = db
+      .prepare("SELECT id FROM workspaces WHERE id = ?")
+      .get(workspaceId);
+    if (!exists) throw new InputError("Workspace not found", 404);
+  }
+
+  #get(id) {
+    return this.db
+      .prepare("SELECT * FROM tasks WHERE id = ? AND workspace_id = ?")
+      .get(id, this.workspaceId);
+  }
 
   list() {
-    return structuredClone(
-      [...this.#tasks.values()].sort(
+    return this.db
+      .prepare("SELECT * FROM tasks WHERE workspace_id = ?")
+      .all(this.workspaceId)
+      .map(rowToTask)
+      .sort(
         (a, b) =>
           priorities.indexOf(a.priority) - priorities.indexOf(b.priority) ||
           a.createdAt - b.createdAt,
-      ),
-    );
+      );
+  }
+
+  get(id) {
+    const row = this.#get(id);
+    if (!row) throw new InputError("Task not found", 404);
+    return rowToTask(row);
   }
 
   create(input, source = "manual") {
@@ -56,40 +107,68 @@ export class TaskStore {
       source,
       createdAt: Date.now(),
     };
-    this.#tasks.set(task.id, task);
-    return structuredClone(task);
+    this.db
+      .prepare(
+        `INSERT INTO tasks (id, workspace_id, title, description, priority, status, progress, source, created_at)
+         VALUES (?, ?, ?, ?, ?, 'QUEUE', 0, ?, ?)`,
+      )
+      .run(
+        task.id,
+        this.workspaceId,
+        task.title,
+        task.description,
+        task.priority,
+        task.source,
+        task.createdAt,
+      );
+    return task;
   }
 
   assign(id, agentId) {
-    const task = this.#tasks.get(id);
-    if (!task) throw new InputError("Task not found", 404);
-    if (task.status !== "QUEUE")
+    const row = this.#get(id);
+    if (!row) throw new InputError("Task not found", 404);
+    if (row.status !== "QUEUE")
       throw new InputError("Only queued tasks can be assigned", 409);
-    task.assignedAgentId = agentId;
-    task.status = "IN_PROGRESS";
-    task.startedAt = Date.now();
-    return structuredClone(task);
+    const startedAt = Date.now();
+    this.db
+      .prepare(
+        "UPDATE tasks SET assigned_agent_id = ?, status = 'IN_PROGRESS', started_at = ? WHERE id = ?",
+      )
+      .run(agentId, startedAt, id);
+    return this.get(id);
   }
 
   removeDemoTasks() {
-    for (const [id, task] of this.#tasks)
-      if (task.source === "demo") this.#tasks.delete(id);
+    const demoTasks = this.db
+      .prepare(
+        "SELECT id FROM tasks WHERE workspace_id = ? AND source = 'demo'",
+      )
+      .all(this.workspaceId);
+    for (const { id } of demoTasks) {
+      this.db
+        .prepare(
+          "DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE task_id = ?)",
+        )
+        .run(id);
+      this.db.prepare("DELETE FROM runs WHERE task_id = ?").run(id);
+      this.db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+    }
   }
 
   update(id, input) {
-    const task = this.#tasks.get(id);
-    if (!task) throw new InputError("Task not found", 404);
+    const row = this.#get(id);
+    if (!row) throw new InputError("Task not found", 404);
     if (!input || typeof input !== "object" || Array.isArray(input))
       throw new InputError("Expected an object");
     const { status, progress } = input;
     if (status === undefined && progress === undefined)
       throw new InputError("Provide status or progress");
-    if (task.status === "COMPLETED")
+    if (row.status === "COMPLETED")
       throw new InputError("Completed tasks cannot be modified", 409);
     if (
       status !== undefined &&
-      status !== task.status &&
-      !transitions[task.status].includes(status)
+      status !== row.status &&
+      !transitions[row.status].includes(status)
     ) {
       throw new InputError("Invalid status transition", 409);
     }
@@ -97,14 +176,14 @@ export class TaskStore {
       progress !== undefined &&
       (typeof progress !== "number" ||
         !Number.isFinite(progress) ||
-        progress < task.progress ||
+        progress < row.progress ||
         progress > 100)
     ) {
       throw new InputError(
         "Progress must be a number between current progress and 100",
       );
     }
-    const next = status ?? task.status;
+    const next = status ?? row.status;
     if (
       progress !== undefined &&
       next !== "IN_PROGRESS" &&
@@ -113,13 +192,17 @@ export class TaskStore {
       throw new InputError("Progress requires an active task");
     if (progress === 100 && next !== "COMPLETED")
       throw new InputError("Use COMPLETED status for 100% progress");
-    task.status = next;
-    if (progress !== undefined) task.progress = progress;
-    if (next === "IN_PROGRESS") task.startedAt ??= Date.now();
-    if (next === "COMPLETED") {
-      task.progress = 100;
-      task.completedAt = Date.now();
-    }
-    return structuredClone(task);
+    const now = Date.now();
+    const nextProgress =
+      next === "COMPLETED" ? 100 : (progress ?? row.progress);
+    this.db
+      .prepare(
+        `UPDATE tasks SET status = ?, progress = ?,
+           started_at = CASE WHEN ? = 'IN_PROGRESS' THEN COALESCE(started_at, ?) ELSE started_at END,
+           completed_at = CASE WHEN ? = 'COMPLETED' THEN ? ELSE completed_at END
+         WHERE id = ?`,
+      )
+      .run(next, nextProgress, next, now, next, now, id);
+    return this.get(id);
   }
 }

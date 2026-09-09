@@ -9,3 +9,4 @@ playwright-report/
 graphify-out/
 artifacts/*.log
 .claude/
+data/

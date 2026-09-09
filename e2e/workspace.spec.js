@@ -131,6 +131,55 @@ test("office renders and manual task lifecycle synchronizes across tabs", async 
   expect(errors).toEqual([]);
 });
 
+test("workspaces are isolated and agent edits persist across reloads", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(
+    page.getByText("Live connection", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Switch workspace", { exact: true })
+    .selectOption("__new");
+  await page.getByLabel("Workspace name", { exact: true }).fill("Storefront");
+  await page
+    .getByRole("button", { name: "Create workspace", exact: true })
+    .click();
+  await expect(
+    page.getByLabel("Switch workspace", { exact: true }),
+  ).toHaveValue(/^storefront/);
+  await expect(
+    page.getByText("PROJECT WORKSPACE", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Task board", exact: true })
+    .first()
+    .click();
+  await expect(page.locator(".task-row")).toHaveCount(0);
+  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await page.getByRole("button", { name: "Inspect Nova", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Nova", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Nova Prime");
+  await page.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Inspect Nova Prime", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByLabel("Switch workspace", { exact: true }),
+  ).toHaveValue(/^storefront/);
+  await expect(
+    page.getByRole("button", { name: "Inspect Nova Prime", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Switch workspace", { exact: true })
+    .selectOption("demo");
+  await expect(
+    page.getByRole("button", { name: "Inspect Nova", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("DEMO WORKSPACE", { exact: true })).toBeVisible();
+});
+
 test("mobile layout fits viewport and keyboard can create a task", async ({
   page,
 }) => {

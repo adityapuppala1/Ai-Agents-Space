@@ -17,7 +17,7 @@ export default defineConfig({
   webServer: {
     command: "node packages/server/src/main.js",
     url: "http://127.0.0.1:5174/api/health",
-    env: { PORT: "5174" },
+    env: { PORT: "5174", AGENT_SPACE_DB: ":memory:" },
     reuseExistingServer: false,
   },
 });
