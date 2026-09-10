@@ -58,3 +58,12 @@ Run locally with `npm start` after `npm run build`. The review preview uses an i
 | Analytics used literal NUL bytes as map-key separators, so the source read as binary         | `analytics/Analytics.js`                                                     | Fixed  |
 
 Accessibility remains **Partial**, not conformant: the automated gate cannot replace a manual screen-reader pass or a human review, and none has been done.
+
+### Verification gates added after that pass
+
+- `tests/two-providers.test.js` — the end-to-end gate: two providers into two workspaces, concurrent writes in separate worktrees, artifact and review isolation, refusal of a target outside the workspace root, and a reconcile that creates no duplicate run.
+- `e2e/performance.spec.js` — the 10/50/100-agent scenarios. The scene draws every agent at each size, the frame loop never stalls, and WebGL survives 100 agents instead of dropping to the 2D list. Frame times are recorded to `artifacts/perf-agents.json` under **SwiftShader software rendering**, so they are a regression baseline for the harness, not a claim about any user's machine. No agent count or frame rate is promised.
+
+An earlier revision of ROADMAP_STATUS.md marked the end-to-end row Done while citing a file that did not exist. That is recorded at the top of ROADMAP_STATUS.md rather than silently corrected.
+
+Current verification: 452 unit tests and 26 browser tests pass; the build is clean apart from the standing chunk-size advisory.

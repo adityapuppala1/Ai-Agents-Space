@@ -1,0 +1,27 @@
+{
+  "note": "SwiftShader software rendering in the Playwright harness. Relative regression signal only; not a capability claim and not a promised agent count.",
+  "renderer": "swiftshader",
+  "scenarios": [
+    {
+      "agents": 10,
+      "frames": 73,
+      "medianFrameMs": 25,
+      "p95FrameMs": 42.8,
+      "worstFrameMs": 383.2
+    },
+    {
+      "agents": 50,
+      "frames": 39,
+      "medianFrameMs": 41.7,
+      "p95FrameMs": 51.4,
+      "worstFrameMs": 391.5
+    },
+    {
+      "agents": 100,
+      "frames": 24,
+      "medianFrameMs": 67,
+      "p95FrameMs": 75.4,
+      "worstFrameMs": 540
+    }
+  ]
+}
