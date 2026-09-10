@@ -1,5 +1,7 @@
 # Roadmap status
 
+> **UI update, 10 September 2026:** The roadmap remains incomplete. A subsequent [UI review](UI_UX_REVIEW.md) adds office provider and role filtering, a recorded activity ribbon, real-workspace motion wiring, agent context actions, five persisted environment palettes, and agent editing for skills, preferred provider/runtime/model, outfit, accessory, hair colour and pronouns. Earlier rows saying the office ignores provider filters, has only two themes, or cannot write avatar/skill fields are superseded by that review. Wholly different floor plans remain unfinished. Provider live-run claims below are from the earlier audit; this UI pass used fixture providers.
+
 Status of every numbered section, every bullet, and every table row of [PRODUCT_ROADMAP.md](../PRODUCT_ROADMAP.md) against the code in this repository, regenerated after wave 2.
 
 **Verification this document is written against** (10 September 2026, Windows 11 x64, Node 24):

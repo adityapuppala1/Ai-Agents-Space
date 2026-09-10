@@ -29,9 +29,13 @@ test("workspace remains usable when WebGL is unavailable", async ({ page }) => {
 test("office renders and manual task lifecycle synchronizes across tabs", async ({
   page,
   context,
+  request,
 }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  // The demo simulation is shared server state: another spec may have paused
+  // it. Set the precondition this test relies on instead of assuming order.
+  await request.post("/api/workspaces/demo/demo", { data: { running: true } });
   await page.goto("/");
   await expect(
     page.getByText("Live connection", { exact: true }),

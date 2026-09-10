@@ -99,6 +99,17 @@ function parseSkills(value) {
   }
 }
 
+function parseAvatar(value) {
+  try {
+    const parsed = value ? JSON.parse(value) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const PROVIDER_IDS = ["claude-code", "codex", "copilot", "cursor", "gemini"];
 
 function text(value, field, max, { required = false } = {}) {
@@ -117,6 +128,40 @@ function initialsFor(name) {
       ? parts[0][0] + parts[1][0]
       : name.replace(/[^a-z0-9]/gi, "").slice(0, 2);
   return (letters || "AG").toUpperCase();
+}
+
+function skills(value) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 24)
+    throw new InputError("Skills must be an array with at most 24 entries");
+  const clean = value.map((item) => text(item, "Skill", 60, { required: true }));
+  return [...new Set(clean)];
+}
+
+function avatar(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new InputError("Avatar must be an object");
+  const allowed = {
+    outfit: ["hoodie", "shirt", "labcoat", "vest", "jacket"],
+    accessory: ["hardhat", "glasses", "headset", "clipboard", "none"],
+  };
+  const result = {};
+  for (const key of ["outfit", "accessory"]) {
+    if (value[key] === undefined || value[key] === "") continue;
+    if (!allowed[key].includes(value[key]))
+      throw new InputError(`${key} must be one of ${allowed[key].join(", ")}`);
+    if (value[key] !== "none") result[key] = value[key];
+  }
+  if (value.hairColor !== undefined && value.hairColor !== "") {
+    if (!/^#[0-9a-f]{6}$/i.test(value.hairColor))
+      throw new InputError("Hair color must be a hex value");
+    result.hairColor = value.hairColor.toLowerCase();
+  }
+  if (value.pronouns !== undefined && value.pronouns !== "")
+    result.pronouns = text(value.pronouns, "Pronouns", 30);
+  return JSON.stringify(result);
 }
 
 /**
@@ -195,6 +240,8 @@ export class AgentProfiles {
       instructions: text(input.instructions, "Instructions", 4000),
       runtime: text(input.runtime, "Runtime", 60),
       model: text(input.model, "Model", 120),
+      skills: skills(input.skills),
+      avatar: avatar(input.avatar),
     };
     if (input.color !== undefined) {
       if (
@@ -238,8 +285,8 @@ export class AgentProfiles {
     const id = randomUUID().slice(0, 8);
     this.db
       .prepare(
-        `INSERT INTO agent_profiles (id, workspace_id, name, role, color, initials, specialty, instructions, working_state, runtime, model, provider, position, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_profiles (id, workspace_id, name, role, color, initials, specialty, instructions, working_state, runtime, model, provider, skills, avatar, position, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -254,6 +301,8 @@ export class AgentProfiles {
         fields.runtime ?? null,
         fields.model ?? null,
         fields.provider ?? null,
+        JSON.stringify(fields.skills ?? []),
+        fields.avatar ?? null,
         position,
         now,
         now,
@@ -272,7 +321,7 @@ export class AgentProfiles {
     if (fields.name) next.initials = initialsFor(fields.name);
     this.db
       .prepare(
-        `UPDATE agent_profiles SET name = ?, role = ?, color = ?, initials = ?, specialty = ?, instructions = ?, working_state = ?, runtime = ?, model = ?, provider = ?, updated_at = ?
+        `UPDATE agent_profiles SET name = ?, role = ?, color = ?, initials = ?, specialty = ?, instructions = ?, working_state = ?, runtime = ?, model = ?, provider = ?, skills = ?, avatar = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -286,6 +335,8 @@ export class AgentProfiles {
         next.runtime,
         next.model,
         next.provider ?? null,
+        JSON.stringify(next.skills ?? []),
+        next.avatar ?? null,
         Date.now(),
         id,
       );
@@ -304,6 +355,8 @@ export class AgentProfiles {
       runtime: source.runtime ?? undefined,
       model: source.model ?? undefined,
       provider: source.provider ?? undefined,
+      skills: source.skills,
+      avatar: parseAvatar(source.avatar),
     });
   }
 

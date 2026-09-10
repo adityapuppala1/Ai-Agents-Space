@@ -17,6 +17,7 @@ import workflowRoutes from "./workflows.js";
 import analyticsRoutes from "./analytics.js";
 import contextRoutes from "./context.js";
 import exportRoutes from "./export.js";
+import visualPresetRoutes from "./visualPresets.js";
 import workspaceRoutes from "./workspaces.js";
 
 /**
@@ -59,6 +60,7 @@ export const routes = [
   workflowRoutes, // /api/templates*, /api/workflows/:id*, /api/workspaces/:id/{workflows,graph,tasks/ready,tasks/:id/dependencies}
   analyticsRoutes, // /api/analytics*
   contextRoutes, // /api/workspaces/:id/context/*
+  visualPresetRoutes, // /api/workspaces/:id/visual-preset*
   exportRoutes, // /api/workspaces/:id/export, /api/workspaces/import
   workspaceRoutes, // everything else under /api (must stay last)
 ];

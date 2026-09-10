@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 /**
  * Living office (Three.js). Renders every agent as a figure that moves to the
  * zone matching its recorded activity. Walking is a visual transition only.
@@ -161,6 +162,22 @@ export default function Office({
   const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(null);
+  const [context, setContext] = useState(null);
+  const contextRef = useRef(null);
+  const contextOrigin = useRef(null);
+  const openContext = (event, id) => {
+    event.preventDefault();
+    contextOrigin.current = document.activeElement;
+    const rect = event.currentTarget?.getBoundingClientRect?.();
+    setContext({id, x:Math.max(8, Math.min(event.clientX || rect?.left || 40, window.innerWidth - 246)), y:Math.max(8, Math.min(event.clientY || rect?.bottom || 100, window.innerHeight - 240))});
+  };
+  const closeContext = () => {
+    setContext(null);
+    contextOrigin.current?.focus?.();
+  };
+  useEffect(() => {
+    if (context) contextRef.current?.querySelector('button')?.focus();
+  }, [context]);
   const [localRoom, setLocalRoom] = useState(null);
   const [paused, setPaused] = useState(false);
   const [localStep, setLocalStep] = useState(0);
@@ -489,9 +506,11 @@ export default function Office({
     let hoveredId = null;
     let lastMove = 0;
     const pointerdown = (e) => {
+      if (e.button !== 0) return;
       down = [e.clientX, e.clientY];
     };
     const pointerup = (e) => {
+      if (e.button !== 0) return;
       if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5)
         return;
       const hit = pick(e);
@@ -519,6 +538,11 @@ export default function Office({
       event.preventDefault();
       setFailed(true);
     };
+    const contextmenu = (e) => {
+      const hit = pick(e);
+      if (hit?.kind === "agent" || hit?.kind === "monitor") openContext(e, hit.id);
+    };
+    renderer.domElement.addEventListener("contextmenu", contextmenu);
     renderer.domElement.addEventListener("pointerdown", pointerdown);
     renderer.domElement.addEventListener("pointerup", pointerup);
     renderer.domElement.addEventListener("pointermove", pointermove);
@@ -684,6 +708,7 @@ export default function Office({
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       intersection?.disconnect();
+      renderer.domElement.removeEventListener("contextmenu", contextmenu);
       renderer.domElement.removeEventListener("pointerdown", pointerdown);
       renderer.domElement.removeEventListener("pointerup", pointerup);
       renderer.domElement.removeEventListener("pointermove", pointermove);
@@ -837,10 +862,27 @@ export default function Office({
           ? "office-large-labels"
           : "",
         `office-labels-${density}`,
+        agents.some((agent) => agent.activeProviderRun) ? "office-has-live" : "",
       ]
         .filter(Boolean)
         .join(" ")}
     >
+      {context && createPortal(<div className="agent-context-backdrop" onPointerDown={closeContext}>
+        <div className="agent-context" ref={contextRef} role="menu" aria-label="Agent actions" style={{left:context.x,top:context.y}} onPointerDown={e=>e.stopPropagation()} onKeyDown={e=>{
+          if(e.key === "Escape") {e.preventDefault(); closeContext();}
+          if(["ArrowDown","ArrowUp","Tab"].includes(e.key)) {
+            e.preventDefault(); const buttons=[...contextRef.current.querySelectorAll('button:not(:disabled)')];
+            const index=buttons.indexOf(document.activeElement); const direction=e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey) ? -1 : 1;
+            buttons[(index+direction+buttons.length)%buttons.length]?.focus();
+          }
+        }}>
+          <strong>{agents.find(a=>a.id===context.id)?.name ?? "Agent"}</strong>
+          <button role="menuitem" onClick={()=>{onSelect?.(context.id);closeContext();}}>Inspect agent & task</button>
+          <button role="menuitem" onClick={()=>{setLocalFollow(context.id);onSelect?.(context.id);closeContext();}}>Follow in 3D</button>
+          <button role="menuitem" disabled={!agents.find(a=>a.id===context.id)?.runId} onClick={()=>{onOpenMonitor?.(context.id);closeContext();}}>Open recorded run</button>
+          <button role="menuitem" onClick={closeContext}>Close</button>
+        </div>
+      </div>, document.body)}
       <div className="office-meta">
         <span>
           <i className="dot blue" /> {themeDef.label}
@@ -850,6 +892,7 @@ export default function Office({
         </span>
         <span>{themeDef.floorLabel}</span>
       </div>
+      {selected && <button className="scene-actions-button" aria-label="Selected agent actions" onClick={e=>openContext(e, selected)}>Agent actions ···</button>}
       <div
         className="office-canvas"
         ref={host}
@@ -898,6 +941,10 @@ export default function Office({
                   .filter(Boolean)
                   .join(" ")}
                 onClick={() => onSelect?.(agent.id)}
+                onContextMenu={(e) => openContext(e, agent.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) openContext(e, agent.id);
+                }}
                 onMouseEnter={() => {
                   setHovered(agent.id);
                   onZoneHover?.(agent.id);

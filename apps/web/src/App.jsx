@@ -1,3 +1,5 @@
+import OfficeControl, { OFFICE_THEMES } from "./components/OfficeControl.jsx";
+import { agentMatchesFilters } from "./hooks/viewLogic.js";
 import React, {
   lazy,
   Suspense,
@@ -53,6 +55,9 @@ import {
   HeartPulse,
   BookOpen,
   Film,
+  Download,
+  Upload,
+  Eye,
 } from "lucide-react";
 import {
   api,
@@ -160,6 +165,7 @@ const DEFAULT_PREFS = {
  * by GET /api/settings, which is how they come back here.
  */
 const OFFICE_SETTINGS = {
+  graphics: { key: "ui.graphics", fallback: "medium" },
   labelDensity: { key: "ui.office.labelDensity", fallback: "auto" },
   avatarDetail: { key: "ui.office.avatarDetail", fallback: "auto" },
   ambientSound: { key: "ui.office.ambientSound", fallback: false },
@@ -179,7 +185,7 @@ const VIEWS = [
     label: "Workspace",
     icon: LayoutDashboard,
     key: "w",
-    heading: "A little space. A lot happening.",
+    heading: "Your agents. One shared space.",
     blurb: "Watch your agents work, connect the dots, and keep things moving.",
   },
   {
@@ -769,6 +775,18 @@ function AgentForm({ base, agent, onClose, onSaved }) {
     setBusy(true);
     setError("");
     const data = Object.fromEntries(new FormData(event.currentTarget));
+    data.provider ||= null;
+    data.skills = data.skills.split(",").map((skill) => skill.trim()).filter(Boolean);
+    data.avatar = {
+      outfit: data.outfit,
+      accessory: data.accessory,
+      hairColor: data.hairColor,
+      pronouns: data.pronouns,
+    };
+    delete data.outfit;
+    delete data.accessory;
+    delete data.hairColor;
+    delete data.pronouns;
     try {
       const saved = editing
         ? await api(`${base}/agents/${agent.id}`, "PATCH", data)
@@ -781,6 +799,8 @@ function AgentForm({ base, agent, onClose, onSaved }) {
       setBusy(false);
     }
   }
+  let avatar = {};
+  try { avatar = agent?.avatar ? JSON.parse(agent.avatar) : {}; } catch { avatar = {}; }
   return (
     <Modal
       title={editing ? `Edit ${agent.name}` : "Add an agent"}
@@ -848,6 +868,38 @@ function AgentForm({ base, agent, onClose, onSaved }) {
             placeholder="Interfaces & interaction"
           />
         </label>
+        <fieldset className="agent-runtime-fields">
+          <legend>Assistant identity</legend>
+          <p>Choose the preferred runtime for new work. A completed run still shows the model actually reported by that provider.</p>
+          <div className="form-columns">
+            <label>Provider
+              <select name="provider" defaultValue={agent?.provider ?? ""}>
+                <option value="">Choose later</option>
+                <option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="copilot">GitHub Copilot</option><option value="cursor">Cursor</option><option value="gemini">Gemini CLI</option>
+              </select>
+            </label>
+            <label>Requested model <span className="optional">optional</span>
+              <input name="model" maxLength={120} defaultValue={agent?.model ?? ""} placeholder="Provider default" />
+            </label>
+          </div>
+          <label>Runtime or connection alias <span className="optional">optional</span>
+            <input name="runtime" maxLength={60} defaultValue={agent?.runtime ?? ""} placeholder="Local CLI, build host…" />
+          </label>
+        </fieldset>
+        <fieldset className="agent-identity-fields">
+          <legend>Skills and appearance</legend>
+          <label>Skills <span className="optional">comma separated</span>
+            <input name="skills" defaultValue={(agent?.skills ?? []).join(", ")} placeholder="React, accessibility, Playwright" />
+          </label>
+          <div className="form-columns">
+            <label>Outfit<select name="outfit" defaultValue={avatar.outfit ?? "shirt"}><option value="shirt">Shirt</option><option value="hoodie">Hoodie</option><option value="labcoat">Lab coat</option><option value="vest">Vest</option><option value="jacket">Jacket</option></select></label>
+            <label>Accessory<select name="accessory" defaultValue={avatar.accessory ?? "none"}><option value="none">Based on role</option><option value="hardhat">Hard hat</option><option value="glasses">Glasses</option><option value="headset">Headset</option><option value="clipboard">Clipboard</option></select></label>
+          </div>
+          <div className="form-columns">
+            <label>Pronouns <span className="optional">optional</span><input name="pronouns" maxLength={30} defaultValue={avatar.pronouns ?? ""} placeholder="they/them" /></label>
+            <label>Hair color<input name="hairColor" type="color" className="color-field" defaultValue={avatar.hairColor ?? "#493d38"} /></label>
+          </div>
+        </fieldset>
         <label>
           Instructions <span className="optional">optional</span>
           <textarea
@@ -1244,6 +1296,9 @@ export default function App() {
     }
   });
   const [busy, setBusy] = useState(false);
+  const [visualPresetPreview, setVisualPresetPreview] = useState(null);
+  const [visualPresetError, setVisualPresetError] = useState(null);
+  const [visualPresetBusy, setVisualPresetBusy] = useState(false);
   const capabilities = useApi("/connections/capabilities", {
     deps: [revision],
   });
@@ -1263,13 +1318,14 @@ export default function App() {
   // changed, so a second browser sees the same office preferences.
   const settingsApi = useApi("/settings", { deps: [revision] });
   const serverSettings = settingsApi.data ?? {};
+  const workspaceVisualSettings = workspace?.workspace?.settings?.visual ?? {};
   const officeSetting = useCallback(
     (name) => {
       const entry = OFFICE_SETTINGS[name];
-      const value = serverSettings[entry.key];
+      const value = workspaceVisualSettings[entry.key] ?? serverSettings[entry.key];
       return value === undefined || value === null ? entry.fallback : value;
     },
-    [serverSettings],
+    [serverSettings, workspaceVisualSettings],
   );
   const saveSetting = useCallback(
     async (key, value) => {
@@ -1574,6 +1630,7 @@ export default function App() {
   // views can never disagree about which task or agent is selected.
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [selectionFilters, setSelectionFilters] = useState(undefined);
+  const officeAgents = useMemo(() => agents.filter(a => agentMatchesFilters(a, selectionFilters)), [agents, selectionFilters]);
   const selectionValue = useMemo(
     () => ({
       selectedTaskId: selectedTask,
@@ -1612,15 +1669,75 @@ export default function App() {
     (!onboarding?.dismissed && !hasProjectWorkspace && !hasReadyConnection);
 
   async function setOfficeTheme(theme) {
-    setPrefs({ officeTheme: { ...prefs.officeTheme, [workspaceId]: theme } });
     try {
       await api(`${base}`, "PATCH", { theme });
+      setPrefs({ officeTheme: { ...prefs.officeTheme, [workspaceId]: theme } });
       setToast({ message: `Office theme set to ${theme}` });
     } catch (error) {
       setToast({
-        message: `Theme applied locally; server did not save it (${error.message})`,
+        message: `Theme could not be saved (${error.message})`,
         error: true,
       });
+    }
+  }
+
+  async function saveVisualSetting(key, value) {
+    const preset = {
+      kind: "agent-space-visual-preset",
+      version: 1,
+      name: `${workspace?.workspace?.name ?? "Workspace"} visual preset`,
+      theme: officeTheme,
+      settings: { ...workspaceVisualSettings, [key]: value },
+    };
+    try {
+      await api(`${base}/visual-preset/apply`, "POST", { preset });
+    } catch (error) {
+      setToast({ message: `Visual setting not saved: ${error.message}`, error: true });
+    }
+  }
+
+  async function exportVisualPreset() {
+    try {
+      const preset = await api(`${base}/visual-preset`, "GET");
+      const blob = new Blob([JSON.stringify(preset, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${preset.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "office"}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setToast({ message: "Visual preset exported" });
+    } catch (error) {
+      setToast({ message: `Preset could not be exported: ${error.message}`, error: true });
+    }
+  }
+
+  async function previewVisualPreset(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setVisualPresetError(null);
+    try {
+      const parsed = JSON.parse(await file.text());
+      const preview = await api(`${base}/visual-preset/preview`, "POST", { preset: parsed });
+      setVisualPresetPreview(preview);
+    } catch (error) {
+      setVisualPresetPreview(null);
+      setVisualPresetError(`That preset cannot be used: ${error.message}`);
+    }
+  }
+
+  async function applyVisualPreset() {
+    if (!visualPresetPreview) return;
+    setVisualPresetBusy(true);
+    try {
+      await api(`${base}/visual-preset/apply`, "POST", { preset: visualPresetPreview.preset });
+      setVisualPresetPreview(null);
+      setToast({ message: "Visual preset applied to this workspace" });
+    } catch (error) {
+      setVisualPresetError(`Preset could not be applied: ${error.message}`);
+    } finally {
+      setVisualPresetBusy(false);
     }
   }
 
@@ -2283,6 +2400,7 @@ export default function App() {
                   </section>
                 ) : null}
                 <FilterChips />
+                {view === "office" && <OfficeControl agents={agents} visibleCount={officeAgents.length} filters={selectionFilters} onFilters={setSelectionFilters} theme={officeTheme} onTheme={setOfficeTheme} isDemo={isDemo} onConnections={() => setView("connections")} onSelectAgent={selectAgent} />}
                 <div
                   className={`workspace-layout ${view !== "office" ? "alternate-view" : ""} ${fullView ? "full-view" : ""}`}
                 >
@@ -2347,12 +2465,12 @@ export default function App() {
                         >
                           <Office
                             key={workspaceId}
-                            agents={agents}
+                            agents={officeAgents}
                             selected={agent?.id}
                             onSelect={selectAgent}
-                            running={workspace.demoRunning && !prefs.focusMode}
+                            running={!isDemo || workspace.demoRunning}
                             theme={officeTheme}
-                            graphics={prefs.graphics}
+                            graphics={officeSetting("graphics")}
                             reducedMotion={
                               prefs.reducedMotion || prefs.focusMode
                             }
@@ -2772,6 +2890,19 @@ export default function App() {
                                     {formatElapsed(agent.elapsedMs)} elapsed
                                   </span>
                                 )}
+                              {(agent.model || agent.runtime || (agent.skills?.length ?? 0) > 0 || agent.lastRun?.actualModel) && (
+                                <div className="agent-passport" aria-label="Agent capability details">
+                                  {(agent.model || agent.runtime) && <div className="passport-models">
+                                    {agent.model && <span><small>Preferred</small>{agent.model}</span>}
+                                    {agent.lastRun?.actualModel && <span><small>Last reported</small>{agent.lastRun.actualModel}</span>}
+                                    {agent.runtime && <span><small>Runtime</small>{agent.runtime}</span>}
+                                  </div>}
+                                  {(agent.skills?.length ?? 0) > 0 && <div className="passport-skills" aria-label="Agent skills">
+                                    {agent.skills.slice(0, 5).map((skill) => <span key={skill}>{skill}</span>)}
+                                    {agent.skills.length > 5 && <span>+{agent.skills.length - 5}</span>}
+                                  </div>}
+                                </div>
+                              )}
                             </div>
                             <div className="agent-tools">
                               <button
@@ -3141,17 +3272,49 @@ export default function App() {
             <div className="settings-row">
               <div>
                 <h3>Office theme</h3>
-                <p>Studio is warm and bright; Operations is a dark ops room.</p>
+                <p>Five palettes for focused work, from daylight to midnight.</p>
               </div>
               <select
                 aria-label="Office theme"
                 value={officeTheme}
                 onChange={(e) => setOfficeTheme(e.target.value)}
               >
-                <option value="studio">Studio</option>
-                <option value="operations">Operations</option>
+                {OFFICE_THEMES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
               </select>
             </div>
+            <div className="settings-row visual-preset-row">
+              <div>
+                <h3>Portable visual preset</h3>
+                <p>Move this office’s appearance between workspaces. A preview lists every change before anything is saved.</p>
+              </div>
+              <span className="settings-buttons visual-preset-actions">
+                <button className="button" type="button" onClick={exportVisualPreset}>
+                  <Download size={14} /> Export preset
+                </button>
+                <label className="button visual-preset-import">
+                  <Upload size={14} /> Import preset
+                  <input aria-label="Import visual preset" type="file" accept="application/json,.json" onChange={previewVisualPreset} />
+                </label>
+              </span>
+            </div>
+            {visualPresetError ? <p className="visual-preset-error" role="alert">{visualPresetError}</p> : null}
+            {visualPresetPreview ? (
+              <section className="visual-preset-preview" aria-label="Visual preset preview" role="status">
+                <div>
+                  <span className="visual-preset-icon"><Eye size={16} /></span>
+                  <p><strong>{visualPresetPreview.preset.name}</strong><br />Review these workspace-only appearance changes.</p>
+                </div>
+                <ul>
+                  {visualPresetPreview.changes.length ? visualPresetPreview.changes.map((change) => (
+                    <li key={change.key}><b>{{ theme: "Theme", "ui.graphics": "Graphics", "ui.office.labelDensity": "Label density", "ui.office.avatarDetail": "Avatar detail", "ui.office.lighting": "Lighting", "ui.office.ambientSound": "Ambient room tone" }[change.key] ?? change.key}</b><span>{String(change.from ?? "default")} → {String(change.to)}</span></li>
+                  )) : <li>No visual changes are needed.</li>}
+                </ul>
+                <span className="settings-buttons">
+                  <button className="text-button" type="button" onClick={() => setVisualPresetPreview(null)}>Discard</button>
+                  <button className="button primary" type="button" disabled={visualPresetBusy} onClick={applyVisualPreset}>Apply preset</button>
+                </span>
+              </section>
+            ) : null}
             <div className="settings-row">
               <div>
                 <h3>Graphics</h3>
@@ -3161,8 +3324,8 @@ export default function App() {
               </div>
               <select
                 aria-label="Graphics preset"
-                value={prefs.graphics}
-                onChange={(e) => updatePref("graphics", e.target.value)}
+                value={officeSetting("graphics")}
+                onChange={(e) => saveVisualSetting(OFFICE_SETTINGS.graphics.key, e.target.value)}
               >
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
@@ -3209,7 +3372,7 @@ export default function App() {
                 aria-label="Label density"
                 value={officeSetting("labelDensity")}
                 onChange={(e) =>
-                  saveSetting(OFFICE_SETTINGS.labelDensity.key, e.target.value)
+                  saveVisualSetting(OFFICE_SETTINGS.labelDensity.key, e.target.value)
                 }
               >
                 <option value="auto">Follow graphics preset</option>
@@ -3227,7 +3390,7 @@ export default function App() {
                 aria-label="Avatar detail"
                 value={officeSetting("avatarDetail")}
                 onChange={(e) =>
-                  saveSetting(OFFICE_SETTINGS.avatarDetail.key, e.target.value)
+                  saveVisualSetting(OFFICE_SETTINGS.avatarDetail.key, e.target.value)
                 }
               >
                 <option value="auto">Follow graphics preset</option>
@@ -3245,7 +3408,7 @@ export default function App() {
                 aria-label="Office lighting"
                 value={officeSetting("lighting")}
                 onChange={(e) =>
-                  saveSetting(OFFICE_SETTINGS.lighting.key, e.target.value)
+                  saveVisualSetting(OFFICE_SETTINGS.lighting.key, e.target.value)
                 }
               >
                 <option value="day">Day</option>
@@ -3259,7 +3422,7 @@ export default function App() {
               label="Ambient room tone"
               checked={Boolean(officeSetting("ambientSound"))}
               onChange={(v) =>
-                saveSetting(OFFICE_SETTINGS.ambientSound.key, Boolean(v))
+                saveVisualSetting(OFFICE_SETTINGS.ambientSound.key, Boolean(v))
               }
             />
             <SettingSwitch

@@ -597,7 +597,7 @@ export class Analytics {
 
       // Availability and workload cells (per provider per day / per hour).
       const day = dayKey(run.started_at);
-      const availabilityKey = `${run.provider} ${day}`;
+      const availabilityKey = `${run.provider}\u0000${day}`;
       if (!availabilityCells.has(availabilityKey))
         availabilityCells.set(availabilityKey, {
           provider: run.provider,
@@ -616,7 +616,7 @@ export class Analytics {
       availabilityCell.runIds.push(run.id);
 
       const hour = new Date(run.started_at).getHours();
-      const workloadKey = `${run.provider} ${hour}`;
+      const workloadKey = `${run.provider}\u0000${hour}`;
       if (!workloadCells.has(workloadKey))
         workloadCells.set(workloadKey, {
           provider: run.provider,

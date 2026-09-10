@@ -6,6 +6,8 @@ Research date: 9 September 2026. Expanded edition. Planning only; no application
 
 **Priority key:** Foundation = required before managed execution; Launch = required for the first public product; Growth = expand after repeat usage is demonstrated; Enterprise = organization-scale controls; Explore = experiments that need demand or feasibility evidence. These labels describe dependencies, not implementation dates.
 
+> **Implementation review, 10 September 2026:** This roadmap is not a completion checklist. The original foundation paragraph below describes the initial MVP and is now historical. Persistence, execution adapters, observation and workflows have since been added. The latest UI pass adds scene-level provider filtering, a recorded activity ribbon, real-workspace motion, accessible agent actions, and five saved environment palettes. See [the UI review](docs/UI_UX_REVIEW.md) for changes and remaining gaps, and [the detailed status audit](docs/ROADMAP_STATUS.md) for item-level evidence.
+
 ## Product direction
 
 Build a local-first command center for agents working across providers, repositories, and documents. The office is an interactive representation of actual work. Its value should be answering: who is doing what, where, with which tools, what changed, and what needs my decision?

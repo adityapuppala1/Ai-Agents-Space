@@ -143,9 +143,28 @@ test("agent profiles can be created, edited, duplicated, archived, and restored"
     name: "Quill Writer",
     role: "Docs",
     color: "#AABBCC",
+    provider: "codex",
+    runtime: "local-cli",
+    model: "gpt-workhorse",
+    skills: ["Documentation", "Accessibility", "Documentation"],
+    avatar: {
+      outfit: "jacket",
+      accessory: "glasses",
+      hairColor: "#554433",
+      pronouns: "they/them",
+    },
   });
   assert.equal(created.initials, "QW");
   assert.equal(created.color, "#aabbcc");
+  assert.deepEqual(created.skills, ["Documentation", "Accessibility"]);
+  assert.deepEqual(JSON.parse(created.avatar), {
+    outfit: "jacket",
+    accessory: "glasses",
+    hairColor: "#554433",
+    pronouns: "they/them",
+  });
+  assert.equal(created.provider, "codex");
+  assert.equal(created.model, "gpt-workhorse");
   assert.throws(() => workspace.createAgent({ role: "No name" }), /Name/);
   assert.throws(
     () => workspace.updateAgent(created.id, { color: "blue" }),
@@ -155,6 +174,16 @@ test("agent profiles can be created, edited, duplicated, archived, and restored"
   const copy = workspace.duplicateAgent(created.id);
   assert.equal(copy.name, "Quill Writer copy");
   assert.notEqual(copy.id, created.id);
+  assert.deepEqual(copy.skills, created.skills);
+  assert.deepEqual(JSON.parse(copy.avatar), JSON.parse(created.avatar));
+  assert.throws(
+    () => workspace.updateAgent(created.id, { skills: "not an array" }),
+    /Skills must be an array/,
+  );
+  assert.throws(
+    () => workspace.updateAgent(created.id, { avatar: { outfit: "spacesuit" } }),
+    /outfit must be one of/,
+  );
   const task = workspace.create({ title: "Busy", agentId: copy.id });
   assert.throws(() => workspace.archiveAgent(copy.id), /active work/);
   workspace.update(task.id, { status: "COMPLETED" });

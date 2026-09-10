@@ -875,6 +875,36 @@ test("export/import round trip keeps tasks, dependencies, agents, theme, and pol
   assert.equal(snapshot.agents.length, 6);
 });
 
+test("visual preset preview is read-only and apply changes only visual workspace fields", async (t) => {
+  const { api } = await boot(t, { demo: false });
+  const created = await api("POST", "/api/workspaces", { name: "Visual source" });
+  const id = created.data.id;
+  const preset = {
+    kind: "agent-space-visual-preset",
+    version: 1,
+    name: "Night shift",
+    theme: "midnight",
+    settings: { graphics: "high", lighting: "focus", labelDensity: "active" },
+  };
+  const before = await api("GET", `/api/workspaces/${id}`);
+  const preview = await api("POST", `/api/workspaces/${id}/visual-preset/preview`, { preset });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.data.changes.length, 4);
+  assert.equal((await api("GET", `/api/workspaces/${id}`)).data.theme, before.data.theme);
+  const applied = await api("POST", `/api/workspaces/${id}/visual-preset/apply`, { preset });
+  assert.equal(applied.status, 200);
+  assert.equal(applied.data.workspace.theme, "midnight");
+  assert.deepEqual(applied.data.workspace.settings.visual, {
+    "ui.graphics": "high",
+    "ui.office.lighting": "focus",
+    "ui.office.labelDensity": "active",
+  });
+  const rejected = await api("POST", `/api/workspaces/${id}/visual-preset/preview`, {
+    preset: { ...preset, policy: { autonomy: "full" } },
+  });
+  assert.equal(rejected.status, 400);
+});
+
 test("Workspace snapshot: manual runs keep the profile working state; agents expose provider fields", async (t) => {
   const { services } = await boot(t, { demo: false });
   const workspace = services.hub.get(

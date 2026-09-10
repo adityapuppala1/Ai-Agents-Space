@@ -2,11 +2,11 @@ import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import { InputError, TaskStore } from "./TaskStore.js";
 import { Workspace } from "./Workspace.js";
-import { openDatabase } from "./db.js";
+import { openDatabase, transaction } from "./db.js";
 import { mergePolicy, validatePolicy } from "./policy/Policy.js";
 
 export const DEMO_WORKSPACE_ID = "demo";
-export const THEMES = ["studio", "operations"];
+export const THEMES = ["studio", "operations", "garden", "midnight", "sandstone"];
 
 function slug(name) {
   return (
@@ -208,6 +208,25 @@ export class WorkspaceHub extends EventEmitter {
         "system",
       );
     }
+    this.emit("workspaces");
+    return runtime.record;
+  }
+
+  /**
+   * Applies a data-only visual preset in one database transaction. Presentation
+   * imports must never leave a workspace with half an environment applied.
+   */
+  applyVisualPreset(id, { theme, visual }) {
+    const runtime = this.get(id);
+    const current = runtime.record.settings ?? {};
+    const next = { ...current, visual: { ...visual } };
+    transaction(this.db, () => {
+      this.db.prepare("UPDATE workspaces SET theme = ? WHERE id = ?").run(theme, id);
+      this.db
+        .prepare("UPDATE workspaces SET settings = ? WHERE id = ?")
+        .run(JSON.stringify(next), id);
+    });
+    runtime.changed("Office visual preset applied", "system");
     this.emit("workspaces");
     return runtime.record;
   }

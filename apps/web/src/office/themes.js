@@ -86,6 +86,13 @@ export const THEMES = {
   },
 };
 
+// Palette variants share the proven room layout and event-driven props.
+for (const [id, label, palette, light] of [
+  ["garden", "Garden atelier", {base:"#e8eddf",floor:"#cad7c4",wall:"#d3e1cf",wood:"#b5a17c",accent:"#548c74",green:"#357455",mat:"#acc6b4",sign:"#366653"}, {sky:"#f3ffe8",sunColor:"#fff0cb"}],
+  ["midnight", "Midnight lab", {base:"#25263f",floor:"#24233b",wall:"#2d2c4b",wood:"#51436a",accent:"#a795ed",green:"#729aaf",mat:"#403b60",sign:"#d4c7ff",screenBg:"#17162d",screenFg:"#cbbcff",minimapFloor:"#25233b",minimapZone:"#45405e",minimapText:"#ddd3fa"}, {sky:"#c8c6ff",ground:"#282343",hemi:2.2,sunColor:"#e6d7ff",sun:2.3}],
+  ["sandstone", "Desert studio", {base:"#f5e7d8",floor:"#dfcbb6",wall:"#eddbc7",wood:"#bc8b67",accent:"#bb7553",green:"#7c916c",mat:"#d6b89e",sign:"#86583d"}, {sky:"#fff0de",sunColor:"#ffe0b2"}],
+]) THEMES[id] = {...THEMES.studio, id, label, floorLabel: label.toUpperCase(), palette:{...THEMES.studio.palette,...palette}, light:{...THEMES.studio.light,...light}, signLines:[label.toUpperCase(), "A shared space for real work."]};
+
 export function getTheme(name) {
   return THEMES[name] ?? THEMES.studio;
 }
@@ -135,6 +142,26 @@ export function buildRoom(group, theme, layout, res, options = {}) {
   if (theme.id === "operations")
     handles = buildOperationsShell(group, theme, layout, res, mat, options);
   else buildStudioShell(group, theme, layout, res, mat);
+
+  // Decorative accents live along the walls, outside the navigation lanes.
+  // They never represent telemetry or fabricated pipeline activity.
+  if (theme.id === "garden") {
+    const { cylinder, sphere } = builders(res);
+    for (let i=0; i<4; i++) {
+      const z=-D/2+1.4+i*1.05;
+      cylinder(.23,.18,.26,mat.wood,-W/2+.3,2.25,z,group);
+      box(.025,.65,.025,mat.metal,-W/2+.3,2.68,z,group);
+      for(let j=0;j<3;j++) sphere(.2,mat.green,-W/2+.27+j*.07,2.44-j*.14,z+(j-1)*.16,group);
+    }
+  }
+  if (theme.id === "midnight") {
+    const glow=res.material("#b29aff", {emissive:"#8055e0",emissiveIntensity:.7});
+    box(W,.045,.04,glow,0,2.98,-D/2+.01,group);
+    box(.04,.045,D,glow,-W/2+.01,2.98,0,group);
+  }
+  if (theme.id === "sandstone") {
+    for(let i=0;i<12;i++) box(.07,.95,.10,mat.wood,-W/2+.12,1.7,-D/2+.8+i*.25,group);
+  }
 
   // Room name sign on the back wall (top-left).
   const signTexture = textTexture(res, {
