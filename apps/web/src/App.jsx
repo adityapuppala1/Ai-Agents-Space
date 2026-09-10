@@ -66,48 +66,37 @@ import {
   saveToken,
   readToken,
 } from "./useWorkspace.js";
-import {
-  RunInspector,
-  DecisionInbox,
-  ConnectionsPanel,
-  LiveSessions,
-  CommandPalette,
-  TaskLauncher,
-  TemplateGallery,
-  PolicyEditor,
-  ProviderBadge,
-  Provenance,
-  ActivityBadge,
-  Dialog,
-  useGlobal,
-  useApi,
-  SelectionProvider,
+// Direct imports on purpose: a barrel re-exports every panel, which pulls the
+// lazily loaded views back into the main bundle and defeats code splitting.
+import "./styles/components.css";
+import RunInspector from "./components/RunInspector.jsx";
+import CommandPalette, {
+  buildStandardCommands,
+} from "./components/CommandPalette.jsx";
+import TaskLauncher from "./components/TaskLauncher.jsx";
+import TemplateGallery from "./components/TemplateGallery.jsx";
+import PolicyEditor from "./components/PolicyEditor.jsx";
+import ProviderBadge from "./components/ProviderBadge.jsx";
+import Provenance from "./components/Provenance.jsx";
+import ActivityBadge from "./components/ActivityBadge.jsx";
+import Dialog from "./components/Dialog.jsx";
+import SelectionProvider, {
   FilterChips,
-  EmptyState,
-  VirtualList,
-  WorkspaceSwitcher,
-  GlobalSearch,
-  DragAssign,
-  PinnedRuns,
-  PinToggle,
-  DayInReview,
-  Onboarding,
+} from "./components/SelectionProvider.jsx";
+import EmptyState from "./components/EmptyState.jsx";
+import VirtualList from "./components/VirtualList.jsx";
+import WorkspaceSwitcher from "./components/WorkspaceSwitcher.jsx";
+import GlobalSearch from "./components/GlobalSearch.jsx";
+import DragAssign from "./components/DragAssign.jsx";
+import PinnedRuns, { PinToggle } from "./components/PinnedRuns.jsx";
+import Onboarding, {
   SetupEntry,
   ONBOARDING_KEY,
-  OpsPanel,
-  MemoryPanel,
-  KnowledgePanel,
-  HandoverBrief,
-  buildStandardCommands,
-  useLocalStorage,
-  apiFetch,
-} from "./components/index.js";
-import {
-  BoardView,
-  TimelineView,
-  DependencyMap,
-  AnalyticsView,
-} from "./views/index.js";
+} from "./components/Onboarding.jsx";
+import { useGlobal } from "./hooks/useGlobal.js";
+import { useApi, apiFetch } from "./hooks/useApi.js";
+import { useLocalStorage } from "./hooks/useLocalStorage.js";
+import BoardView from "./views/BoardView.jsx";
 import {
   activityLabel,
   providerLabel,
@@ -120,6 +109,75 @@ import {
   RUN_STATUS_LABELS,
 } from "./hooks/useApi.js";
 const Office = lazy(() => import("./Office.jsx"));
+
+/**
+ * Route-level code splitting. These panels are only shown on their own view,
+ * so they load on first visit instead of shipping in the main bundle. The
+ * wrapper supplies the Suspense boundary, which keeps every render site
+ * unchanged; the fallback is a short status line, never a fake skeleton of data.
+ */
+function deferred(loader, label) {
+  const Lazy = lazy(loader);
+  function Deferred(props) {
+    return (
+      <Suspense
+        fallback={
+          <div className="panel-loading" role="status" aria-live="polite">
+            Loading {label}…
+          </div>
+        }
+      >
+        <Lazy {...props} />
+      </Suspense>
+    );
+  }
+  Deferred.displayName = `Deferred(${label})`;
+  return Deferred;
+}
+const DecisionInbox = deferred(
+  () => import("./components/DecisionInbox.jsx"),
+  "the inbox",
+);
+const ConnectionsPanel = deferred(
+  () => import("./components/ConnectionsPanel.jsx"),
+  "connections",
+);
+const LiveSessions = deferred(
+  () => import("./components/LiveSessions.jsx"),
+  "live sessions",
+);
+const DayInReview = deferred(
+  () => import("./components/DayInReview.jsx"),
+  "the day in review",
+);
+const OpsPanel = deferred(
+  () => import("./components/OpsPanel.jsx"),
+  "operations",
+);
+const MemoryPanel = deferred(
+  () => import("./components/MemoryPanel.jsx"),
+  "memory",
+);
+const KnowledgePanel = deferred(
+  () => import("./components/KnowledgePanel.jsx"),
+  "knowledge",
+);
+const HandoverBrief = deferred(
+  () => import("./components/HandoverBrief.jsx"),
+  "the handover brief",
+);
+const TimelineView = deferred(
+  () => import("./views/TimelineView.jsx"),
+  "the timeline",
+);
+const DependencyMap = deferred(
+  () => import("./views/DependencyMap.jsx"),
+  "the dependency map",
+);
+const AnalyticsView = deferred(
+  () => import("./views/AnalyticsView.jsx"),
+  "analytics",
+);
 
 const workingStates = [
   ["CODING", "Coding"],
@@ -776,7 +834,10 @@ function AgentForm({ base, agent, onClose, onSaved }) {
     setError("");
     const data = Object.fromEntries(new FormData(event.currentTarget));
     data.provider ||= null;
-    data.skills = data.skills.split(",").map((skill) => skill.trim()).filter(Boolean);
+    data.skills = data.skills
+      .split(",")
+      .map((skill) => skill.trim())
+      .filter(Boolean);
     data.avatar = {
       outfit: data.outfit,
       accessory: data.accessory,
@@ -800,7 +861,11 @@ function AgentForm({ base, agent, onClose, onSaved }) {
     }
   }
   let avatar = {};
-  try { avatar = agent?.avatar ? JSON.parse(agent.avatar) : {}; } catch { avatar = {}; }
+  try {
+    avatar = agent?.avatar ? JSON.parse(agent.avatar) : {};
+  } catch {
+    avatar = {};
+  }
   return (
     <Modal
       title={editing ? `Edit ${agent.name}` : "Add an agent"}
@@ -870,34 +935,97 @@ function AgentForm({ base, agent, onClose, onSaved }) {
         </label>
         <fieldset className="agent-runtime-fields">
           <legend>Assistant identity</legend>
-          <p>Choose the preferred runtime for new work. A completed run still shows the model actually reported by that provider.</p>
+          <p>
+            Choose the preferred runtime for new work. A completed run still
+            shows the model actually reported by that provider.
+          </p>
           <div className="form-columns">
-            <label>Provider
+            <label>
+              Provider
               <select name="provider" defaultValue={agent?.provider ?? ""}>
                 <option value="">Choose later</option>
-                <option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="copilot">GitHub Copilot</option><option value="cursor">Cursor</option><option value="gemini">Gemini CLI</option>
+                <option value="claude-code">Claude Code</option>
+                <option value="codex">Codex</option>
+                <option value="copilot">GitHub Copilot</option>
+                <option value="cursor">Cursor</option>
+                <option value="gemini">Gemini CLI</option>
               </select>
             </label>
-            <label>Requested model <span className="optional">optional</span>
-              <input name="model" maxLength={120} defaultValue={agent?.model ?? ""} placeholder="Provider default" />
+            <label>
+              Requested model <span className="optional">optional</span>
+              <input
+                name="model"
+                maxLength={120}
+                defaultValue={agent?.model ?? ""}
+                placeholder="Provider default"
+              />
             </label>
           </div>
-          <label>Runtime or connection alias <span className="optional">optional</span>
-            <input name="runtime" maxLength={60} defaultValue={agent?.runtime ?? ""} placeholder="Local CLI, build host…" />
+          <label>
+            Runtime or connection alias{" "}
+            <span className="optional">optional</span>
+            <input
+              name="runtime"
+              maxLength={60}
+              defaultValue={agent?.runtime ?? ""}
+              placeholder="Local CLI, build host…"
+            />
           </label>
         </fieldset>
         <fieldset className="agent-identity-fields">
           <legend>Skills and appearance</legend>
-          <label>Skills <span className="optional">comma separated</span>
-            <input name="skills" defaultValue={(agent?.skills ?? []).join(", ")} placeholder="React, accessibility, Playwright" />
+          <label>
+            Skills <span className="optional">comma separated</span>
+            <input
+              name="skills"
+              defaultValue={(agent?.skills ?? []).join(", ")}
+              placeholder="React, accessibility, Playwright"
+            />
           </label>
           <div className="form-columns">
-            <label>Outfit<select name="outfit" defaultValue={avatar.outfit ?? "shirt"}><option value="shirt">Shirt</option><option value="hoodie">Hoodie</option><option value="labcoat">Lab coat</option><option value="vest">Vest</option><option value="jacket">Jacket</option></select></label>
-            <label>Accessory<select name="accessory" defaultValue={avatar.accessory ?? "none"}><option value="none">Based on role</option><option value="hardhat">Hard hat</option><option value="glasses">Glasses</option><option value="headset">Headset</option><option value="clipboard">Clipboard</option></select></label>
+            <label>
+              Outfit
+              <select name="outfit" defaultValue={avatar.outfit ?? "shirt"}>
+                <option value="shirt">Shirt</option>
+                <option value="hoodie">Hoodie</option>
+                <option value="labcoat">Lab coat</option>
+                <option value="vest">Vest</option>
+                <option value="jacket">Jacket</option>
+              </select>
+            </label>
+            <label>
+              Accessory
+              <select
+                name="accessory"
+                defaultValue={avatar.accessory ?? "none"}
+              >
+                <option value="none">Based on role</option>
+                <option value="hardhat">Hard hat</option>
+                <option value="glasses">Glasses</option>
+                <option value="headset">Headset</option>
+                <option value="clipboard">Clipboard</option>
+              </select>
+            </label>
           </div>
           <div className="form-columns">
-            <label>Pronouns <span className="optional">optional</span><input name="pronouns" maxLength={30} defaultValue={avatar.pronouns ?? ""} placeholder="they/them" /></label>
-            <label>Hair color<input name="hairColor" type="color" className="color-field" defaultValue={avatar.hairColor ?? "#493d38"} /></label>
+            <label>
+              Pronouns <span className="optional">optional</span>
+              <input
+                name="pronouns"
+                maxLength={30}
+                defaultValue={avatar.pronouns ?? ""}
+                placeholder="they/them"
+              />
+            </label>
+            <label>
+              Hair color
+              <input
+                name="hairColor"
+                type="color"
+                className="color-field"
+                defaultValue={avatar.hairColor ?? "#493d38"}
+              />
+            </label>
           </div>
         </fieldset>
         <label>
@@ -1322,7 +1450,8 @@ export default function App() {
   const officeSetting = useCallback(
     (name) => {
       const entry = OFFICE_SETTINGS[name];
-      const value = workspaceVisualSettings[entry.key] ?? serverSettings[entry.key];
+      const value =
+        workspaceVisualSettings[entry.key] ?? serverSettings[entry.key];
       return value === undefined || value === null ? entry.fallback : value;
     },
     [serverSettings, workspaceVisualSettings],
@@ -1630,7 +1759,10 @@ export default function App() {
   // views can never disagree about which task or agent is selected.
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [selectionFilters, setSelectionFilters] = useState(undefined);
-  const officeAgents = useMemo(() => agents.filter(a => agentMatchesFilters(a, selectionFilters)), [agents, selectionFilters]);
+  const officeAgents = useMemo(
+    () => agents.filter((a) => agentMatchesFilters(a, selectionFilters)),
+    [agents, selectionFilters],
+  );
   const selectionValue = useMemo(
     () => ({
       selectedTaskId: selectedTask,
@@ -1692,14 +1824,19 @@ export default function App() {
     try {
       await api(`${base}/visual-preset/apply`, "POST", { preset });
     } catch (error) {
-      setToast({ message: `Visual setting not saved: ${error.message}`, error: true });
+      setToast({
+        message: `Visual setting not saved: ${error.message}`,
+        error: true,
+      });
     }
   }
 
   async function exportVisualPreset() {
     try {
       const preset = await api(`${base}/visual-preset`, "GET");
-      const blob = new Blob([JSON.stringify(preset, null, 2)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify(preset, null, 2)], {
+        type: "application/json",
+      });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -1708,7 +1845,10 @@ export default function App() {
       URL.revokeObjectURL(url);
       setToast({ message: "Visual preset exported" });
     } catch (error) {
-      setToast({ message: `Preset could not be exported: ${error.message}`, error: true });
+      setToast({
+        message: `Preset could not be exported: ${error.message}`,
+        error: true,
+      });
     }
   }
 
@@ -1719,7 +1859,9 @@ export default function App() {
     setVisualPresetError(null);
     try {
       const parsed = JSON.parse(await file.text());
-      const preview = await api(`${base}/visual-preset/preview`, "POST", { preset: parsed });
+      const preview = await api(`${base}/visual-preset/preview`, "POST", {
+        preset: parsed,
+      });
       setVisualPresetPreview(preview);
     } catch (error) {
       setVisualPresetPreview(null);
@@ -1731,7 +1873,9 @@ export default function App() {
     if (!visualPresetPreview) return;
     setVisualPresetBusy(true);
     try {
-      await api(`${base}/visual-preset/apply`, "POST", { preset: visualPresetPreview.preset });
+      await api(`${base}/visual-preset/apply`, "POST", {
+        preset: visualPresetPreview.preset,
+      });
       setVisualPresetPreview(null);
       setToast({ message: "Visual preset applied to this workspace" });
     } catch (error) {
@@ -2400,7 +2544,19 @@ export default function App() {
                   </section>
                 ) : null}
                 <FilterChips />
-                {view === "office" && <OfficeControl agents={agents} visibleCount={officeAgents.length} filters={selectionFilters} onFilters={setSelectionFilters} theme={officeTheme} onTheme={setOfficeTheme} isDemo={isDemo} onConnections={() => setView("connections")} onSelectAgent={selectAgent} />}
+                {view === "office" && (
+                  <OfficeControl
+                    agents={agents}
+                    visibleCount={officeAgents.length}
+                    filters={selectionFilters}
+                    onFilters={setSelectionFilters}
+                    theme={officeTheme}
+                    onTheme={setOfficeTheme}
+                    isDemo={isDemo}
+                    onConnections={() => setView("connections")}
+                    onSelectAgent={selectAgent}
+                  />
+                )}
                 <div
                   className={`workspace-layout ${view !== "office" ? "alternate-view" : ""} ${fullView ? "full-view" : ""}`}
                 >
@@ -2890,17 +3046,49 @@ export default function App() {
                                     {formatElapsed(agent.elapsedMs)} elapsed
                                   </span>
                                 )}
-                              {(agent.model || agent.runtime || (agent.skills?.length ?? 0) > 0 || agent.lastRun?.actualModel) && (
-                                <div className="agent-passport" aria-label="Agent capability details">
-                                  {(agent.model || agent.runtime) && <div className="passport-models">
-                                    {agent.model && <span><small>Preferred</small>{agent.model}</span>}
-                                    {agent.lastRun?.actualModel && <span><small>Last reported</small>{agent.lastRun.actualModel}</span>}
-                                    {agent.runtime && <span><small>Runtime</small>{agent.runtime}</span>}
-                                  </div>}
-                                  {(agent.skills?.length ?? 0) > 0 && <div className="passport-skills" aria-label="Agent skills">
-                                    {agent.skills.slice(0, 5).map((skill) => <span key={skill}>{skill}</span>)}
-                                    {agent.skills.length > 5 && <span>+{agent.skills.length - 5}</span>}
-                                  </div>}
+                              {(agent.model ||
+                                agent.runtime ||
+                                (agent.skills?.length ?? 0) > 0 ||
+                                agent.lastRun?.actualModel) && (
+                                <div
+                                  className="agent-passport"
+                                  aria-label="Agent capability details"
+                                >
+                                  {(agent.model || agent.runtime) && (
+                                    <div className="passport-models">
+                                      {agent.model && (
+                                        <span>
+                                          <small>Preferred</small>
+                                          {agent.model}
+                                        </span>
+                                      )}
+                                      {agent.lastRun?.actualModel && (
+                                        <span>
+                                          <small>Last reported</small>
+                                          {agent.lastRun.actualModel}
+                                        </span>
+                                      )}
+                                      {agent.runtime && (
+                                        <span>
+                                          <small>Runtime</small>
+                                          {agent.runtime}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {(agent.skills?.length ?? 0) > 0 && (
+                                    <div
+                                      className="passport-skills"
+                                      aria-label="Agent skills"
+                                    >
+                                      {agent.skills.slice(0, 5).map((skill) => (
+                                        <span key={skill}>{skill}</span>
+                                      ))}
+                                      {agent.skills.length > 5 && (
+                                        <span>+{agent.skills.length - 5}</span>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -3272,46 +3460,110 @@ export default function App() {
             <div className="settings-row">
               <div>
                 <h3>Office theme</h3>
-                <p>Five palettes for focused work, from daylight to midnight.</p>
+                <p>
+                  Five palettes for focused work, from daylight to midnight.
+                </p>
               </div>
               <select
                 aria-label="Office theme"
                 value={officeTheme}
                 onChange={(e) => setOfficeTheme(e.target.value)}
               >
-                {OFFICE_THEMES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                {OFFICE_THEMES.map(([id, label]) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="settings-row visual-preset-row">
               <div>
                 <h3>Portable visual preset</h3>
-                <p>Move this office’s appearance between workspaces. A preview lists every change before anything is saved.</p>
+                <p>
+                  Move this office’s appearance between workspaces. A preview
+                  lists every change before anything is saved.
+                </p>
               </div>
               <span className="settings-buttons visual-preset-actions">
-                <button className="button" type="button" onClick={exportVisualPreset}>
+                <button
+                  className="button"
+                  type="button"
+                  onClick={exportVisualPreset}
+                >
                   <Download size={14} /> Export preset
                 </button>
                 <label className="button visual-preset-import">
                   <Upload size={14} /> Import preset
-                  <input aria-label="Import visual preset" type="file" accept="application/json,.json" onChange={previewVisualPreset} />
+                  <input
+                    aria-label="Import visual preset"
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={previewVisualPreset}
+                  />
                 </label>
               </span>
             </div>
-            {visualPresetError ? <p className="visual-preset-error" role="alert">{visualPresetError}</p> : null}
+            {visualPresetError ? (
+              <p className="visual-preset-error" role="alert">
+                {visualPresetError}
+              </p>
+            ) : null}
             {visualPresetPreview ? (
-              <section className="visual-preset-preview" aria-label="Visual preset preview" role="status">
+              <section
+                className="visual-preset-preview"
+                aria-label="Visual preset preview"
+                role="status"
+              >
                 <div>
-                  <span className="visual-preset-icon"><Eye size={16} /></span>
-                  <p><strong>{visualPresetPreview.preset.name}</strong><br />Review these workspace-only appearance changes.</p>
+                  <span className="visual-preset-icon">
+                    <Eye size={16} />
+                  </span>
+                  <p>
+                    <strong>{visualPresetPreview.preset.name}</strong>
+                    <br />
+                    Review these workspace-only appearance changes.
+                  </p>
                 </div>
                 <ul>
-                  {visualPresetPreview.changes.length ? visualPresetPreview.changes.map((change) => (
-                    <li key={change.key}><b>{{ theme: "Theme", "ui.graphics": "Graphics", "ui.office.labelDensity": "Label density", "ui.office.avatarDetail": "Avatar detail", "ui.office.lighting": "Lighting", "ui.office.ambientSound": "Ambient room tone" }[change.key] ?? change.key}</b><span>{String(change.from ?? "default")} → {String(change.to)}</span></li>
-                  )) : <li>No visual changes are needed.</li>}
+                  {visualPresetPreview.changes.length ? (
+                    visualPresetPreview.changes.map((change) => (
+                      <li key={change.key}>
+                        <b>
+                          {{
+                            theme: "Theme",
+                            "ui.graphics": "Graphics",
+                            "ui.office.labelDensity": "Label density",
+                            "ui.office.avatarDetail": "Avatar detail",
+                            "ui.office.lighting": "Lighting",
+                            "ui.office.ambientSound": "Ambient room tone",
+                          }[change.key] ?? change.key}
+                        </b>
+                        <span>
+                          {String(change.from ?? "default")} →{" "}
+                          {String(change.to)}
+                        </span>
+                      </li>
+                    ))
+                  ) : (
+                    <li>No visual changes are needed.</li>
+                  )}
                 </ul>
                 <span className="settings-buttons">
-                  <button className="text-button" type="button" onClick={() => setVisualPresetPreview(null)}>Discard</button>
-                  <button className="button primary" type="button" disabled={visualPresetBusy} onClick={applyVisualPreset}>Apply preset</button>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => setVisualPresetPreview(null)}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    className="button primary"
+                    type="button"
+                    disabled={visualPresetBusy}
+                    onClick={applyVisualPreset}
+                  >
+                    Apply preset
+                  </button>
                 </span>
               </section>
             ) : null}
@@ -3325,7 +3577,12 @@ export default function App() {
               <select
                 aria-label="Graphics preset"
                 value={officeSetting("graphics")}
-                onChange={(e) => saveVisualSetting(OFFICE_SETTINGS.graphics.key, e.target.value)}
+                onChange={(e) =>
+                  saveVisualSetting(
+                    OFFICE_SETTINGS.graphics.key,
+                    e.target.value,
+                  )
+                }
               >
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
@@ -3372,7 +3629,10 @@ export default function App() {
                 aria-label="Label density"
                 value={officeSetting("labelDensity")}
                 onChange={(e) =>
-                  saveVisualSetting(OFFICE_SETTINGS.labelDensity.key, e.target.value)
+                  saveVisualSetting(
+                    OFFICE_SETTINGS.labelDensity.key,
+                    e.target.value,
+                  )
                 }
               >
                 <option value="auto">Follow graphics preset</option>
@@ -3390,7 +3650,10 @@ export default function App() {
                 aria-label="Avatar detail"
                 value={officeSetting("avatarDetail")}
                 onChange={(e) =>
-                  saveVisualSetting(OFFICE_SETTINGS.avatarDetail.key, e.target.value)
+                  saveVisualSetting(
+                    OFFICE_SETTINGS.avatarDetail.key,
+                    e.target.value,
+                  )
                 }
               >
                 <option value="auto">Follow graphics preset</option>
@@ -3408,7 +3671,10 @@ export default function App() {
                 aria-label="Office lighting"
                 value={officeSetting("lighting")}
                 onChange={(e) =>
-                  saveVisualSetting(OFFICE_SETTINGS.lighting.key, e.target.value)
+                  saveVisualSetting(
+                    OFFICE_SETTINGS.lighting.key,
+                    e.target.value,
+                  )
                 }
               >
                 <option value="day">Day</option>
