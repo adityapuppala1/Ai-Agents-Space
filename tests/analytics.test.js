@@ -30,8 +30,27 @@ function setup() {
   return { services, recorder, workspace, agents };
 }
 
-/** Pins the end time (RunRecorder stamps Date.now(); the test uses a fake clock). */
+/**
+ * Pins the end time (RunRecorder stamps Date.now(); the test uses a fake clock)
+ * and releases the agent. A completed managed run leaves its task IN_PROGRESS
+ * pending review, which keeps the profile busy; a test that starts a second run
+ * for the same agent has to close the first task the way accepting a review does.
+ */
 function endRun(services, runId, endedAt) {
+  const run = services.db
+    .prepare("SELECT workspace_id, task_id FROM runs WHERE id = ?")
+    .get(runId);
+  if (run?.task_id) {
+    const task = services.db
+      .prepare("SELECT status FROM tasks WHERE id = ?")
+      .get(run.task_id);
+    if (task && task.status !== "COMPLETED")
+      services.db
+        .prepare(
+          "UPDATE tasks SET status = 'COMPLETED', progress = 100, completed_at = ? WHERE id = ?",
+        )
+        .run(endedAt, run.task_id);
+  }
   services.db
     .prepare("UPDATE runs SET ended_at = ? WHERE id = ?")
     .run(endedAt, runId);
@@ -953,4 +972,118 @@ test("the OpenTelemetry-shaped export excludes prompts by default and says so", 
   });
   assert.equal(opted.privacy.promptsIncluded, true);
   assert.match(JSON.stringify(opted), /SECRET-PROMPT-TEXT/);
+});
+
+test("byRole groups runs by the frozen agent snapshot role with reported flags", () => {
+  const { services, recorder, workspace, agents } = setup();
+  const roleOf = (agent) => agent.role;
+  const taskA = workspace.create({ title: "Design" });
+  const taskB = workspace.create({ title: "Design again" });
+  const taskC = workspace.create({ title: "Build" });
+  const runA = recorder.ensureRun({
+    workspaceId: workspace.id,
+    agentId: agents[0].id,
+    mode: "managed",
+    provider: "claude-code",
+    taskId: taskA.id,
+    startedAt: T0,
+  });
+  recorder.applyEvent(runA.id, {
+    kind: "usage",
+    summary: "usage",
+    model: "claude-fable-5-1",
+    usage: { input_tokens: 300, output_tokens: 50, total_cost_usd: 0.5 },
+    timestamp: T0 + 100,
+  });
+  recorder.setStatus(runA.id, "completed");
+  endRun(services, runA.id, T0 + 1000);
+  const runB = recorder.ensureRun({
+    workspaceId: workspace.id,
+    agentId: agents[0].id,
+    mode: "managed",
+    provider: "codex",
+    taskId: taskB.id,
+    startedAt: T0 + 200,
+  });
+  recorder.setStatus(runB.id, "failed");
+  endRun(services, runB.id, T0 + 1200);
+  const runC = recorder.ensureRun({
+    workspaceId: workspace.id,
+    agentId: agents[1].id,
+    mode: "managed",
+    provider: "claude-code",
+    taskId: taskC.id,
+    startedAt: T0 + 300,
+  });
+  recorder.setStatus(runC.id, "completed");
+  endRun(services, runC.id, T0 + 1300);
+  // A run whose snapshot lost its role (or is unparsable) lands in 'unspecified'.
+  services.db
+    .prepare("UPDATE runs SET agent_snapshot = ? WHERE id = ?")
+    .run("{not json", runC.id);
+
+  const analytics = new Analytics(services, { now: () => T0 + 5000 });
+  const summary = analytics.summary({ workspaceId: workspace.id });
+  const architect = summary.byRole.find(
+    (row) => row.role === roleOf(agents[0]),
+  );
+  assert.ok(architect, "grouped by the agent's role");
+  assert.equal(architect.reported, true);
+  assert.equal(architect.runs, 2);
+  assert.equal(architect.completed, 1);
+  assert.equal(architect.failed, 1);
+  assert.equal(architect.cancelled, 0);
+  assert.equal(architect.disconnected, 0);
+  assert.equal(architect.retries, 0);
+  assert.deepEqual(architect.tokens, {
+    input: 300,
+    output: 50,
+    reported: true,
+  });
+  assert.deepEqual(architect.costUsd, {
+    value: 0.5,
+    reported: true,
+    estimated: false,
+  });
+  const unspecified = summary.byRole.find((row) => row.role === "unspecified");
+  assert.equal(unspecified.runs, 1);
+  assert.equal(unspecified.reported, false);
+  assert.deepEqual(unspecified.tokens, {
+    input: 0,
+    output: 0,
+    reported: false,
+  });
+  assert.deepEqual(unspecified.costUsd, {
+    value: null,
+    reported: false,
+    estimated: false,
+  });
+  assert.deepEqual(
+    Object.keys(architect).sort(),
+    Object.keys(summary.byProvider[0])
+      .filter((k) => k !== "provider")
+      .concat("role", "reported")
+      .sort(),
+    "same shape as byProvider (plus the reported flag)",
+  );
+
+  // Rows and both export formats carry the role.
+  assert.equal(
+    summary.rows.find((r) => r.runId === runA.id).role,
+    roleOf(agents[0]),
+  );
+  assert.equal(
+    summary.rows.find((r) => r.runId === runC.id).role,
+    "unspecified",
+  );
+  const csv = analytics.export("csv", { workspaceId: workspace.id });
+  assert.ok(csv.body.split("\r\n")[0].endsWith(",role"));
+  assert.ok(csv.body.includes(roleOf(agents[0])));
+  const json = JSON.parse(
+    analytics.export("json", { workspaceId: workspace.id }).body,
+  );
+  assert.equal(
+    json.rows.find((r) => r.runId === runB.id).role,
+    roleOf(agents[0]),
+  );
 });

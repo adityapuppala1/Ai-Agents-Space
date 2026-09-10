@@ -552,3 +552,253 @@ test("request-change records the decision, keeps the run waiting, and reaches th
     (e) => e.status === 409,
   );
 });
+
+/* ---------- roadmap section 11: dual approval and escalation ---------- */
+
+test("dual approval: two distinct actors resolve, the same actor twice is refused, wait() resolves only after the second", async () => {
+  const { services, workspace, run, globals } = setup();
+  services.policy.setForWorkspace(workspace.id, {
+    dualApprovalFor: ["command"],
+  });
+  const approval = services.approvals.request({
+    runId: run.id,
+    kind: "command",
+    payload: { command: "git push origin main" },
+    rule: "command.risky.git-push",
+  });
+  assert.equal(approval.requiredDecisions, 2);
+  assert.equal(approval.awaitingSecondApprover, false);
+  assert.ok(
+    services.recorder
+      .events(run.id)
+      .some((e) => /2 distinct approvers required/.test(e.message)),
+  );
+  let resolved = null;
+  const waiting = services.approvals
+    .wait(approval.id, 60_000)
+    .then((a) => (resolved = a));
+
+  const first = services.approvals.decide(approval.id, {
+    decision: "approve",
+    actor: "alice",
+    note: "looks fine",
+  });
+  assert.equal(first.status, "pending");
+  assert.equal(first.awaitingSecondApprover, true);
+  assert.equal(first.state, "awaiting second approver");
+  assert.equal(first.approvalsRecorded, 1);
+  assert.equal(first.decisions.length, 1);
+  assert.equal(first.decisions[0].actor, "alice");
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(resolved, null, "wait() must not resolve after one approval");
+  assert.equal(services.recorder.get(run.id).status, "waiting_approval");
+  const partial = services.recorder
+    .events(run.id)
+    .find((e) => /awaiting second approver/.test(e.message));
+  assert.ok(partial);
+  assert.equal(partial.kind, "status");
+  assert.equal(partial.provenance, "user");
+  assert.equal(partial.data.stillWaiting, true);
+
+  // The inbox and GET /decisions say a second approver is needed.
+  const inbox = services.approvals.inbox({ workspaceId: workspace.id });
+  assert.equal(inbox.approvals[0].awaitingSecondApprover, true);
+  assert.equal(inbox.approvals[0].escalated, false);
+  assert.deepEqual(inbox.awaitingSecondApprover, [approval.id]);
+  assert.equal(inbox.urgencyCounts.awaitingSecondApprover, 1);
+  const decisions = services.approvals.decisions(approval.id);
+  assert.equal(decisions.awaitingSecondApprover, true);
+  assert.equal(decisions.requiredDecisions, 2);
+  assert.equal(decisions.decisions[0].decision, "approve");
+
+  // The same actor deciding twice is refused with 409.
+  assert.throws(
+    () =>
+      services.approvals.decide(approval.id, {
+        decision: "approve",
+        actor: "alice",
+      }),
+    (e) => e.status === 409 && /distinct approver/.test(e.message),
+  );
+  assert.equal(services.approvals.get(approval.id).status, "pending");
+
+  const second = services.approvals.decide(approval.id, {
+    decision: "approve",
+    actor: "bob",
+  });
+  assert.equal(second.status, "approved");
+  assert.equal(second.awaitingSecondApprover, false);
+  assert.equal(second.decidedBy, "alice, bob");
+  assert.equal(second.decisions.length, 2);
+  await waiting;
+  assert.equal(resolved.status, "approved");
+  assert.equal(services.recorder.get(run.id).status, "running");
+  const final = services.recorder
+    .events(run.id)
+    .find((e) => e.kind === "approval.decision");
+  assert.deepEqual(final.data.approvers, ["alice", "bob"]);
+  assert.match(final.message, /Approved by alice, bob/);
+  const audits = services.audit.list({ action: "approval.decide" });
+  assert.equal(audits.length, 2);
+  assert.equal(audits.find((a) => a.details.partial)?.actor, "alice");
+  assert.ok(globals.length >= 3);
+  // GET /api/approvals/:id/decisions through the route contract.
+  let out;
+  const handled = await approvalRoutes({
+    method: "GET",
+    path: `/api/approvals/${approval.id}/decisions`,
+    query: new URLSearchParams(),
+    send: (status, data) => (out = { status, data }),
+    body: async () => null,
+    services,
+    hub: services.hub,
+    db: services.db,
+    bus: services.bus,
+    actor: "local-user",
+  });
+  assert.equal(handled, true);
+  assert.equal(out.status, 200);
+  assert.equal(out.data.approvalId, approval.id);
+  assert.equal(out.data.decisions.length, 2);
+  assert.equal(out.data.status, "approved");
+});
+
+test("dual approval: one deny resolves the approval as denied immediately; rule ids select it too", async () => {
+  const { services, workspace, run } = setup();
+  services.policy.setForWorkspace(workspace.id, {
+    dualApprovalFor: ["command.risky.git-push"],
+  });
+  const plain = services.approvals.request({
+    runId: run.id,
+    kind: "command",
+    payload: { command: "ls" },
+    rule: "command.allowed",
+  });
+  assert.equal(plain.requiredDecisions, 1, "rule not listed: single approval");
+  services.approvals.decide(plain.id, { decision: "approve" });
+
+  const approval = services.approvals.request({
+    runId: run.id,
+    kind: "command",
+    payload: { command: "git push" },
+    rule: "command.risky.git-push",
+  });
+  assert.equal(approval.requiredDecisions, 2);
+  const waiting = services.approvals.wait(approval.id, 60_000);
+  services.approvals.decide(approval.id, {
+    decision: "approve",
+    actor: "alice",
+  });
+  const denied = services.approvals.decide(approval.id, {
+    decision: "deny",
+    actor: "bob",
+    note: "not today",
+  });
+  assert.equal(denied.status, "denied");
+  assert.equal(denied.decidedBy, "bob");
+  assert.equal(denied.decisions.length, 2);
+  assert.equal((await waiting).status, "denied");
+  assert.throws(
+    () => services.approvals.decide(approval.id, { decision: "approve" }),
+    (e) => e.status === 409,
+  );
+  // A deny as the very first decision resolves too.
+  const another = services.approvals.request({
+    runId: run.id,
+    kind: "command",
+    payload: { command: "git push --force" },
+    rule: "command.risky.git-push",
+  });
+  const firstDeny = services.approvals.decide(another.id, {
+    decision: "deny",
+    actor: "carol",
+  });
+  assert.equal(firstDeny.status, "denied");
+  assert.equal((await services.approvals.wait(another.id)).status, "denied");
+});
+
+test("escalation sweep marks old pending approvals with an injected clock", async () => {
+  const { services, workspace, run, advance, globals } = setup();
+  services.policy.setForWorkspace(workspace.id, {
+    escalateAfterMs: 5 * 60 * 1000,
+    escalationReviewer: "human",
+  });
+  const approval = services.approvals.request({
+    runId: run.id,
+    kind: "network",
+    payload: { url: "https://example.com" },
+    expiresInMs: 60 * 60 * 1000,
+  });
+  assert.equal(services.approvals.escalationSweep(), 0, "not old enough yet");
+  advance(4 * 60 * 1000);
+  assert.equal(services.approvals.escalationSweep(), 0);
+  advance(2 * 60 * 1000);
+  const before = globals.length;
+  assert.equal(services.approvals.escalationSweep(), 1);
+  assert.ok(globals.length > before, "bus global emitted");
+  const escalated = services.approvals.get(approval.id);
+  assert.equal(escalated.status, "pending");
+  assert.equal(escalated.escalated, true);
+  assert.equal(escalated.escalationLevel, 1);
+  assert.ok(escalated.escalatedAt);
+  assert.equal(escalated.escalationReviewer, "human");
+  const urgency = services.approvals.urgency(escalated);
+  assert.equal(urgency.level, "critical");
+  assert.equal(urgency.escalated, true);
+  const event = services.recorder
+    .events(run.id)
+    .find((e) => /Approval escalated \(level 1\)/.test(e.message));
+  assert.ok(event);
+  assert.equal(event.kind, "status");
+  assert.equal(event.provenance, "system");
+  assert.equal(event.data.escalationReviewer, "human");
+  assert.match(event.message, /escalated to human/);
+  const audit = services.audit.list({ action: "approval.escalate" });
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].policyDecision, "escalated");
+  assert.equal(audit[0].details.escalationLevel, 1);
+  // Inbox reports it and ranks it first.
+  services.approvals.request({
+    runId: run.id,
+    kind: "question",
+    payload: { question: "later?" },
+    expiresInMs: 60 * 60 * 1000,
+  });
+  const inbox = services.approvals.inbox({ workspaceId: workspace.id });
+  assert.equal(inbox.approvals[0].id, approval.id);
+  assert.equal(inbox.approvals[0].escalated, true);
+  assert.equal(inbox.approvals[0].urgency.level, "critical");
+  assert.deepEqual(inbox.escalated, [approval.id]);
+  assert.equal(inbox.urgencyCounts.escalated, 1);
+  // Not re-escalated until another escalateAfterMs passes; then level 2.
+  assert.equal(services.approvals.escalationSweep(), 0);
+  advance(5 * 60 * 1000);
+  const swept = services.approvals.sweep();
+  assert.equal(swept.escalated, 2, "the question is now old enough as well");
+  assert.equal(services.approvals.get(approval.id).escalationLevel, 2);
+  // Decisions still work on an escalated approval and clear it from the inbox.
+  const decided = services.approvals.decide(approval.id, {
+    decision: "approve",
+  });
+  assert.equal(decided.status, "approved");
+  assert.equal(decided.escalationLevel, 2);
+  assert.equal(services.approvals.escalationSweep(), 0, "decided rows are skipped");
+  await services.approvals.wait(approval.id, 10);
+});
+
+test("escalation defaults to 30 minutes without a policy engine", () => {
+  const { services, run, advance } = setup();
+  services.policy = null;
+  const approval = services.approvals.request({
+    runId: run.id,
+    kind: "command",
+    payload: { command: "x" },
+    expiresInMs: 2 * 60 * 60 * 1000,
+  });
+  assert.equal(approval.requiredDecisions, 1);
+  advance(29 * 60 * 1000);
+  assert.equal(services.approvals.escalationSweep(), 0);
+  advance(2 * 60 * 1000);
+  assert.equal(services.approvals.escalationSweep(), 1);
+  assert.equal(services.approvals.get(approval.id).escalationReviewer, null);
+});

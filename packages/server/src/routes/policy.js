@@ -4,10 +4,12 @@ import { InputError } from "../../../core/src/TaskStore.js";
  * Workspace policy routes. Register BEFORE routes/workspaces.js because it
  * uses /api/workspaces/:id/policy sub-paths.
  *   GET  /api/policy/presets
- *   GET  /api/workspaces/:id/policy
- *   PUT  /api/workspaces/:id/policy            (partial merge, validated)
- *   POST /api/workspaces/:id/policy/preview    { request, runId? }
- *   POST /api/workspaces/:id/policy/launch     { provider?, isolation? } → evaluateLaunch
+ *   GET  /api/workspaces/:id/policy            (includes dualApprovalFor, escalateAfterMs,
+ *                                               escalationReviewer, allowedModels,
+ *                                               allowedProviders, allowedDestinations)
+ *   PUT  /api/workspaces/:id/policy            (partial merge, validated in Policy.validatePolicy)
+ *   POST /api/workspaces/:id/policy/preview    { request, runId? } → evaluation + access lists
+ *   POST /api/workspaces/:id/policy/launch     { provider?, isolation?, model?, connectionId? } → evaluateLaunch
  */
 export default async function policyRoutes(ctx) {
   const { method, path, send, body, services, actor } = ctx;
@@ -46,12 +48,21 @@ export default async function policyRoutes(ctx) {
   }
   if (method === "POST" && sub === "/launch") {
     const input = (await body()) ?? {};
+    for (const key of ["provider", "isolation", "model", "connectionId"])
+      if (
+        input[key] !== undefined &&
+        input[key] !== null &&
+        (typeof input[key] !== "string" || input[key].length > 200)
+      )
+        throw new InputError(`${key} must be a short string`);
     send(
       200,
       policy.evaluateLaunch({
         workspaceId,
         provider: input.provider ?? null,
         isolation: input.isolation ?? null,
+        model: input.model ?? null,
+        connectionId: input.connectionId ?? null,
       }),
     );
     return true;

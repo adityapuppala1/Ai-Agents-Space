@@ -33,6 +33,10 @@ import { MemoryService } from "../../../core/src/context/memory.js";
  *   DELETE /api/workspaces/:id/knowledge/:cid/items/:itemId ?purge=1 for the hard delete
  *   POST   /api/workspaces/:id/knowledge/:cid/refresh
  *
+ *   POST   /api/workspaces/:id/context/adopt              {path, contentHash?, reason?}
+ *   GET    /api/workspaces/:id/context/adopted            ?includeRevoked=1
+ *   DELETE /api/workspaces/:id/context/adopted/:adoptionId
+ *
  *   GET    /api/runs/:id/transfers      which provider/host received which inputs
  *   POST   /api/runs/:id/context/gate   {manifest?}  staleness gate before applying
  *
@@ -184,6 +188,53 @@ export default async function contextRoutes(ctx) {
       const cid = decodeURIComponent(refresh[1]);
       memory.getCollection(cid, { workspaceId });
       send(200, memory.refreshCheck(cid));
+      return true;
+    }
+    return false;
+  }
+
+  // Untrusted-content adoption: a person deliberately offers content that
+  // the scanner flagged. Bound to a content hash; audited; revocable.
+  const adoptRoute = path.match(
+    /^\/api\/workspaces\/([^/]+)\/context\/(adopt|adopted)(?:\/([^/]+))?$/,
+  );
+  if (adoptRoute) {
+    const context = requireContext(services);
+    const workspaceId = decodeURIComponent(adoptRoute[1]);
+    services.hub.get(workspaceId);
+    if (typeof context.adopt !== "function")
+      throw new InputError("Content adoption is not available", 503);
+    if (adoptRoute[2] === "adopt" && !adoptRoute[3] && method === "POST") {
+      const input = (await body(65536)) ?? {};
+      send(
+        201,
+        context.adopt({
+          workspaceId,
+          path: input.path,
+          contentHash: input.contentHash ?? null,
+          reason: input.reason ?? "",
+          actor: actor ?? "user",
+        }),
+      );
+      return true;
+    }
+    if (adoptRoute[2] === "adopted" && !adoptRoute[3] && method === "GET") {
+      send(200, {
+        workspaceId,
+        adopted: context.adopted(workspaceId, {
+          includeRevoked: query.get("includeRevoked") === "1",
+        }),
+      });
+      return true;
+    }
+    if (adoptRoute[2] === "adopted" && adoptRoute[3] && method === "DELETE") {
+      send(
+        200,
+        context.revoke(decodeURIComponent(adoptRoute[3]), {
+          workspaceId,
+          actor: actor ?? "user",
+        }),
+      );
       return true;
     }
     return false;

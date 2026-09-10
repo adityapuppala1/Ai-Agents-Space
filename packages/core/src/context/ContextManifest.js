@@ -1,4 +1,4 @@
-import { statSync, existsSync } from "node:fs";
+import { statSync, existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve, isAbsolute, sep, dirname, basename } from "node:path";
@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { isSecretPath, DEFAULT_POLICY } from "../contracts.js";
 import { InputError } from "../TaskStore.js";
 import { rank } from "./relevance.js";
+import { scanManifest } from "./untrusted.js";
 
 // Private path helpers (packages/core/src/util/paths.js belongs to module A).
 const WIN = process.platform === "win32";
@@ -308,6 +309,9 @@ export class ContextManifest {
         ref: doc.ref ?? doc.url ?? doc.id ?? null,
         revision: doc.revision ?? null,
         bytes: num(doc.bytes),
+        source: doc.source ?? (doc.url ? "web" : undefined),
+        // Kept only until the untrusted scan below; never stored.
+        text: textOf(doc),
       }));
     const instructionBytes = Buffer.byteLength(lines.join("\n"));
     // Named knowledge collections travel as documents with attribution.
@@ -327,6 +331,7 @@ export class ContextManifest {
         source: item.source,
         capturedAt: item.capturedAt,
         freshnessCheckedAt: item.freshnessCheckedAt,
+        text: this.#knowledgeText(item.itemId),
       });
 
     // Relevance ranking is deterministic and explains every decision.
@@ -389,6 +394,19 @@ export class ContextManifest {
       totalBytes = kept.reduce((sum, file) => sum + file.bytes, 0);
     }
 
+    // Untrusted-content scan. Retrieved files and documents whose text
+    // carries instruction-like content are NOT offered to the run unless a
+    // person adopted exactly that content (path + content hash) for this
+    // workspace. Findings are recorded; nothing is rewritten.
+    const untrusted = this.#applyUntrusted({
+      workspaceId,
+      included,
+      docs,
+      excluded,
+      maxFileBytes,
+    });
+    totalBytes = included.reduce((sum, file) => sum + file.bytes, 0);
+
     const docBytes = docs.reduce((sum, doc) => sum + (doc.bytes ?? 0), 0);
     const manifest = {
       version: 1,
@@ -413,6 +431,7 @@ export class ContextManifest {
           }
         : null,
       knowledge: knowledgeItems,
+      untrusted,
       relevance: ranking
         ? {
             deterministic: true,
@@ -441,6 +460,237 @@ export class ContextManifest {
     };
     manifest.hash = hashManifest(manifest);
     return manifest;
+  }
+
+  #knowledgeText(itemId) {
+    try {
+      const row = this.db
+        .prepare("SELECT content FROM knowledge_items WHERE id = ?")
+        .get(itemId);
+      return typeof row?.content === "string" ? row.content : null;
+    } catch {
+      return null;
+    }
+  }
+
+  #adoptedRows(workspaceId) {
+    try {
+      return this.db
+        .prepare(
+          "SELECT * FROM adopted_content WHERE workspace_id = ? AND revoked_at IS NULL",
+        )
+        .all(workspaceId);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Scans `included` files and `docs`, then moves untrusted entries that no
+   * adoption covers into `excluded` (reason "untrusted"). An adoption only
+   * counts when both the path and the content hash match, so a document
+   * that changed since it was adopted is excluded again. Returns the summary
+   * stored on the manifest.
+   */
+  #applyUntrusted({ workspaceId, included, docs, excluded, maxFileBytes }) {
+    const hashes = new Map();
+    const readFile = (path) => {
+      const stat = statSync(path);
+      if (stat.size > maxFileBytes) return null;
+      const buffer = readFileSync(path);
+      if (buffer.includes(0)) return null; // binary: nothing to scan
+      hashes.set(pathKey(path), sha256(buffer));
+      return buffer.toString("utf8");
+    };
+    scanManifest({ files: included, documents: docs }, { readFile });
+    for (const file of included) {
+      const hash = hashes.get(pathKey(file.path)) ?? null;
+      if (hash) file.contentHash = hash;
+    }
+    for (const doc of docs) {
+      if (typeof doc.text === "string") doc.contentHash = sha256(doc.text);
+      delete doc.text;
+    }
+    const adoptions = this.#adoptedRows(workspaceId);
+    const findAdoption = (path, hash) =>
+      adoptions.find(
+        (row) =>
+          pathKey(String(row.path)) === pathKey(String(path ?? "")) &&
+          row.content_hash === hash,
+      ) ?? null;
+    const summary = {
+      scanned: true,
+      untrustedExcluded: 0,
+      adopted: 0,
+      findings: 0,
+      basis:
+        "deterministic pattern rules (context/untrusted.js); findings are labels, never edits",
+    };
+    const keep = [];
+    for (const file of included) {
+      summary.findings += file.findings?.length ?? 0;
+      if (!file.untrusted) {
+        keep.push(file);
+        continue;
+      }
+      const adoption = findAdoption(file.path, file.contentHash ?? null);
+      if (adoption) {
+        file.adopted = adoptionSummary(adoption);
+        summary.adopted++;
+        keep.push(file);
+        continue;
+      }
+      summary.untrustedExcluded++;
+      excluded.push({
+        path: file.path,
+        reason: "untrusted",
+        detail:
+          "content carries instruction-like text; adopt it explicitly to include it",
+        contentHash: file.contentHash ?? null,
+        findings: file.findings,
+      });
+    }
+    included.length = 0;
+    included.push(...keep);
+    const keptDocs = [];
+    for (const doc of docs) {
+      summary.findings += doc.findings?.length ?? 0;
+      if (!doc.untrusted) {
+        keptDocs.push(doc);
+        continue;
+      }
+      const key = doc.ref ?? doc.title;
+      const adoption = findAdoption(key, doc.contentHash ?? null);
+      if (adoption) {
+        doc.adopted = adoptionSummary(adoption);
+        summary.adopted++;
+        keptDocs.push(doc);
+        continue;
+      }
+      summary.untrustedExcluded++;
+      excluded.push({
+        path: String(key),
+        title: doc.title,
+        reason: "untrusted",
+        detail:
+          "content carries instruction-like text; adopt it explicitly to include it",
+        contentHash: doc.contentHash ?? null,
+        findings: doc.findings,
+      });
+    }
+    docs.length = 0;
+    docs.push(...keptDocs);
+    return summary;
+  }
+
+  /** sha256 of a file's current bytes, under the same scope rules as build(). */
+  contentHash(workspaceId, path) {
+    const workspace = this.hub.get(workspaceId).record;
+    const scopes = this.#scopes(workspace, this.#policy(workspaceId));
+    const abs = isAbsolute(expandHome(String(path)))
+      ? normalizePath(path)
+      : workspace.rootPath
+        ? normalizePath(resolve(workspace.rootPath, String(path)))
+        : null;
+    if (!abs || isSecretPath(abs) || !scopes.some((s) => isWithin(abs, s)))
+      throw new InputError("Path is outside the workspace scope", 403);
+    if (!existsSync(abs)) throw new InputError("File not found", 404);
+    return { path: abs, contentHash: sha256(readFileSync(abs)) };
+  }
+
+  /**
+   * adopt({ workspaceId, path, contentHash, actor, reason })
+   *
+   * A deliberate, audited decision by a person to offer untrusted content
+   * to runs in this workspace. The adoption is bound to the exact content
+   * hash: when the content changes it no longer applies. `path` is a file
+   * path or a document ref; when `contentHash` is omitted for a file inside
+   * the workspace scope it is computed now.
+   */
+  adopt({
+    workspaceId,
+    path,
+    contentHash = null,
+    actor = "user",
+    reason = "",
+  }) {
+    if (!workspaceId) throw new InputError("workspaceId is required");
+    this.hub.get(workspaceId);
+    if (!path || !String(path).trim()) throw new InputError("path is required");
+    let key = String(path).trim();
+    let hash = contentHash ? String(contentHash).trim().toLowerCase() : null;
+    if (!hash) {
+      const computed = this.contentHash(workspaceId, key);
+      key = computed.path;
+      hash = computed.contentHash;
+    } else if (!/^[0-9a-f]{64}$/.test(hash))
+      throw new InputError("contentHash must be a sha256 hex digest");
+    else if (isAbsolute(expandHome(key))) key = normalizePath(key);
+    if (isSecretPath(key))
+      throw new InputError("Secret paths cannot be adopted", 403);
+    const who = String(actor ?? "user").slice(0, 120) || "user";
+    const why = String(reason ?? "").slice(0, 500);
+    const existing = this.#adoptedRows(workspaceId).find(
+      (row) =>
+        pathKey(String(row.path)) === pathKey(key) && row.content_hash === hash,
+    );
+    if (existing) return rowToAdoption(existing);
+    const id = randomUUID();
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO adopted_content (id, workspace_id, path, content_hash, adopted_by, reason, adopted_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(id, workspaceId, key, hash, who, why, now);
+    this.services.audit?.record?.({
+      actor: who,
+      action: "context.adopt",
+      target: key,
+      workspaceId,
+      details: { adoptionId: id, contentHash: hash, reason: why },
+    });
+    return this.adoption(id);
+  }
+
+  adoption(id) {
+    const row = this.db
+      .prepare("SELECT * FROM adopted_content WHERE id = ?")
+      .get(id);
+    if (!row) throw new InputError("Adoption not found", 404);
+    return rowToAdoption(row);
+  }
+
+  /** Active adoptions for a workspace (revoked ones too when asked). */
+  adopted(workspaceId, { includeRevoked = false } = {}) {
+    this.hub.get(workspaceId);
+    const rows = includeRevoked
+      ? this.db
+          .prepare(
+            "SELECT * FROM adopted_content WHERE workspace_id = ? ORDER BY adopted_at DESC",
+          )
+          .all(workspaceId)
+      : this.#adoptedRows(workspaceId);
+    return rows.map(rowToAdoption);
+  }
+
+  revoke(id, { actor = "user", workspaceId = null } = {}) {
+    const current = this.adoption(id);
+    if (workspaceId && current.workspaceId !== workspaceId)
+      throw new InputError("Adoption not found", 404);
+    if (current.revokedAt) return current;
+    const now = Date.now();
+    this.db
+      .prepare("UPDATE adopted_content SET revoked_at = ? WHERE id = ?")
+      .run(now, id);
+    this.services.audit?.record?.({
+      actor: String(actor ?? "user"),
+      action: "context.revoke",
+      target: current.path,
+      workspaceId: current.workspaceId,
+      details: { adoptionId: id, contentHash: current.contentHash },
+    });
+    return this.adoption(id);
   }
 
   /**
@@ -743,6 +993,39 @@ function rowToTransfer(row) {
 
 function num(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function textOf(doc) {
+  for (const key of ["text", "content", "body"])
+    if (typeof doc[key] === "string") return doc[key];
+  return null;
+}
+
+function sha256(input) {
+  return createHash("sha256").update(input).digest("hex");
+}
+
+function adoptionSummary(row) {
+  return {
+    id: row.id,
+    adoptedBy: row.adopted_by,
+    adoptedAt: row.adopted_at,
+    reason: row.reason ?? "",
+  };
+}
+
+function rowToAdoption(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    path: row.path,
+    contentHash: row.content_hash,
+    adoptedBy: row.adopted_by,
+    reason: row.reason ?? "",
+    adoptedAt: row.adopted_at,
+    revokedAt: row.revoked_at ?? null,
+    active: row.revoked_at === null || row.revoked_at === undefined,
+  };
 }
 
 export function hashManifest(manifest) {

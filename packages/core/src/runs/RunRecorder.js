@@ -121,12 +121,27 @@ function truncateData(data, limit = 4000) {
  * mirroring, and snapshot broadcasting live in one place.
  */
 export class RunRecorder {
-  constructor(services, { broadcastIntervalMs = 250 } = {}) {
+  constructor(services, { broadcastIntervalMs = 250, now = Date.now } = {}) {
     this.db = services.db;
     this.hub = services.hub;
     this.bus = services.bus;
     this.broadcastIntervalMs = broadcastIntervalMs;
+    /**
+     * Clock used whenever a provider event carries no timestamp of its own.
+     * Injectable so a test can compare two runs of the same stream: with the
+     * real clock those events differ by milliseconds and nothing is comparable.
+     */
+    this.now = now;
     this.pending = new Map();
+    /**
+     * runId → { activity, currentAction, currentFile, actualModel }: the
+     * timestamp of the event that last set each "latest state" field. Events
+     * that arrive out of order (a replayed transcript, a hook event racing the
+     * stream) must not let an older event overwrite a newer one; usage totals
+     * are additive and need no guard. Kept in memory: after a restart the
+     * first event applied wins again, which is the pre-existing behaviour.
+     */
+    this.latestAt = new Map();
   }
 
   get(runId) {
@@ -361,7 +376,7 @@ export class RunRecorder {
     const runtime = this.hub.get(run.workspaceId);
     runtime.sequence++;
     const id = randomUUID();
-    const timestamp = event.timestamp ?? Date.now();
+    const timestamp = event.timestamp ?? this.now();
     const activity =
       event.activity ??
       (event.tool ? classifyTool(event.tool, event.data) : null) ??
@@ -402,15 +417,42 @@ export class RunRecorder {
     const stored = this.record(runId, event);
     if (!stored) return null;
     const run = this.get(runId);
-    const fields = { lastEventAt: stored.timestamp };
-    if (stored.activity && !TERMINAL_RUN_STATUSES.includes(run.status)) {
+    const fields = {
+      lastEventAt: Math.max(run.lastEventAt ?? 0, stored.timestamp),
+    };
+    // Out-of-order guard: a field is only overwritten by an event at least as
+    // new as the one that last set it. Equal timestamps keep arrival order.
+    const marks = this.latestAt.get(runId) ?? {};
+    const fresh = (key) => !(marks[key] > stored.timestamp);
+    const mark = (key) => {
+      marks[key] = stored.timestamp;
+    };
+    if (
+      stored.activity &&
+      !TERMINAL_RUN_STATUSES.includes(run.status) &&
+      fresh("activity")
+    ) {
       fields.activity = stored.activity;
+      mark("activity");
     }
     // Usage/status/system notes must not displace the last real action.
-    if (event.summary && ACTION_KINDS.has(event.kind))
+    if (
+      event.summary &&
+      ACTION_KINDS.has(event.kind) &&
+      fresh("currentAction")
+    ) {
       fields.currentAction = String(event.summary).slice(0, 200);
-    if (event.file) fields.currentFile = String(event.file).slice(0, 500);
-    if (event.model) fields.actualModel = event.model;
+      mark("currentAction");
+    }
+    if (event.file && fresh("currentFile")) {
+      fields.currentFile = String(event.file).slice(0, 500);
+      mark("currentFile");
+    }
+    if (event.model && fresh("actualModel")) {
+      fields.actualModel = event.model;
+      mark("actualModel");
+    }
+    this.latestAt.set(runId, marks);
     if (event.usage && typeof event.usage === "object") {
       fields.usage = mergeUsage(run.usage, event.usage);
     }
@@ -456,6 +498,7 @@ export class RunRecorder {
     if (status === "stale") fields.activity = "STALE";
     if (status === "waiting_approval") fields.activity = "WAITING_APPROVAL";
     if (ended) fields.activity = status === "completed" ? "IDLE" : "ERROR";
+    if (ended) this.latestAt.delete(runId);
     this.update(runId, fields);
     const workspace = this.hub.get(run.workspaceId);
     if (mirrorTask && run.taskId) {

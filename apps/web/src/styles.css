@@ -6,7 +6,7 @@
   --page: #f3f6fa;
   --panel: #fff;
   --text: #27394a;
-  --muted: #81909f;
+  --muted: #606d7a;
   --line: #e8edf2;
   --blue: #4876cd;
   --soft: #f6f8fb;
@@ -14,7 +14,7 @@
   /* Design tokens added in the navigation restructure. The rail is a labelled
      sidebar on wide screens and collapses to icons below 1180px. */
   --rail-w: 208px;
-  --accent: #4c78cc;
+  --accent: #3862b2;
   --accent-soft: #eaf1fe;
   --accent-ink: #2f5aa8;
   --radius-sm: 7px;

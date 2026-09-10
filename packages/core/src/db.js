@@ -585,6 +585,100 @@ const migrations = [
       CREATE INDEX evaluations_dimension ON evaluations(dimension, created_at DESC);
     `,
   },
+  {
+    // v12 (wave 3): untrusted-content adoption and generic saved views.
+    // Self-contained: new tables only, workspace ids referenced by value, so
+    // it does not depend on any other wave-3 migration having run.
+    version: 12,
+    sql: `
+      CREATE TABLE adopted_content (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        adopted_by TEXT NOT NULL,
+        reason TEXT,
+        adopted_at INTEGER NOT NULL,
+        revoked_at INTEGER
+      );
+      CREATE INDEX adopted_content_workspace
+        ON adopted_content(workspace_id, path);
+
+      CREATE TABLE saved_views (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT '{}',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX saved_views_workspace
+        ON saved_views(workspace_id, scope, name);
+    `,
+  },
+  {
+    // v11 — approval rules: dual approval and escalation. Touches only the
+    // v1/v2 approvals table, so it does not depend on any other wave-3 entry.
+    version: 11,
+    sql: `
+      ALTER TABLE approvals ADD COLUMN required_decisions INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE approvals ADD COLUMN decisions TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE approvals ADD COLUMN escalated_at INTEGER;
+      ALTER TABLE approvals ADD COLUMN escalation_level INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    // Wave 3, roadmap §10: opt-in schedules (cron or interval, evaluated in
+    // an IANA time zone) and the record of every occurrence decision. A
+    // schedule is created disabled; nothing dispatches until the operator
+    // enables both the schedule and the `scheduler.enabled` setting.
+    //
+    // Creates only new tables and references workspace/run/workflow ids by
+    // value (no foreign keys), so it does not depend on any other wave-3
+    // migration having run first.
+    version: 10,
+    sql: `
+      CREATE TABLE schedules (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('task', 'workflow')),
+        target TEXT NOT NULL,
+        definition TEXT NOT NULL DEFAULT '{}',
+        expression TEXT NOT NULL,
+        time_zone TEXT NOT NULL DEFAULT 'UTC',
+        quiet_hours TEXT,
+        overlap_policy TEXT NOT NULL DEFAULT 'skip' CHECK (overlap_policy IN ('skip', 'queue', 'allow')),
+        max_concurrent INTEGER NOT NULL DEFAULT 1,
+        missed_run_policy TEXT NOT NULL DEFAULT 'skip' CHECK (missed_run_policy IN ('skip', 'run-once', 'catch-up')),
+        catch_up_limit INTEGER NOT NULL DEFAULT 5,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        next_run_at INTEGER,
+        last_run_at INTEGER,
+        last_result TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        cancelled_at INTEGER
+      );
+      CREATE INDEX schedules_workspace ON schedules(workspace_id, created_at DESC);
+      CREATE INDEX schedules_due ON schedules(enabled, next_run_at);
+
+      CREATE TABLE schedule_runs (
+        id TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL,
+        planned_at INTEGER NOT NULL,
+        started_at INTEGER,
+        run_id TEXT,
+        workflow_id TEXT,
+        outcome TEXT NOT NULL CHECK (outcome IN ('started', 'queued', 'skipped-overlap', 'skipped-quiet', 'skipped-missed', 'skipped-flag', 'failed')),
+        detail TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX schedule_runs_schedule ON schedule_runs(schedule_id, planned_at DESC);
+      CREATE INDEX schedule_runs_run ON schedule_runs(run_id);
+    `,
+  },
 ];
 
 /** How long a writer waits for a competing writer before SQLITE_BUSY. */

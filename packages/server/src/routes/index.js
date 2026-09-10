@@ -1,4 +1,7 @@
 import opsRoutes from "./ops.js";
+import scheduleRoutes from "./schedules.js";
+import flagRoutes from "./flags.js";
+import viewRoutes from "./views.js";
 import webhookRoutes from "./webhooks.js";
 import searchRoutes from "./search.js";
 import connectorRoutes from "./connectors.js";
@@ -43,6 +46,9 @@ import workspaceRoutes from "./workspaces.js";
  */
 export const routes = [
   opsRoutes, // /api/ops*
+  scheduleRoutes, // /api/schedules*, /api/workspaces/:id/schedules, /api/scheduler/status
+  flagRoutes, // /api/flags*
+  viewRoutes, // /api/views*, /api/workspaces/:id/views
   webhookRoutes, // /api/webhooks*
   searchRoutes, // /api/search*
   connectorRoutes, // /api/connectors*, /api/workspaces/:id/checks

@@ -76,7 +76,26 @@ export const ROW_COLUMNS = [
   "workflowId",
   "reviewStatus",
   "error",
+  "role",
 ];
+
+/**
+ * The agent role a run was dispatched with, read from the frozen
+ * `agent_snapshot` JSON. Missing, blank or unparsable -> "unspecified".
+ */
+export function roleOf(snapshot) {
+  let parsed = snapshot;
+  if (typeof snapshot === "string") {
+    try {
+      parsed = JSON.parse(snapshot);
+    } catch {
+      parsed = null;
+    }
+  }
+  const role = parsed && typeof parsed === "object" ? parsed.role : null;
+  const text = typeof role === "string" ? role.trim() : "";
+  return text || "unspecified";
+}
 
 const STATUS_MESSAGE =
   /^Run (queued|running|blocked|waiting_approval|stale|disconnected|failed|cancelled|completed)\b/;
@@ -456,6 +475,7 @@ export class Analytics {
       model: new Map(),
       workspace: new Map(),
       workflow: new Map(),
+      role: new Map(),
       acceptedResult: new Map(),
     };
     const dataQuality = {
@@ -546,6 +566,9 @@ export class Analytics {
       const model = run.actual_model ?? "unknown";
       const estimate = this.#estimateCost(model, tokens);
       const workflowId = task?.workflow_id ?? null;
+      // Agent role from the run's frozen agent snapshot; profiles can be
+      // renamed later, the snapshot says what the run was dispatched as.
+      const role = roleOf(run.agent_snapshot);
       const acceptedKey = reviewOfThisRun
         ? (review.status ?? "pending")
         : "not-reviewed";
@@ -593,6 +616,7 @@ export class Analytics {
         workflowId,
         reported: workflowId !== null,
       });
+      bump(groups.role, role, { role, reported: role !== "unspecified" });
       bump(groups.acceptedResult, acceptedKey, { reviewStatus: acceptedKey });
 
       // Availability and workload cells (per provider per day / per hour).
@@ -663,6 +687,7 @@ export class Analytics {
         workflowId,
         reviewStatus: reviewOfThisRun ? (review.status ?? null) : null,
         error: run.error ?? null,
+        role,
       });
     }
 
@@ -768,6 +793,7 @@ export class Analytics {
       byModel: finalize(groups.model),
       byWorkspace: finalize(groups.workspace),
       byWorkflow: finalize(groups.workflow),
+      byRole: finalize(groups.role),
       byAcceptedResult: finalize(groups.acceptedResult),
       reliability,
       blockedHeatmap: this.#blockedHeatmap(tasks, events, now),

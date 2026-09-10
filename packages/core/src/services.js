@@ -36,6 +36,9 @@ import { createHealthService } from "./ops/Health.js";
 import { createDiagnosticsService } from "./ops/Diagnostics.js";
 import { createRetentionService } from "./ops/Retention.js";
 import { createSearch } from "./search/Search.js";
+import { createScheduler } from "./workflows/Scheduler.js";
+import { createFeatureFlags } from "./ops/FeatureFlags.js";
+import { createSavedViews } from "./views/SavedViews.js";
 import { createConnectorRegistry } from "./connectors/index.js";
 import { createMemory } from "./context/memory.js";
 import { createRelevance } from "./context/relevance.js";
@@ -300,6 +303,11 @@ export function createServices(options = {}) {
   // 8b. Connectors (git / filesystem / GitHub through gh) and the extension
   // registry. Every connector write goes policy → approval → audit inside the
   // registry; nothing here reaches the network on construction.
+  // Release governance first: the scheduler asks the flag registry whether
+  // dispatch is permitted for a workspace before it starts anything.
+  createFeatureFlags(services); // → services.flags
+  createScheduler(services); // → services.scheduler (timer started by main.js)
+  createSavedViews(services); // → services.savedViews
   createConnectorRegistry(services); // → services.connectorRegistry
   services.extensions = createExtensionRegistry(services);
 

@@ -274,7 +274,148 @@ export function findRisky(command) {
   return RISKY_COMMAND_PATTERNS.find((p) => p.re.test(text)) ?? null;
 }
 
+/* ---------- policy extensions (roadmap §11: approval rules, access, scope) ---------- */
+
+/**
+ * Fields added on top of contracts.DEFAULT_POLICY. They live here so the
+ * shared contract file stays untouched; mergePolicy() applies them.
+ *
+ *   dualApprovalFor      approval kinds ('command', 'network', …) or policy
+ *                        rule ids ('command.risky.git-push') that need two
+ *                        approvals from two distinct actors.
+ *   escalateAfterMs      a pending approval older than this is escalated.
+ *   escalationReviewer   agent id or 'human' recorded on escalated approvals.
+ *   allowedModels        requested model must be listed (empty = any).
+ *   allowedProviders     provider must be listed (empty = any).
+ *   allowedDestinations  [{ host, ports?, scheme? }] network allow list;
+ *                        empty keeps the single allowedNetwork switch.
+ */
+export const POLICY_EXTENSION_DEFAULTS = Object.freeze({
+  dualApprovalFor: [],
+  escalateAfterMs: 30 * 60 * 1000,
+  escalationReviewer: null,
+  allowedModels: [],
+  allowedProviders: [],
+  allowedDestinations: [],
+});
+
+const DEFAULT_PORTS = { http: 80, https: 443, ftp: 21, ws: 80, wss: 443 };
+
+/**
+ * Pulls { scheme, host, port } out of a URL, a bare host, or a shell command
+ * that fetches something (curl, wget, Invoke-WebRequest/iwr, http). Returns
+ * null when nothing that looks like a destination is present.
+ */
+export function parseDestination(input) {
+  const text = dequoteCommand(String(input ?? "")).trim();
+  if (!text) return null;
+  const urlMatch = text.match(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/?#'"<>]+)/i);
+  let scheme = null;
+  let authority = null;
+  if (urlMatch) {
+    scheme = urlMatch[1].toLowerCase();
+    authority = urlMatch[2];
+  } else if (/^[a-z0-9.-]+(:\d+)?$/i.test(text) && text.includes(".")) {
+    authority = text;
+  } else {
+    // `curl example.com/path`, `wget -q api.github.com:8443/x`
+    const bare = text.match(
+      /\b(?:curl|wget|iwr|Invoke-WebRequest|Invoke-RestMethod|http|https)\b[^\n]*?\s((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?)(?=[\s/?#]|$)/i,
+    );
+    if (bare) authority = bare[1];
+  }
+  if (!authority) return null;
+  authority = authority.replace(/^[^@]*@/, "");
+  let host = authority;
+  let port = null;
+  const portMatch = authority.match(/^(\[[^\]]+\]|[^:]+):(\d+)$/);
+  if (portMatch) {
+    host = portMatch[1];
+    port = Number(portMatch[2]);
+  }
+  host = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) return null;
+  if (port === null && scheme && DEFAULT_PORTS[scheme])
+    port = DEFAULT_PORTS[scheme];
+  return { scheme, host, port };
+}
+
+function hostMatches(pattern, host) {
+  const p = String(pattern ?? "")
+    .trim()
+    .toLowerCase();
+  if (!p || !host) return false;
+  if (p.startsWith("*.")) {
+    const suffix = p.slice(1); // ".github.com"
+    return host.endsWith(suffix) && host.length > suffix.length;
+  }
+  return p === host;
+}
+
+/** First allow-list entry that matches the destination, or null. */
+export function matchDestination(destination, allowedDestinations) {
+  if (!destination) return null;
+  for (const entry of allowedDestinations ?? []) {
+    if (!entry || typeof entry !== "object") continue;
+    if (!hostMatches(entry.host, destination.host)) continue;
+    if (entry.scheme && destination.scheme && entry.scheme !== destination.scheme)
+      continue;
+    if (Array.isArray(entry.ports) && entry.ports.length) {
+      if (destination.port === null || !entry.ports.includes(destination.port))
+        continue;
+    }
+    return entry;
+  }
+  return null;
+}
+
+/** Shell commands that reach the network and carry their destination inline. */
+const FETCH_COMMAND =
+  /(^|[;&|(]\s*)(curl|wget|iwr|Invoke-WebRequest|Invoke-RestMethod|http|https)\b/i;
+
 /* ---------- validation ---------- */
+
+function validateDestinations(value) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 200)
+    throw new InputError(
+      "allowedDestinations must be an array of up to 200 { host, ports?, scheme? } entries",
+    );
+  return value.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      throw new InputError(
+        "allowedDestinations entries must be objects with a host",
+      );
+    const host = String(entry.host ?? "")
+      .trim()
+      .toLowerCase();
+    if (!host || host.length > 253 || !/^(\*\.)?[a-z0-9.-]+$/.test(host))
+      throw new InputError(
+        `allowedDestinations host “${entry.host ?? ""}” must be a hostname, optionally starting with “*.”`,
+      );
+    const out = { host };
+    if (entry.ports !== undefined && entry.ports !== null) {
+      if (
+        !Array.isArray(entry.ports) ||
+        entry.ports.length > 50 ||
+        !entry.ports.every((p) => Number.isInteger(p) && p >= 1 && p <= 65535)
+      )
+        throw new InputError(
+          `allowedDestinations ports for ${host} must be an array of integers from 1 to 65535`,
+        );
+      if (entry.ports.length) out.ports = [...new Set(entry.ports)];
+    }
+    if (entry.scheme !== undefined && entry.scheme !== null) {
+      const scheme = String(entry.scheme).trim().toLowerCase();
+      if (!/^[a-z][a-z0-9+.-]{0,15}$/.test(scheme))
+        throw new InputError(
+          `allowedDestinations scheme for ${host} must be a URL scheme such as https`,
+        );
+      out.scheme = scheme;
+    }
+    return out;
+  });
+}
 
 function stringList(value, field, max = 200) {
   if (value === undefined) return undefined;
@@ -358,15 +499,65 @@ export function validatePolicy(input, { partial = true } = {}) {
     }
     out.budget = { ...DEFAULT_POLICY.budget, ...budget };
   }
+  const dualApprovalFor = stringList(
+    input.dualApprovalFor,
+    "dualApprovalFor",
+    50,
+  );
+  if (dualApprovalFor !== undefined) out.dualApprovalFor = dualApprovalFor;
+  if (input.escalateAfterMs !== undefined) {
+    const e = input.escalateAfterMs;
+    if (!Number.isInteger(e) || e < 60000 || e > 86400000)
+      throw new InputError(
+        "escalateAfterMs must be between 60000 (1 minute) and 86400000 (24 hours)",
+      );
+    out.escalateAfterMs = e;
+  }
+  if (input.escalationReviewer !== undefined) {
+    const r = input.escalationReviewer;
+    if (r !== null && (typeof r !== "string" || !r.trim() || r.length > 120))
+      throw new InputError(
+        "escalationReviewer must be null, 'human', or an agent id",
+      );
+    out.escalationReviewer = r === null ? null : r.trim();
+  }
+  const allowedModels = stringList(input.allowedModels, "allowedModels", 100);
+  if (allowedModels !== undefined) out.allowedModels = allowedModels;
+  const allowedProviders = stringList(
+    input.allowedProviders,
+    "allowedProviders",
+    20,
+  );
+  if (allowedProviders !== undefined) out.allowedProviders = allowedProviders;
+  const allowedDestinations = validateDestinations(input.allowedDestinations);
+  if (allowedDestinations !== undefined)
+    out.allowedDestinations = allowedDestinations;
   return out;
 }
 
 export function mergePolicy(base, override) {
   const merged = {
     ...DEFAULT_POLICY,
+    ...POLICY_EXTENSION_DEFAULTS,
     ...(base ?? {}),
     ...(override ?? {}),
   };
+  for (const key of [
+    "dualApprovalFor",
+    "allowedModels",
+    "allowedProviders",
+    "allowedDestinations",
+  ])
+    merged[key] = Array.isArray(merged[key])
+      ? merged[key].map((v) => (v && typeof v === "object" ? { ...v } : v))
+      : [];
+  if (
+    !Number.isInteger(merged.escalateAfterMs) ||
+    merged.escalateAfterMs < 60000
+  )
+    merged.escalateAfterMs = POLICY_EXTENSION_DEFAULTS.escalateAfterMs;
+  if (typeof merged.escalationReviewer !== "string")
+    merged.escalationReviewer = null;
   merged.budget = {
     ...DEFAULT_POLICY.budget,
     ...(base?.budget ?? {}),
@@ -526,7 +717,58 @@ export class Policy {
           ...override.requireApprovalFor,
         ]),
       ];
+    if (Array.isArray(override.dualApprovalFor))
+      policy.dualApprovalFor = [
+        ...new Set([
+          ...(base.dualApprovalFor ?? []),
+          ...override.dualApprovalFor,
+        ]),
+      ];
+    // Allow lists only ever narrow: an override list is intersected with a
+    // non-empty base list, or applied as-is when the base allows anything.
+    for (const key of ["allowedModels", "allowedProviders"]) {
+      const list = override[key];
+      if (!Array.isArray(list) || !list.length) continue;
+      const baseList = base[key] ?? [];
+      policy[key] = baseList.length
+        ? baseList.filter((item) => list.includes(item))
+        : [...list];
+      if (!policy[key].length) policy[key] = ["__none__"];
+    }
     return policy;
+  }
+
+  /**
+   * Launch-time access checks (roadmap §11 “provider access”): the provider
+   * and requested model must be on the workspace allow lists and the chosen
+   * connection must be allowed for this workspace. Returns null when the
+   * launch may go ahead, otherwise { reason, rule }.
+   */
+  static accessRefusal(policy, { workspaceId, provider, model, connection }) {
+    const providers = policy.allowedProviders ?? [];
+    if (provider && providers.length && !providers.includes(provider))
+      return {
+        rule: "launch.provider.not-allowed",
+        reason: `Provider “${provider}” is not on this workspace's allowedProviders list (${providers.join(", ")}).`,
+      };
+    const models = policy.allowedModels ?? [];
+    if (model && models.length && !models.includes(model))
+      return {
+        rule: "launch.model.not-allowed",
+        reason: `Model “${model}” is not on this workspace's allowedModels list (${models.join(", ")}).`,
+      };
+    const scoped = connection?.allowedWorkspaces;
+    if (
+      connection &&
+      Array.isArray(scoped) &&
+      scoped.length &&
+      !scoped.includes(workspaceId)
+    )
+      return {
+        rule: "launch.connection.not-allowed",
+        reason: `Connection “${connection.alias ?? connection.id}” (${connection.provider ?? provider ?? "provider"}) is restricted to other workspaces and cannot be used from this one.`,
+      };
+    return null;
   }
 
   evaluateLaunch({
@@ -535,10 +777,21 @@ export class Policy {
     provider = null,
     isolation = null,
     override = null,
+    model = null,
+    connection = null,
+    connectionId = null,
   } = {}) {
     const id = workspaceId ?? workspace?.id;
     if (!id) throw new InputError("workspaceId is required");
     const policy = Policy.tighten(this.forWorkspace(id), override);
+    let chosenConnection = connection ?? null;
+    if (!chosenConnection && connectionId) {
+      try {
+        chosenConnection = this.services.connections?.get?.(connectionId) ?? null;
+      } catch {
+        chosenConnection = null;
+      }
+    }
     const preset = AUTONOMY_PRESETS[policy.autonomy];
     const effective = {
       autonomy: policy.autonomy,
@@ -557,6 +810,12 @@ export class Policy {
       maxConcurrentRuns: policy.maxConcurrentRuns,
       timeoutMs: policy.timeoutMs,
       provider,
+      model: model ?? null,
+      connectionId: chosenConnection?.id ?? connectionId ?? null,
+      allowedModels: [...(policy.allowedModels ?? [])],
+      allowedProviders: [...(policy.allowedProviders ?? [])],
+      allowedDestinations: [...(policy.allowedDestinations ?? [])],
+      dualApprovalFor: [...(policy.dualApprovalFor ?? [])],
     };
     if (!preset.launch)
       return {
@@ -565,6 +824,14 @@ export class Policy {
         rule: "launch.observe-only",
         effective,
       };
+    const access = Policy.accessRefusal(policy, {
+      workspaceId: id,
+      provider,
+      model,
+      connection: chosenConnection,
+    });
+    if (access)
+      return { allowed: false, reason: access.reason, rule: access.rule, effective };
     const perDay = policy.budget?.maxRunsPerDay;
     if (perDay && this.#runsToday(id) >= perDay)
       return {
@@ -688,6 +955,19 @@ export class Policy {
           { category: risky.category, match: risky.label },
         );
       }
+      // A fetch command (curl, wget, Invoke-WebRequest…) carries its
+      // destination inline; with a destination allow list configured it is
+      // judged like a network request. Without one the legacy semantics
+      // (plain command → allow) are unchanged.
+      if (policy.allowedDestinations?.length && FETCH_COMMAND.test(command)) {
+        const verdict = this.#destinationVerdict(
+          policy,
+          preset,
+          parseDestination(command),
+          command,
+        );
+        if (verdict) return result(...verdict);
+      }
       return result(
         "allow",
         "command.allowed",
@@ -749,6 +1029,15 @@ export class Policy {
           `Autonomy “${preset.label}” does not allow network access.`,
           { target },
         );
+      if (policy.allowedDestinations?.length) {
+        const verdict = this.#destinationVerdict(
+          policy,
+          preset,
+          parseDestination(request.url ?? request.host ?? request.query ?? ""),
+          target,
+        );
+        if (verdict) return result(...verdict);
+      }
       if (
         policy.requireApprovalFor.includes("network") &&
         preset.approvals !== "none"
@@ -776,6 +1065,44 @@ export class Policy {
     return result("allow", "tool.allowed", `Tool ${tool || "use"} allowed.`, {
       tool,
     });
+  }
+
+  /**
+   * Decision for one destination against policy.allowedDestinations (only
+   * called when that list is non-empty). Returns the [decision, rule,
+   * reason, extra] tuple for result(), or null when no destination could be
+   * parsed so the caller falls back to the single-switch semantics.
+   */
+  #destinationVerdict(policy, preset, destination, target) {
+    if (!destination) return null;
+    const label =
+      destination.host + (destination.port ? `:${destination.port}` : "");
+    const hit = matchDestination(destination, policy.allowedDestinations);
+    if (hit)
+      return [
+        "allow",
+        "network.destination.allowed",
+        `Destination ${label} matches the allowed destination “${hit.host}”.`,
+        { target, destination, match: hit },
+      ];
+    const allowedNetwork = preset.network || policy.allowedNetwork === true;
+    if (
+      allowedNetwork &&
+      policy.requireApprovalFor.includes("network") &&
+      preset.approvals !== "none"
+    )
+      return [
+        "ask",
+        "network.destination.unlisted",
+        `Destination ${label} is not on the allowed destinations list; a human must decide.`,
+        { target, destination, allowedDestinations: policy.allowedDestinations },
+      ];
+    return [
+      "deny",
+      "network.destination.denied",
+      `Destination ${label} is not on the allowed destinations list.`,
+      { target, destination, allowedDestinations: policy.allowedDestinations },
+    ];
   }
 
   #kindOf(request) {
@@ -811,8 +1138,36 @@ export class Policy {
           : evaluation.decision === "deny"
             ? "Denied server-side; the provider receives a deny decision with this reason."
             : "Allowed without asking.",
+        ...(evaluation.decision === "ask" &&
+        this.dualApprovalRequired(policy, {
+          kind: evaluation.kind,
+          rule: evaluation.rule,
+        })
+          ? [
+              "Dual approval: two distinct people must approve before the run continues.",
+            ]
+          : []),
       ],
       policy,
+      access: {
+        allowedModels: policy.allowedModels,
+        allowedProviders: policy.allowedProviders,
+        allowedDestinations: policy.allowedDestinations,
+        dualApprovalFor: policy.dualApprovalFor,
+        escalateAfterMs: policy.escalateAfterMs,
+        escalationReviewer: policy.escalationReviewer,
+      },
     };
+  }
+
+  /** True when policy.dualApprovalFor names this approval's kind or rule id. */
+  dualApprovalRequired(policy, { kind = null, rule = null } = {}) {
+    const list = policy?.dualApprovalFor ?? [];
+    if (!list.length) return false;
+    const ruleId =
+      typeof rule === "string" ? rule : (rule?.id ?? rule?.rule ?? null);
+    return (
+      (kind && list.includes(kind)) || (ruleId && list.includes(ruleId)) || false
+    );
   }
 }

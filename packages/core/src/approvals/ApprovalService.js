@@ -108,8 +108,46 @@ function rowToApproval(row) {
     expiresAt: row.expires_at ?? null,
     provider: row.provider ?? null,
     providerRef: row.provider_ref ?? null,
+    requiredDecisions: Math.max(1, Number(row.required_decisions) || 1),
+    decisions: json(row.decisions, []),
+    escalatedAt: row.escalated_at ?? null,
+    escalationLevel: Number(row.escalation_level) || 0,
   };
 }
+
+/** Actors who approved so far (distinct). */
+function approvers(approval) {
+  return [
+    ...new Set(
+      (approval.decisions ?? [])
+        .filter((d) => d?.decision === "approve")
+        .map((d) => d.actor),
+    ),
+  ];
+}
+
+/** Derived state the inbox and wait() callers read. */
+function decorate(approval) {
+  if (!approval) return approval;
+  const approved = approvers(approval);
+  const awaitingSecondApprover =
+    approval.status === "pending" &&
+    approval.requiredDecisions > 1 &&
+    approved.length > 0 &&
+    approved.length < approval.requiredDecisions;
+  return {
+    ...approval,
+    awaitingSecondApprover,
+    approvalsRecorded: approved.length,
+    state: awaitingSecondApprover
+      ? "awaiting second approver"
+      : approval.status,
+    escalated: approval.escalationLevel > 0,
+    escalationReviewer: approval.payload?._escalationReviewer ?? null,
+  };
+}
+
+export const DEFAULT_ESCALATE_AFTER_MS = 30 * 60 * 1000;
 
 /**
  * Human-in-the-loop approvals. Requests are durable rows; waiters are
@@ -129,9 +167,38 @@ export class ApprovalService {
     this.defaultTtlMs = defaultTtlMs;
     this.waiters = new Map(); // id → Set<{resolve, timer}>
     this.hashes = new Map(); // id → payload hash (also stored in details)
-    this.sweepTimer = setInterval(() => this.expireSweep(), sweepMs);
+    this.sweepTimer = setInterval(() => this.sweep(), sweepMs);
     this.sweepTimer.unref?.();
     services.onClose?.(() => this.stop());
+  }
+
+  /** Periodic maintenance: expire overdue rows, then escalate old ones. */
+  sweep() {
+    const expired = this.expireSweep();
+    const escalated = this.escalationSweep();
+    return { expired, escalated };
+  }
+
+  /** Merged workspace policy, or the defaults when the engine is absent. */
+  #policyFor(workspaceId) {
+    try {
+      return workspaceId
+        ? (this.services.policy?.forWorkspace?.(workspaceId) ?? null)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  #requiredDecisions(workspaceId, { kind, rule }) {
+    const policy = this.#policyFor(workspaceId);
+    if (!policy) return 1;
+    const check = this.services.policy?.dualApprovalRequired;
+    if (typeof check === "function")
+      return check.call(this.services.policy, policy, { kind, rule }) ? 2 : 1;
+    const list = policy.dualApprovalFor ?? [];
+    const ruleId = typeof rule === "string" ? rule : (rule?.id ?? null);
+    return list.includes(kind) || (ruleId && list.includes(ruleId)) ? 2 : 1;
   }
 
   stop() {
@@ -148,7 +215,25 @@ export class ApprovalService {
   get(id) {
     const approval = this.#get(id);
     if (!approval) throw new InputError("Approval not found", 404);
-    return this.#withState(approval);
+    return decorate(this.#withState(approval));
+  }
+
+  /** The decisions recorded so far and how many are still needed. */
+  decisions(id) {
+    const approval = this.get(id);
+    return {
+      approvalId: approval.id,
+      status: approval.status,
+      state: approval.state,
+      requiredDecisions: approval.requiredDecisions,
+      approvalsRecorded: approval.approvalsRecorded,
+      awaitingSecondApprover: approval.awaitingSecondApprover,
+      decisions: approval.decisions,
+      escalated: approval.escalated,
+      escalationLevel: approval.escalationLevel,
+      escalatedAt: approval.escalatedAt,
+      escalationReviewer: approval.escalationReviewer,
+    };
   }
 
   /** Marks a pending row expired if its deadline has passed; returns fresh copy. */
@@ -206,10 +291,14 @@ export class ApprovalService {
         : this.defaultTtlMs;
     const expiresAt = requestedAt + ttl;
     const action = summarizePayload(kind, safePayload);
+    const requiredDecisions = this.#requiredDecisions(workspaceId, {
+      kind,
+      rule,
+    });
     this.db
       .prepare(
-        `INSERT INTO approvals (id, run_id, action, status, requested_at, decided_at, workspace_id, task_id, kind, payload, reason, provider, provider_ref, expires_at)
-         VALUES (?, ?, ?, 'pending', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO approvals (id, run_id, action, status, requested_at, decided_at, workspace_id, task_id, kind, payload, reason, provider, provider_ref, expires_at, required_decisions, decisions, escalation_level)
+         VALUES (?, ?, ?, 'pending', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 0)`,
       )
       .run(
         id,
@@ -228,14 +317,26 @@ export class ApprovalService {
         provider,
         providerRef,
         expiresAt,
+        requiredDecisions,
       );
     this.hashes.set(id, hash);
     this.services.recorder?.applyEvent(runId, {
       kind: "approval.request",
       provenance: "system",
-      summary: `Approval needed: ${action}`,
+      summary: `Approval needed: ${action}${
+        requiredDecisions > 1
+          ? ` (${requiredDecisions} distinct approvers required)`
+          : ""
+      }`,
       timestamp: requestedAt,
-      data: { approvalId: id, kind, reason, rule, payloadHash: hash },
+      data: {
+        approvalId: id,
+        kind,
+        reason,
+        rule,
+        payloadHash: hash,
+        requiredDecisions,
+      },
     });
     this.services.audit?.record({
       actor,
@@ -251,10 +352,11 @@ export class ApprovalService {
         payload: safePayload,
         payloadHash: hash,
         expiresAt,
+        requiredDecisions,
       },
     });
     this.bus?.emit("global");
-    return this.#get(id);
+    return decorate(this.#get(id));
   }
 
   decide(
@@ -287,25 +389,59 @@ export class ApprovalService {
     if (decision === "request-change")
       return this.#requestChange(approval, { actor, note, storedHash });
     const decidedAt = this.now();
-    const status = decision === "approve" ? "approved" : "denied";
     const noteText = note ? String(note).slice(0, 1000) : null;
+    const actorName = String(actor).slice(0, 120);
+    const entry = {
+      actor: actorName,
+      decision,
+      note: noteText,
+      at: decidedAt,
+    };
+    const decisions = [...(approval.decisions ?? []), entry];
+    if (approval.requiredDecisions > 1) {
+      // Dual approval: the same person cannot supply both decisions.
+      if ((approval.decisions ?? []).some((d) => d.actor === actorName))
+        throw new InputError(
+          `${actorName} already decided on this approval; a second, distinct approver is required`,
+          409,
+        );
+      const approvedBy = approvers({ decisions });
+      if (decision === "approve" && approvedBy.length < approval.requiredDecisions)
+        return this.#partialApproval(approval, {
+          actor: actorName,
+          note: noteText,
+          decisions,
+          storedHash,
+          at: decidedAt,
+        });
+    }
+    const status = decision === "approve" ? "approved" : "denied";
+    const decidedBy =
+      decision === "approve" && approval.requiredDecisions > 1
+        ? approvers({ decisions }).join(", ").slice(0, 120)
+        : actorName;
     this.db
       .prepare(
-        `UPDATE approvals SET status = ?, decision = ?, decided_by = ?, decided_at = ?, payload = ? WHERE id = ? AND status = 'pending'`,
+        `UPDATE approvals SET status = ?, decision = ?, decided_by = ?, decided_at = ?, payload = ?, decisions = ? WHERE id = ? AND status = 'pending'`,
       )
       .run(
         status,
         decision,
-        String(actor).slice(0, 120),
+        decidedBy,
         decidedAt,
         JSON.stringify({ ...approval.payload, _note: noteText ?? undefined }),
+        JSON.stringify(decisions),
         id,
       );
-    const updated = this.#get(id);
+    const updated = decorate(this.#get(id));
     this.services.recorder?.applyEvent(approval.runId, {
       kind: "approval.decision",
       provenance: "user",
-      summary: `${decision === "approve" ? "Approved" : "Denied"} by ${actor}: ${approval.action}${noteText ? ` — ${truncate(noteText, 120)}` : ""}`,
+      summary: `${decision === "approve" ? "Approved" : "Denied"} by ${
+        decision === "approve" && approval.requiredDecisions > 1
+          ? decidedBy
+          : actor
+      }: ${approval.action}${noteText ? ` — ${truncate(noteText, 120)}` : ""}`,
       timestamp: decidedAt,
       data: {
         approvalId: id,
@@ -313,6 +449,8 @@ export class ApprovalService {
         actor,
         note: noteText,
         payloadHash: storedHash,
+        requiredDecisions: approval.requiredDecisions,
+        approvers: approval.requiredDecisions > 1 ? approvers({ decisions }) : undefined,
       },
     });
     this.services.audit?.record({
@@ -341,6 +479,139 @@ export class ApprovalService {
     this.#resolveWaiters(id, updated);
     this.bus?.emit("global");
     return updated;
+  }
+
+  /**
+   * First of two required approvals: recorded, audited, and reported as
+   * “awaiting second approver”; the run keeps waiting and no waiter resolves.
+   */
+  #partialApproval(approval, { actor, note, decisions, storedHash, at }) {
+    this.db
+      .prepare(
+        "UPDATE approvals SET decisions = ? WHERE id = ? AND status = 'pending'",
+      )
+      .run(JSON.stringify(decisions), approval.id);
+    const remaining = approval.requiredDecisions - approvers({ decisions }).length;
+    this.services.recorder?.applyEvent(approval.runId, {
+      kind: "status",
+      provenance: "user",
+      summary: `Approved by ${actor} (1 of ${approval.requiredDecisions}); awaiting second approver: ${approval.action}${note ? ` — ${truncate(note, 120)}` : ""}`,
+      timestamp: at,
+      data: {
+        approvalId: approval.id,
+        decision: "approve",
+        actor,
+        note,
+        payloadHash: storedHash,
+        requiredDecisions: approval.requiredDecisions,
+        remainingDecisions: remaining,
+        stillWaiting: true,
+      },
+    });
+    this.services.audit?.record({
+      actor,
+      action: "approval.decide",
+      target: `approval:${approval.id}`,
+      workspaceId: approval.workspaceId,
+      runId: approval.runId,
+      policyDecision: "approve",
+      details: {
+        kind: approval.kind,
+        decision: "approve",
+        note,
+        payloadHash: storedHash,
+        partial: true,
+        requiredDecisions: approval.requiredDecisions,
+        remainingDecisions: remaining,
+      },
+    });
+    this.#history({
+      approvalId: approval.id,
+      workspaceId: approval.workspaceId,
+      runId: approval.runId,
+      actor,
+      decision: "approve",
+      note,
+      at,
+    });
+    this.bus?.emit("global");
+    return decorate(this.#get(approval.id));
+  }
+
+  /**
+   * Escalation (roadmap §11): a pending approval older than the workspace's
+   * escalateAfterMs (default 30 minutes) is marked escalated — level + 1,
+   * urgency critical, an audit entry, a run status event with system
+   * provenance, and a global broadcast — and the configured
+   * escalationReviewer (agent id or 'human') is recorded on it. Each further
+   * escalateAfterMs without a decision raises the level again.
+   */
+  escalationSweep({ now = this.now() } = {}) {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM approvals WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > ?)",
+      )
+      .all(now)
+      .map(rowToApproval);
+    let count = 0;
+    for (const approval of rows) {
+      const policy = this.#policyFor(approval.workspaceId);
+      const after = Number.isInteger(policy?.escalateAfterMs)
+        ? policy.escalateAfterMs
+        : DEFAULT_ESCALATE_AFTER_MS;
+      const since = approval.escalatedAt ?? approval.requestedAt;
+      if (now - since < after) continue;
+      const level = approval.escalationLevel + 1;
+      const reviewer = policy?.escalationReviewer ?? null;
+      this.db
+        .prepare(
+          "UPDATE approvals SET escalated_at = ?, escalation_level = ?, payload = ? WHERE id = ? AND status = 'pending'",
+        )
+        .run(
+          now,
+          level,
+          JSON.stringify({
+            ...approval.payload,
+            _escalationReviewer: reviewer ?? undefined,
+          }),
+          approval.id,
+        );
+      const waited = Math.round((now - approval.requestedAt) / 60000);
+      this.services.recorder?.applyEvent(approval.runId, {
+        kind: "status",
+        provenance: "system",
+        summary: `Approval escalated (level ${level}) after ${waited} minute${waited === 1 ? "" : "s"} without a decision${
+          reviewer ? `; escalated to ${reviewer}` : ""
+        }: ${approval.action}`,
+        timestamp: now,
+        data: {
+          approvalId: approval.id,
+          escalationLevel: level,
+          escalatedAt: now,
+          escalationReviewer: reviewer,
+          waitedMs: now - approval.requestedAt,
+          stillWaiting: true,
+        },
+      });
+      this.services.audit?.record({
+        actor: "system",
+        action: "approval.escalate",
+        target: `approval:${approval.id}`,
+        workspaceId: approval.workspaceId,
+        runId: approval.runId,
+        policyDecision: "escalated",
+        details: {
+          kind: approval.kind,
+          escalationLevel: level,
+          escalationReviewer: reviewer,
+          escalateAfterMs: after,
+          waitedMs: now - approval.requestedAt,
+        },
+      });
+      count += 1;
+    }
+    if (count) this.bus?.emit("global");
+    return count;
   }
 
   /**
@@ -509,9 +780,15 @@ export class ApprovalService {
       score += 1;
       factors.push("expires in under two minutes");
     }
+    const escalated = (approval.escalationLevel ?? 0) > 0;
+    if (escalated) {
+      score += 5;
+      factors.push(`escalated (level ${approval.escalationLevel})`);
+    }
     const level = score >= 5 ? "critical" : score >= 3 ? "high" : "normal";
     return {
       level,
+      escalated,
       score,
       ageMs,
       risk,
@@ -657,7 +934,7 @@ export class ApprovalService {
       )
       .all(...params)
       .map(rowToApproval)
-      .map((a) => this.#withState(a));
+      .map((a) => decorate(this.#withState(a)));
   }
 
   pending({ workspaceId = null } = {}) {
@@ -766,6 +1043,8 @@ export class ApprovalService {
       proposedAction: this.proposedAction(approval),
       affectedResources: this.affectedResources(approval),
       changeRequests: approval.payload?._changeRequests ?? [],
+      awaitingSecondApprover: approval.awaitingSecondApprover === true,
+      escalated: approval.escalated === true,
     }));
     const rankOf = (approval) =>
       URGENCY_LEVELS.indexOf(approval.urgency?.level ?? "normal");
@@ -853,6 +1132,9 @@ export class ApprovalService {
       high: approvals.filter((a) => a.urgency?.level === "high").length,
       normal: approvals.filter((a) => a.urgency?.level === "normal").length,
       changeRequests: changeRequests.length,
+      awaitingSecondApprover: approvals.filter((a) => a.awaitingSecondApprover)
+        .length,
+      escalated: approvals.filter((a) => a.escalated).length,
     };
     return {
       approvals,
@@ -860,6 +1142,10 @@ export class ApprovalService {
       reviews,
       questions,
       changeRequests,
+      awaitingSecondApprover: approvals
+        .filter((a) => a.awaitingSecondApprover)
+        .map((a) => a.id),
+      escalated: approvals.filter((a) => a.escalated).map((a) => a.id),
       counts,
       urgencyCounts,
     };

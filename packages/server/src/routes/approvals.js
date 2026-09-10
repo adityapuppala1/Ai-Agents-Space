@@ -4,9 +4,12 @@ import { InputError } from "../../../core/src/TaskStore.js";
  * Approval + inbox routes. Register BEFORE routes/workspaces.js.
  *   GET  /api/approvals?status=pending&workspace=&run=
  *   GET  /api/approvals/:id
- *   POST /api/approvals/:id/decide { decision:'approve'|'deny', note?, payloadHash?, actor? }
+ *   GET  /api/approvals/:id/decisions   (dual approval: decisions so far, escalation)
+ *   POST /api/approvals/:id/decide { decision:'approve'|'deny'|'request-change', note?, payloadHash?, actor? }
  *        A declared non-human actor ('mcp') needs settings mcp.allowDecisions.
- *   GET  /api/inbox?workspace=
+ *        With policy.dualApprovalFor, a second distinct actor must approve
+ *        before the approval resolves; the same actor twice is refused (409).
+ *   GET  /api/inbox?workspace=   (approvals carry awaitingSecondApprover, escalated)
  */
 
 /** The setting that gates non-human decisions. Mirrors mcp/tools.js. */
@@ -55,6 +58,15 @@ export default async function approvalRoutes(ctx) {
   const single = path.match(/^\/api\/approvals\/([^/]+)$/);
   if (method === "GET" && single) {
     send(200, approvals.get(decodeURIComponent(single[1])));
+    return true;
+  }
+  // Decisions recorded so far (dual approval): who approved, who is still
+  // needed, and the escalation state.
+  const decisions = path.match(/^\/api\/approvals\/([^/]+)\/decisions$/);
+  if (method === "GET" && decisions) {
+    if (typeof approvals.decisions !== "function")
+      throw new InputError("Decision history is not available", 503);
+    send(200, approvals.decisions(decodeURIComponent(decisions[1])));
     return true;
   }
   const decide = path.match(/^\/api\/approvals\/([^/]+)\/decide$/);

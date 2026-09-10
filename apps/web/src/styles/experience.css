@@ -2,7 +2,7 @@
 @import "tailwindcss/utilities.css" layer(utilities);
 
 /* Deliberately retain the existing form/reset rules; Tailwind adds utilities. */
-:root { --muted:#65778b; --blue:#5162d7; --accent:#5162d7; --accent-ink:#4051bc; --accent-soft:#edf0ff; --page:#f1f3f8; --line:#e0e5ef; }
+:root { --muted:#5d6e82; --blue:#5162d7; --accent:#5162d7; --accent-ink:#4051bc; --accent-soft:#edf0ff; --page:#f1f3f8; --line:#e0e5ef; }
 .app-shell .rail { background:linear-gradient(180deg,#19233a,#222b43); border-right:0; color:#c0cbdf; }
 .app-shell .rail nav button { color:#b9c6dc; border-radius:9px; }
 .app-shell .rail nav button:hover { background:#ffffff12; color:white; }
@@ -90,7 +90,12 @@
 .modal { overflow:auto; max-height:min(90vh,860px); overscroll-behavior:contain; }
 .modal-head { position:sticky; top:-25px; z-index:3; margin:-25px -25px 14px; padding:20px 25px 12px; background:color-mix(in srgb,var(--panel) 94%,transparent); border-bottom:1px solid var(--line); backdrop-filter:blur(12px); }
 .modal-actions { position:sticky; bottom:-25px; z-index:3; margin:22px -25px -25px; padding:14px 25px 20px; background:color-mix(in srgb,var(--panel) 94%,transparent); border-top:1px solid var(--line); backdrop-filter:blur(12px); }
-[data-theme="dark"] { --muted:#a0aec5; --accent-soft:#303c64; --accent-ink:#c0ccff; }
+/* The :root block above re-declares --page, --line, --accent and --blue, which
+   have the same specificity as the dark block in styles.css and come later,
+   so dark mode has to restate them here or it keeps the light values.
+   Caught by e2e/accessibility.spec.js: body text was 1.18:1 on --page. */
+[data-theme="dark"] { --muted:#a0aec5; --accent:#8fb3f4; --blue:#8fb3f4;
+  --accent-soft:#303c64; --accent-ink:#c0ccff; --page:#19222e; --line:#324052; }
 @media(min-width:1400px) { .app-shell .workspace-layout:not(.full-view) { grid-template-columns:minmax(0,1fr) 310px; } }
 @media(max-width:700px) { .office-control { padding:13px; } .control-caption { width:100%; } .office-visible { margin-left:0; } .office-connect { font-size:12px; } .app-shell .scene-provider { display:inline; } }
 @media(max-width:700px) { .activity-ribbon { margin:13px -13px -13px; padding:10px 13px; } .activity-ribbon-track { grid-auto-columns:245px; } .activity-ribbon-heading small { display:none; } }

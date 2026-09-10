@@ -260,21 +260,33 @@ export class RunWorker {
     return merged;
   }
 
-  evaluateLaunch({ workspace, provider, isolation, policy }) {
+  evaluateLaunch({
+    workspace,
+    provider,
+    isolation,
+    policy,
+    model = null,
+    connection = null,
+  }) {
     const policyService = this.services.policy;
     if (policyService?.evaluateLaunch) {
       // The merged run-level policy (task execution_policy + launch request)
       // is passed as an override; the engine only lets it tighten the
-      // workspace policy, never widen it.
+      // workspace policy, never widen it. The requested model and the chosen
+      // connection are handed over for the provider-access checks
+      // (allowedProviders, allowedModels, connection.allowedWorkspaces).
       const verdict = policyService.evaluateLaunch({
         workspace,
         provider,
         isolation,
         override: policy,
+        model,
+        connection,
       });
       return {
         allowed: verdict?.allowed !== false,
         reason: verdict?.reason ?? null,
+        rule: verdict?.rule ?? null,
         effective: verdict?.effective ?? policy,
       };
     }
@@ -306,11 +318,29 @@ export class RunWorker {
       return {
         ok: false,
         connectionId: null,
+        connection: null,
         reason: `${PROVIDERS[provider]?.name ?? provider} is not available: ${
           rows[0].error ?? `connection status is ${rows[0].status}`
         }`,
       };
-    return { ok: true, connectionId: usable.id ?? null };
+    return { ok: true, connectionId: usable.id ?? null, connection: usable };
+  }
+
+  /**
+   * Distinct label for a second (third, …) concurrent run of the same
+   * profile: '<agent name> #<n>'. The first run keeps label null; observed
+   * runs are never relabelled here.
+   */
+  labelFor(agent) {
+    if (!agent?.id) return null;
+    const statuses = [...ACTIVE_STATUSES, "queued"];
+    const active = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM runs WHERE agent_id = ? AND mode = 'managed' AND status IN (${statuses.map(() => "?").join(",")})`,
+      )
+      .get(agent.id, ...statuses).n;
+    if (!active) return null;
+    return `${agent.name ?? "Agent"} #${active + 1}`;
   }
 
   pickAgent(workspace, agentId, provider) {
@@ -431,17 +461,31 @@ export class RunWorker {
       requestedIsolation ??
       (policy.autonomy === "sandbox" ? "worktree" : "none");
     const record = workspace.record;
+    // The agent is chosen before the policy verdict so the model it prefers
+    // can be checked against allowedModels (an explicit override wins).
+    const agent = this.pickAgent(workspace, agentId, provider);
+    const model = modelOverride ?? agent.model ?? null;
     const verdict = this.evaluateLaunch({
       workspace: record,
       provider,
       isolation,
       policy,
+      model,
+      connection: availability.connection ?? null,
     });
     if (!verdict.allowed) {
       this.audit(
         "run.refused",
         null,
-        { workspaceId, taskId, provider, reason: verdict.reason },
+        {
+          workspaceId,
+          taskId,
+          provider,
+          model,
+          connectionId: availability.connectionId ?? null,
+          rule: verdict.rule ?? null,
+          reason: verdict.reason,
+        },
         "deny",
         actor,
       );
@@ -502,8 +546,6 @@ export class RunWorker {
         403,
       );
 
-    const agent = this.pickAgent(workspace, agentId, provider);
-    const model = modelOverride ?? agent.model ?? null;
     const binary = resolveBinary(provider, this.env, {
       names: adapter.launchBinaries ?? null,
     });
@@ -595,6 +637,7 @@ export class RunWorker {
     const atLimit =
       this.activeSlots(workspaceId) >= effective.maxConcurrentRuns;
     const queued = atLimit || !providerState.ok;
+    const label = this.labelFor(agent);
     const run = this.recorder.ensureRun({
       workspaceId,
       agentId: agent.id,
@@ -603,6 +646,7 @@ export class RunWorker {
       taskId,
       cwd,
       host: "local",
+      label,
       prompt,
       requestedModel: model,
       connectionId: availability.connectionId,

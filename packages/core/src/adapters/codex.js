@@ -383,8 +383,16 @@ export const codexAdapter = defineAdapter({
       case "error": {
         const message = record.message ?? "Codex reported an error";
         state.error = state.error ?? message;
+        // Top-level error lines carry no item id. Number them per thread so
+        // a replayed stream (observer re-read, reconnect) dedups instead of
+        // recording the same error twice; without a thread id there is no
+        // stable key and the line stays non-dedupable.
+        state.errors = (state.errors ?? 0) + 1;
         return [
           event(PROVIDER, {
+            providerEventId: sessionId
+              ? `${PROVIDER}:${sessionId}:error:${state.errors}`
+              : null,
             sessionId,
             timestamp,
             kind: "error",

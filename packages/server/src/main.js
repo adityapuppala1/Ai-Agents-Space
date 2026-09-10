@@ -112,6 +112,18 @@ async function startup() {
     console.error(`Workflow watcher failed to start: ${error.message}`);
   }
 
+  // 4b. Schedules. Opt-in twice: the setting must be on AND each schedule
+  // enabled, so an upgrade never starts dispatching work on its own.
+  let scheduled = "off";
+  try {
+    const result = await services.scheduler.start();
+    scheduled = result.started
+      ? `on (${services.scheduler.status().enabled ?? 0} enabled)`
+      : `off (${result.reason})`;
+  } catch (error) {
+    scheduled = `failed (${error.message})`;
+  }
+
   // 5. Observation of provider sessions started outside Agent Space.
   if (observe) {
     services.observation.start();
@@ -210,7 +222,7 @@ async function startup() {
     : "none checked yet";
   const live = observe ? services.observation.liveSessions().length : 0;
   console.log(
-    `Startup: providers — ${providers} | live sessions: ${live} | hooks: ${hooksLabel} | observation: ${
+    `Startup: providers — ${providers} | live sessions: ${live} | hooks: ${hooksLabel} | schedules: ${scheduled} | observation: ${
       observe ? "on" : "off (AGENT_SPACE_OBSERVE=false)"
     }${disconnected.length ? ` | ${disconnected.length} run(s) marked disconnected` : ""}`,
   );
