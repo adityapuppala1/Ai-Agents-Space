@@ -1,8 +1,15 @@
 # Connections: providers, observation, managed runs, approvals
 
-How Agent Space finds each provider CLI, what it reads to observe sessions started elsewhere, the exact command it launches for managed runs, how approvals reach the inbox, and what is verified. Everything here was checked against the code in `packages/core/src/providers`, `packages/core/src/observe`, `packages/core/src/adapters`, `packages/core/src/hooks`, and `packages/core/src/runs`.
+How Agent Space finds each provider CLI, what it reads to observe sessions started elsewhere, the exact command it launches for managed runs, how approvals reach the inbox, and — precisely — what is verified. Checked against `packages/core/src/providers`, `packages/core/src/connections`, `packages/core/src/observe`, `packages/core/src/adapters`, `packages/core/src/runs` and the tests named in each row.
 
-Verification machine: Windows 11 x64, Node 24, 9 September 2026. Claude Code 2.1.258 (also 2.1.266), Codex CLI 0.152.1, Copilot CLI 1.0.80. `cursor-agent` is not installed here (only the Cursor IDE launcher answers `--version`); a `gemini` npm binary (0.59.0) is on PATH and is detected, but no Gemini run or session has been exercised, so its stream and file formats remain unverified.
+**Verification machine**: Windows 11 x64, Node 24, 10 September 2026. A real server boot reported:
+
+```
+claude-code 2.1.258 ready, codex 0.152.1 ready, copilot 1.0.80 detected,
+cursor 3.14.27 detected, gemini 0.59.0 detected
+```
+
+Read those statuses literally. `ready` means the binary answered `--version` **and** the provider's own credential file exists; `detected` means the binary was found but no credential file was. Only Claude Code and Copilot have completed a real managed run here. Codex's `exec --json` stream format is verified but its end-to-end run hit the account usage limit. `cursor 3.14.27` is the **Cursor IDE launcher**, not `cursor-agent`, which is not installed — so Cursor is detect-only and its adapter refuses to launch. `gemini` 0.59.0 is present and its launch flags are verified from its own `--help`, but the CLI is unauthenticated here (every invocation exits 41), so no Gemini run or session has ever been observed.
 
 ## Contents
 
@@ -13,9 +20,10 @@ Verification machine: Windows 11 x64, Node 24, 9 September 2026. Claude Code 2.1
 5. [Cursor](#5-cursor)
 6. [Gemini CLI](#6-gemini-cli)
 7. [Capability matrix](#7-capability-matrix)
-8. [Installing the Claude Code hooks](#8-installing-the-claude-code-hooks)
-9. [Disabling observation](#9-disabling-observation)
-10. [Environment variables](#10-environment-variables)
+8. [Aliases, kinds, error categories, and the migration assistant](#8-aliases-kinds-error-categories-and-the-migration-assistant)
+9. [Installing the Claude Code hooks](#9-installing-the-claude-code-hooks)
+10. [Disabling observation](#10-disabling-observation)
+11. [Environment variables](#11-environment-variables)
 
 ## 1. Common mechanics
 
@@ -23,45 +31,46 @@ Verification machine: Windows 11 x64, Node 24, 9 September 2026. Claude Code 2.1
 
 On startup (`main.js`, capped at 10 s) and on `POST /api/connections/refresh`, every registered provider is probed:
 
-1. **Binary lookup.** If `AGENT_SPACE_BIN_<PROVIDER>` is set, that command line is used (quotes honoured, arguments allowed, e.g. `node "tests/fixtures/fake-cli/claude.js"`). Otherwise `where` (win32) or `which` resolves each name in the provider's `binaries` list; on Windows the first candidate with a `PATHEXT` extension wins, so npm's extension-less POSIX shim (`copilot` next to `copilot.cmd`) is skipped.
-2. **Version probe.** `<binary> --version` with an 8 s timeout; the child is killed (`taskkill /t /f` on win32) on timeout. The first version-looking token of stdout is stored; a version on stderr only counts when the probe exited 0 (a crashing wrapper must not be reported with Node's own version).
-3. **Home and credentials.** The home directory is `homeEnv` (e.g. `CLAUDE_CONFIG_DIR`) or the default (`~/.claude`). `authHint` is `logged-in-likely` when one of the provider's `authFiles` exists, `no-credentials-file` when none does, `unknown` when the provider has no documented file. Only existence is checked; nothing is read.
-4. **Status.** `missing` (binary not found), `error` (found but probe failed), `detected` (found, no credential file), `ready` (found and credential file exists). Results are cached for 60 s per environment.
+1. **Binary lookup.** `AGENT_SPACE_BIN_<PROVIDER>` wins when set (quotes honoured, arguments allowed, e.g. `node "tests/fixtures/fake-cli/claude.js"`). Otherwise `where` (win32) or `which` resolves each name in the provider's `binaries` list; on Windows the first candidate with a `PATHEXT` extension wins, so npm's extension-less shim never shadows the real executable.
+2. **Version probe.** `<binary> --version` with an 8 s timeout; the child is killed (`taskkill /t /f` on win32) on timeout, and the probe honours an `AbortSignal`. The first version-looking token of stdout is stored; a version on stderr counts only when the probe exited 0.
+3. **Home and credentials.** The home directory is `homeEnv` (e.g. `CLAUDE_CONFIG_DIR`) or the default (`~/.claude`). `authHint` is `logged-in-likely` when one of the provider's `authFiles` exists — or, for Gemini, when one of its `authEnv` variables is set — `no-credentials-file` when none does, and `unknown` when the provider documents no file. **Only existence is checked; nothing is read.**
+4. **Status.** `missing` (binary not found), `error` (found but the probe failed), `detected` (found, no credential file), `ready` (found and a credential file exists). Results are cached for 60 s per environment.
+5. **Error category.** `categorizeDetection()` derives one of `not-installed`, `not-logged-in`, `version-unsupported`, `permission-denied`, `binary-unrunnable`, `timeout`, `rate-limited`, `unknown` from what the probe actually reported, and `remediationFor()` turns it into a plain-language fix. Each probe is written to `connection_probes` (newest 20 kept per connection).
 
-One `connections` row per provider with alias `default` is upserted. `PATCH /api/connections/:id` edits `enabled`, `observe`, `alias`, `owner`, `allowedWorkspaces`; `POST /api/connections/:id/probe` re-detects one provider; `GET /api/connections/doctor` explains problems in plain language (missing binary, probe failure, likely not logged in, older than verified version, disabled, observation off, hooks not installed, experimental launch).
+Commands are run with an argument array. A shell string is built only when the resolved binary is a Windows `.cmd`/`.bat` shim that cannot be resolved to its wrapped script, and then the command **and every argument** are quoted, and any argument containing `"`, `%`, `!` or a line break — which `cmd.exe` cannot escape — is refused outright rather than passed through.
 
 ### Observation (`observe/ObservationService.js`)
 
-`ObservationService` polls every observer every `AGENT_SPACE_OBSERVE_INTERVAL` ms (default 2000) unless `AGENT_SPACE_OBSERVE=false`, the `observation.enabled` setting is false, or the provider's connection has `observe: false` / `enabled: false`. Each observer implements `scanSessions()`, `readEvents(session, offset)`, and `isLive(session)`; the service keeps a byte offset per session in `observed_sessions` so restarts resume without replaying history.
+`ObservationService` polls every observer every `AGENT_SPACE_OBSERVE_INTERVAL` ms (default 2000) unless `AGENT_SPACE_OBSERVE=false`, the `observation.enabled` setting is false, or the provider's connection has `observe: false` / `enabled: false`. Each observer implements `scanSessions()`, `readEvents(session, offset)` and `isLive(session)`.
 
 For every session:
 
-- **Workspace mapping** (`observe/mapping.js`): the session `cwd` is matched to the workspace whose `rootPath` equals or contains it (deepest root wins, case-insensitive on Windows). If none matches and `observation.autoCreateWorkspaces` is true (default), a project workspace named after the folder is created with `autoCreated: true`. Otherwise the session lands in the shared `Observed sessions` workspace (id `observed`). The demo workspace is never used.
-- **Agent**: one auto-created profile per provider per workspace ("Claude Code", then "Claude Code 2" for a second concurrent session), colour per provider, `role: "Coding assistant"`.
-- **Run**: `RunRecorder.ensureRun({ mode: "observed", providerSessionId })` with a task titled from the session title or first prompt.
-- **Events**: written through `RunRecorder.applyEvent` inside one transaction per session; duplicates are dropped by `providerEventId`; the activity shown on cards is derived from tool names (`classifyTool`) and is labelled `inferred` in the UI.
-- **Backlog**: a session seen for the first time with more than 256 KB of transcript starts near the end and records a system event "Joined an existing session; earlier activity not replayed".
-- **Stale**: no new events for `observation.staleAfterMs` (default 180 000) while the run is `running` → status `stale`; any new event returns it to `running`.
-- **Ended**: `completed` with summary "Session ended (reported by the provider)" only when the observer signalled an end; otherwise, after `endAfterMs` (30 min) without a live process or activity, "Session ended (inferred: no live process and no activity for 30 min)". A session that resumes after ending is revived (run back to `running`, task back to `IN_PROGRESS`).
-- Sessions older than 30 min that are not live are stored as history rows without a run.
+- **Workspace mapping** (`observe/mapping.js`): the session `cwd` is matched to the workspace whose `rootPath` equals or contains it (deepest root wins, case-insensitive on Windows). If none matches and `observation.autoCreateWorkspaces` is true (default), a project workspace named after the folder is created with `autoCreated: true`; otherwise the session lands in the shared `Observed sessions` workspace. The demo workspace is never a target.
+- **Agent**: one auto-created profile per provider per workspace ("Claude Code", then "Claude Code 2" for a second concurrent session).
+- **Run**: `RunRecorder.ensureRun({mode: "observed", providerSessionId})` with a task titled from the session title or the first prompt.
+- **Events**: written through `RunRecorder.applyEvent` inside one transaction per session; duplicates dropped by `providerEventId`; activity derived from tool names is labelled `inferred` in the UI.
+- **Backlog**: a session first seen with more than 256 KB of transcript starts near the end and records a system event saying earlier activity was not replayed.
+- **Stale / ended**: no events for `observation.staleAfterMs` (default 180 000) → `stale`; any new event returns it to `running`. `completed` with "Session ended (reported by the provider)" only when the observer signalled an end; otherwise, after 30 minutes without a live process or activity, the summary says the end was **inferred**. A session that resumes is revived.
+- Sessions older than 30 minutes that are not live are stored as history rows without a run.
 
-`GET /api/sessions` lists observed sessions (`?live=1` for live ones), `POST /api/sessions/:id/attach {workspaceId}` re-maps a session (the old run is closed with an explanatory event, a new run starts in the target workspace), `POST /api/observation/poll` runs one pass now, `GET /api/observation/status` reports enabled/running/observers/lastPollAt/errors/session counts.
-
-### Managed runs (`runs/RunWorker.js`, `runs/process.js`)
+### Managed runs (`runs/RunWorker.js`, `runs/queue.js`, `runs/outputScope.js`, `runs/process.js`)
 
 `POST /api/workspaces/:id/tasks/:taskId/run` (or `agent-space run`) → `RunWorker.start`:
 
-1. The task must not be `COMPLETED`; the provider must be known and have an adapter; the connection must be `enabled` and `ready` or `detected` (a `missing`/`error` connection is refused with 409 and the doctor message).
-2. Policy: the run-level override (task `executionPolicy` + request `policy`) may only tighten the workspace policy; `Policy.evaluateLaunch` decides `allowed`, `effective.autonomy`, `isolation` (a `sandbox` workspace always gets a Git worktree), `sandbox` (`read-only` for `propose`, else `workspace-write`), `network`, `maxConcurrentRuns`, `timeoutMs`. See [POLICY.md](POLICY.md).
-3. The workspace `rootPath` must exist. A task `target.folder` outside `rootPath` is passed to the provider as an extra directory (`--add-dir`) only when it is inside `rootPath` or the policy's `allowedFolders`; otherwise the launch is refused (403).
-4. Binary resolution as in detection; a missing binary is refused with the adapter's hint (Cursor: "install cursor-agent for managed runs").
-5. Concurrency: when the workspace already has `maxConcurrentRuns` active managed runs, the run is `queued` and starts when a slot frees.
-6. Launch: with `isolation: "worktree"` and a Git repository, `git worktree add -b agent-space/<runId> <AGENT_SPACE_DATA_DIR>/worktrees/<runId> HEAD` is created and used as cwd (non-Git folders run in place with a status event saying so). The adapter builds the command; it is recorded in `config_snapshot.command` (never with secrets). Spawn options: `windowsHide: true`, `stdio: ["ignore","pipe","pipe"]` (stdin `pipe` only for the Codex app server), `detached: true` off win32. On Windows an npm `.cmd` shim is resolved to `node <script>` and spawned with `shell: false`; any other `.cmd`/`.bat` is run through cmd.exe only when no argument contains `"`, `%`, `!`, CR or LF (otherwise 409).
-7. Stream: stdout lines are parsed by the adapter into normalized events (`session.start`, `prompt`, `message`, `tool.start/end`, `file.read/edit`, `search`, `web`, `command`, `test`, `usage`, `error`, `status`, `turn.start/end`) with `provenance: "provider"`; stderr is kept (last 50 lines) for error messages.
-8. Finish: the adapter's `finalize` decides `completed`/`failed`/`cancelled` plus usage, cost, session id, model; artifacts are captured (`git diff` + `git status --porcelain` scoped to the run folder with untracked text files added as synthetic diffs and secret paths skipped; test command outputs; the final message). A completed managed run sets `tasks.review = { runId, status: "pending" }` and appears in the inbox until `POST /api/runs/:id/review` accepts (task `COMPLETED`) or rejects.
-9. `timeoutMs` (default 30 min) kills the process tree and marks the run `failed` ("timed out").
+1. `assertDispatchAllowed()` — refuses immediately when an operator has stopped dispatch (`POST /api/ops/stop-all`).
+2. The task must not be `COMPLETED`; the provider must have an adapter; the connection must be `enabled` and `ready` or `detected` (a `missing`/`error` connection is refused with 409 and the doctor message; the Cursor adapter refuses outright with its install hint).
+3. Policy: the run-level override may only **tighten** the workspace policy. `Policy.evaluateLaunch` decides `allowed`, `effective.autonomy`, `isolation` (a `sandbox` workspace always gets a worktree), `sandbox` mode, `network`, `maxConcurrentRuns` and `timeoutMs`.
+4. Budget: `BudgetTracker.reserve()` books an **estimate** against `budget.maxTokensPerRun` and the daily limits. An estimate over the per-run ceiling refuses the launch before anything is spawned.
+5. Scope: `resolveRunScope()` picks `worktree` (a real `git worktree add -b agent-space/<runId>` under `AGENT_SPACE_DATA_DIR/worktrees/<runId>`), `output-folder` (a scoped `…/outputs/<runId>/` for non-Git document work — nothing is copied in, nothing is copied back, and the run event says so), or `in-place`. A pinned code range is resolved to a revision here.
+6. Queue: `RunQueue` enforces the workspace concurrency limit with round-robin fairness across workspaces, per-provider circuit breakers and rate-limit parking. A parked provider says whether the reset time came from the provider or is our own best-effort cooldown.
+7. Launch: the adapter builds the command; it is recorded in `config_snapshot.command` (never with secrets). On win32 an npm `.cmd` shim is resolved to `node <script>` and spawned with `shell: false`.
+8. Stream: stdout lines become normalized events with `provenance: "provider"`; stderr's last 50 lines are kept for error messages.
+9. Finish: `finalize()` decides `completed`/`failed`/`cancelled` plus usage, cost, session id and model; artifacts are captured (scoped `git diff` + untracked text files as synthetic diffs with secret paths skipped, test command output, the final message). `BudgetTracker.consume()` then enforces the token ceiling **post-hoc** and says so in the event.
+10. `timeoutMs` (default 30 min) kills the process tree and marks the run `failed`.
 
-Controls: `cancel` (queued → cancelled; running → adapter `interrupt()` if any, then `taskkill /pid <pid> /t /f` on win32 or `SIGTERM`/`SIGKILL` on the process group; status `cancelled` with "side effects already made are not undone"), `retry` (new attempt linked by `parent_run_id`; refused with 409 while a disconnected run's provider pid is still alive unless `force: true`), `input` (resumes the provider session with new text as a new attempt; only for adapters whose `resume` capability is `verified`), `worktree/remove`. On server restart `reconcile()` marks runs left `running` as `disconnected` and notes when the provider process may still be alive.
+Failure handling: `classifyFailure()` labels the failure `transport`, `rate-limit`, `auth`, `usage-limit`, `provider-error`, `user-cancelled`, `side-effects-possible` or `unknown`. Only `transport` and `rate-limit` are retried automatically by default, with bounded jittered backoff. A run that may already have edited files is **never** retried automatically — it goes to the decision inbox with the reason. Provider fallback is never automatic: when the policy permits one, the event names it and asks a person to start that attempt.
+
+Controls: `cancel` (adapter `interrupt()` if any, then `taskkill /pid <pid> /t /f` on win32 or `SIGTERM`/`SIGKILL` on the process group; the status message says side effects are not undone), `retry` (new attempt linked by `parent_run_id`; refused while a disconnected run's provider process is still alive), `input` (resume against the stored provider session id, only where `resume` is `verified`), `review`, `worktree/remove`.
 
 ## 2. Claude Code
 
@@ -107,55 +116,130 @@ Controls: `cancel` (queued → cancelled; running → adapter `interrupt()` if a
 
 ## 5. Cursor
 
-| Aspect              | Detail                                                                                                                                                                                                                                                                                                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Detection           | Binaries `cursor-agent`, `agent`, `cursor` (the IDE launcher answers `--version`, so the doctor warns "Cursor IDE detected; cursor-agent is not installed" when the found binary is not `cursor-agent`); home `CURSOR_HOME` or `~/.cursor`; no credential file (`unknown`). Managed runs resolve only `cursor-agent` (`launchBinaries`). |
-| Observed files      | `<home>/ai-tracking/ai-code-tracking.db` `conversation_summaries` (read-only, best effort: title, tldr, model, mode, updatedAt) → history sessions with no events. `%APPDATA%\Cursor\User\globalStorage\state.vscdb` is only checked for existence. Nothing is written and no undocumented storage is parsed for activity.               |
-| Managed run command | `cursor-agent -p "<prompt>" --output-format stream-json [--model <model>] [--force]` (`--force` omitted for `propose`). The parser is the tolerant generic one (`adapters/base.js` `tolerantParse`): any JSON line with type/role/tool/usage/session fields is mapped, unknown shapes become `status`.                                   |
-| Approvals           | None.                                                                                                                                                                                                                                                                                                                                    |
-| Verified here       | Nothing beyond detecting the IDE launcher; `cursor-agent` is not installed on this machine.                                                                                                                                                                                                                                              |
-| Known limitations   | Everything is `experimental`/`unknown`/`unsupported` (see matrix). `isLive` is always false; conversations appear as ended history only. The command follows Cursor's public docs and has not been run.                                                                                                                                  |
+**Status: detect-only.** The Cursor IDE is installed (`cursor.cmd` 3.14.27 answers `--version`); the headless `cursor-agent` CLI is not. Nothing about Cursor execution has ever been observed on this machine.
+
+| Aspect                 | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Detection              | Binaries tried in order `cursor-agent`, `agent`, `cursor`; home `CURSOR_HOME` or `~/.cursor`. No documented credential file, so `authHint` stays `unknown` and the status is `detected`                                                                                                                                                                                                                                                                                                   |
+| Managed runs           | **Refused.** `adapters/cursor.js` `build()` throws `CURSOR_LAUNCH_REFUSAL` — _"cursor-agent is not installed; the Cursor IDE launcher cannot run headless tasks"_ — with `fix: https://docs.cursor.com/en/cli`. It deliberately does **not** emit the documented `cursor-agent -p "<prompt>" --output-format stream-json` command line, because that would launch the IDE instead. Covered by `tests/connections.test.js` "cursor refuses to launch with the exact reason and a fix link" |
+| Observation            | Experimental, read-only. `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and `~/.cursor/ai-tracking/ai-code-tracking.db` (`conversation_summaries`) are opened read-only; absent storage means "not installed", not an empty session list. Every session and event is labelled experimental. `tests/observe-others.test.js` "cursor: reads conversation_summaries read-only and labels everything experimental"                                                                         |
+| Approvals              | None                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Capabilities           | `observe: experimental`; everything else `unsupported` in `providers/registry.js`. The adapter's own table is slightly different (`launch: unsupported`, several `unknown`) because it describes what a future `cursor-agent` might expose; the registry matrix is the conservative one the UI uses                                                                                                                                                                                       |
+| Compatibility          | `testedVersions: []`, `testedOS: []` → every verdict is `untested` with the reason "only the Cursor IDE launcher exists here"                                                                                                                                                                                                                                                                                                                                                             |
+| To enable managed runs | Install `cursor-agent` from <https://cursor.com/cli>, then `POST /api/connections/cursor-default/probe`. The adapter will still need its stream format verified before any capability moves off `unknown`                                                                                                                                                                                                                                                                                 |
 
 ## 6. Gemini CLI
 
-| Aspect                                                                                                          | Detail                                                                                                                                                                                                                                                                                                                                                                                                 |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Detection                                                                                                       | Binary `gemini`; home `GEMINI_HOME` or `~/.gemini`; credential file `oauth_creds.json` per the docs (existence only). `~/.gemini/antigravity` (Antigravity IDE) is detected and reported as a separate, unsupported product. On this machine `gemini` 0.59.0 (npm shim `%APPDATA%                                                                                                                      |
-| pmgemini.cmd`) is found; `~/.gemini`has no`tmp/`sessions and no`oauth_creds.json`, so the status is `detected`. |
-| Observed files                                                                                                  | Per the Gemini CLI docs, unverified: `<home>/tmp/<project_hash>/chats/*.json` (array of messages or `{messages                                                                                                                                                                                                                                                                                         | history | turns}`) and `<home>/tmp/<project_hash>/logs.json` (`[{sessionId, messageId, type, message, timestamp}]`). Parsed defensively; every event carries `data.unverified: true`and every session`metadata.unverified: true`. |
-| Event mapping                                                                                                   | `user` parts → `prompt`; `model` parts → `message`; `functionCall` → `tool.start` plus `file.read` (read_file, read_many_files), `file.edit` (write_file, replace, edit), `search` (glob, search_file_content, grep, list_directory), `web` (google_web_search, web_fetch), `command`/`test` (run_shell_command); `functionResponse` → `tool.end`/`error`; `tokens`/`usage`/`usageMetadata` → `usage`. |
-| Live / ended                                                                                                    | Live only when the chat file was modified within 120 s (mtime; there is no registry). Ended = not live.                                                                                                                                                                                                                                                                                                |
-| Managed run command                                                                                             | `gemini -p "<prompt>" --output-format stream-json [--model <model>] [--yolo] [--include-directories <dir>]…` (`--yolo` omitted for `propose`). Tolerant generic parser.                                                                                                                                                                                                                                |
-| Approvals                                                                                                       | None.                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Verified here                                                                                                   | Detection only (`gemini --version` → 0.59.0). No managed run was launched and no session files exist to observe, so the command line, stream, and file formats are unverified.                                                                                                                                                                                                                         |
-| Known limitations                                                                                               | Every capability is `unknown` except `artifacts` (`git diff` after the run does not depend on the provider). The observed file layout and the command line come from the docs only.                                                                                                                                                                                                                    |
+**Status: launch flags verified, run unverified.** `gemini` 0.59.0 is on PATH. Its command line was read from its own `--help` on this machine. It is **not signed in** here, so every invocation exits 41 and no run, session, artifact or usage report has ever been produced.
+
+| Aspect                                            | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Detection                                         | Binary `gemini`; home `GEMINI_HOME` or `~/.gemini`. Credential signal: the existence of `~/.gemini/settings.json` (the CLI creates it only after you choose an auth method) **or** any of `GEMINI_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA` in the environment. Contents are never read. The older `oauth_creds.json` guess is wrong and is not used. `~/.gemini/antigravity/` is the Antigravity IDE — detected and reported as a separate, unsupported product, never parsed                                                           |
+| Managed run command (**verified from `--help`**)  | `gemini -p "<prompt>" -o stream-json --approval-mode plan\|auto_edit\|yolo [-m <model>] [--include-directories a,b] [--session-id <uuid>] [-r <id\|latest>]`. The approval mode comes from the autonomy preset: `propose`→`plan`, `scoped`→`auto_edit`, `sandbox`→`yolo`. `--skip-trust` is **never** passed automatically — skipping the folder-trust prompt is the user's security decision. Covered by `tests/connections.test.js` "gemini adapter builds the verified command line for every autonomy"                                                   |
+| Auth failure (**real envelope, captured here**)   | The CLI prints `{"session_id":"…","error":{"type","message","code"}}` on **stderr** and exits 41. `parseErrorEnvelope()` recognises it, classifies it `not-logged-in`, and fails the run with the CLI's own wording, reused verbatim: _"Please set an Auth method in your ~/.gemini/settings.json or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA"_. Covered by `tests/connections.test.js` "gemini's real auth-error envelope becomes a failed run with the fix text" |
+| Observed files (**layout verified, formats not**) | `~/.gemini/projects.json` maps a lower-cased absolute cwd to a short project alias; per-project data lives in `~/.gemini/history/<alias>/` and `~/.gemini/tmp/<alias>/` (chats, `logs.json`). Every `*.json` there is parsed defensively — array of messages, `{messages\|history\|turns}`, or a flat log array — and anything unreadable is skipped rather than guessed at. Covered by `tests/observe-others.test.js` "gemini: reads the real projects.json / history/<alias> layout" and "parses a minimal chats json defensively"                         |
+| Honesty markers                                   | Every parsed session and event carries `unverified: true`; usage parsed from these files is labelled `reportedBy: "unverified"`, never provider-reported; live-ness is inferred from file modification time and labelled as inferred                                                                                                                                                                                                                                                                                                                         |
+| Stream parsing                                    | The response stream has never been seen, so `parse()` falls through to the shared tolerant parser rather than pretending to know a vocabulary                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Approvals                                         | None                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Capabilities                                      | `launch: experimental`, `observe: experimental`; **every other capability is `unknown`** in `providers/registry.js`. The adapter's own table agrees, including `artifacts: unknown` — no Gemini run has ever produced an artifact here                                                                                                                                                                                                                                                                                                                       |
+| Compatibility                                     | `minVersion` 0.59.0, `testedVersions: ["0.59.0"]`, `testedOS: ["win32"]`, with the note that the CLI is not authenticated here so no completed run, stream format or usage report has been observed                                                                                                                                                                                                                                                                                                                                                          |
+| To move capabilities off `unknown`                | Sign in (`gemini` once in a terminal, or set one of the `authEnv` variables), run one bounded task, then verify the stream vocabulary and update `providers/registry.js` — the single source `capabilityMatrix()` reads                                                                                                                                                                                                                                                                                                                                      |
 
 ## 7. Capability matrix
 
-Values are `verified` (exercised on this machine or in tests against the recorded real format), `experimental` (built from documented facts, not exercised against the real provider end to end), `unknown` (not verified), `unsupported` (no documented interface). The table is the registry matrix returned by `GET /api/providers` and `GET /api/connections/capabilities` (`packages/core/src/providers/registry.js`); the run inspector disables a control unless the value is `verified`.
+Values: `verified` (exercised on this machine, or in tests against a recorded real format), `experimental` (built from documented facts, not exercised against the real provider end to end), `unknown` (not verified), `unsupported` (no documented interface). This is the registry matrix returned by `GET /api/providers` and `GET /api/connections/capabilities`.
 
-| Capability  | Claude Code                                      | Codex        | Copilot      | Cursor       | Gemini  |
-| ----------- | ------------------------------------------------ | ------------ | ------------ | ------------ | ------- |
-| observe     | verified                                         | verified     | verified     | experimental | unknown |
-| launch      | verified                                         | experimental | verified     | unsupported  | unknown |
-| stream      | verified                                         | verified     | verified     | unsupported  | unknown |
-| attach      | experimental                                     | experimental | experimental | unsupported  | unknown |
-| interrupt   | verified                                         | experimental | verified     | unsupported  | unknown |
-| resume      | verified                                         | experimental | experimental | unsupported  | unknown |
-| fork        | unsupported                                      | experimental | unsupported  | unsupported  | unknown |
-| approve     | verified with hooks installed, otherwise unknown | experimental | unsupported  | unsupported  | unknown |
-| reportModel | verified                                         | verified     | verified     | unsupported  | unknown |
-| reportUsage | verified                                         | verified     | verified     | unsupported  | unknown |
-| artifacts   | verified                                         | experimental | verified     | unsupported  | unknown |
-| delegate    | unsupported                                      | unsupported  | unsupported  | unsupported  | unknown |
+| Capability  | Claude Code                                      | Codex        | Copilot      | Cursor       | Gemini           |
+| ----------- | ------------------------------------------------ | ------------ | ------------ | ------------ | ---------------- |
+| observe     | verified                                         | verified     | verified     | experimental | **experimental** |
+| launch      | verified                                         | experimental | verified     | unsupported  | **experimental** |
+| stream      | verified                                         | verified     | verified     | unsupported  | unknown          |
+| attach      | experimental                                     | experimental | experimental | unsupported  | unknown          |
+| interrupt   | verified                                         | experimental | verified     | unsupported  | unknown          |
+| resume      | verified                                         | experimental | experimental | unsupported  | unknown          |
+| fork        | unsupported                                      | experimental | unsupported  | unsupported  | unknown          |
+| approve     | verified with hooks installed, otherwise unknown | experimental | unsupported  | unsupported  | unknown          |
+| reportModel | verified                                         | verified     | verified     | unsupported  | unknown          |
+| reportUsage | verified                                         | verified     | verified     | unsupported  | unknown          |
+| artifacts   | verified                                         | experimental | verified     | unsupported  | unknown          |
+| delegate    | unsupported                                      | unsupported  | unsupported  | unsupported  | unknown          |
 
 Notes:
 
-- Codex `launch` stays `experimental` because the only real end-to-end attempt ended with the account usage limit; the stream format itself is verified (`launchVerified: "format-verified"`, shown by the doctor as a warning).
-- The adapters carry their own, slightly different tables (`GET /api/runs/:id` → `capabilities`): the Codex `exec` adapter reports `launch/stream/interrupt/resume: verified` because the fake-CLI tests exercise them, and `approve: unsupported`; the Cursor and Gemini adapters report `artifacts: verified`. The registry matrix above is the conservative one used by the Connections page.
-- Verified rows apply to Windows 11 x64 with the versions listed in each provider section. Other operating systems are untested.
+- **Gemini** moved from all-`unknown` to `launch`/`observe` = `experimental` in wave 2, and only those two. The command line and the storage layout are verified; the run is not. `artifacts` stays `unknown` (not `verified`) precisely because no Gemini run has ever produced one here.
+- **Cursor** is `observe: experimental`, everything else `unsupported`. `launch` is `unsupported` rather than `experimental` because the adapter refuses rather than guessing a command.
+- **Codex** `launch` stays `experimental`: the stream format is verified (`launchVerified: "format-verified"`, shown by the doctor as a warning) but the only real end-to-end attempt ended at the account usage limit.
+- **Claude Code** `approve` is `verified-with-hooks`: it resolves to `verified` only when the hook bridge is installed, and to `unknown` otherwise.
+- The adapters carry their own, slightly different tables (`GET /api/runs/:id` → `capabilities`) describing what the adapter code supports; the registry matrix above is the conservative one the UI and the doctor use.
+- Verified rows apply to **Windows 11 x64** with the versions listed in each provider section. `GET /api/connections/compatibility` reports every other version or OS as `untested`, never as unsupported.
 
-## 8. Installing the Claude Code hooks
+## 8. Aliases, kinds, error categories, and the migration assistant
+
+### Connection aliases
+
+One row per `(provider, alias)`. Detection maintains the `default` alias for each provider; extra aliases are created by hand for a second account, a different owner, or a different execution host:
+
+```sh
+curl -X POST http://127.0.0.1:5173/api/connections \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"claude-code","alias":"work","owner":"me","host":"local"}'
+```
+
+Alias names match `^[a-z0-9][a-z0-9._-]{0,39}$`. `PATCH /api/connections/:id` edits `enabled`, `observe`, `alias`, `kind`, `owner`, `host` and `allowedWorkspaces`; `DELETE` removes a non-default alias without disturbing detection. Any `env` override whose **name** looks like a credential (`key`, `token`, `secret`, `password`, `credential`, `auth`, `cookie`) is refused and returned in `refusedEnv` — the value never reaches the database. `allowedWorkspaces` is stored and editable but is **not** enforced at launch or observation time; that gap is recorded in [ROADMAP_STATUS.md](ROADMAP_STATUS.md) §11.
+
+### Connection kinds
+
+`connections.kind` (migration 4) is one of:
+
+| Kind                     | Implemented   | Meaning                                                                                                       |
+| ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------- |
+| `coding-runtime`         | yes           | A CLI that runs an agent loop with tools. The only kind with detection and an adapter                         |
+| `model-api`              | recorded only | A model endpoint. A model endpoint alone is not a coding agent; an execution and tool harness is still needed |
+| `local-model-server`     | recorded only | A locally hosted model server                                                                                 |
+| `external-agent-service` | recorded only | A remote agent service                                                                                        |
+| `workflow-engine`        | recorded only | An external orchestrator                                                                                      |
+
+A non-runtime kind is accepted so a row can be recorded honestly, but it carries no detection and is never launched — its status stays `unknown` until someone writes a probe for it (`tests/connections.test.js` "connection kinds are validated and non-runtime kinds are labelled, never launched").
+
+### Error categories and remediation
+
+`connections.error_category` is one of `not-installed`, `not-logged-in`, `version-unsupported`, `permission-denied`, `binary-unrunnable`, `timeout`, `rate-limited`, `unknown`; `null` means healthy. Each is derived from what the probe actually reported and paired with a per-provider fix:
+
+| Category              | Typical cause                           | Remediation shown                                                                                                                                                                                                              |
+| --------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `not-installed`       | No binary on PATH                       | The provider's own install hint (e.g. "npm install -g @openai/codex, then `codex login`")                                                                                                                                      |
+| `not-logged-in`       | Binary found, no credential file        | "Run `<binary>` once in a terminal and complete the sign-in. Agent Space never collects or stores credentials; it only checks that the provider's own credential file exists." For Gemini, the CLI's own auth message verbatim |
+| `version-unsupported` | Older than `minVersion`                 | "Update `<binary>` to `<minVersion>` or newer: the launch and stream formats were verified on `<verifiedVersions>`"                                                                                                            |
+| `permission-denied`   | EACCES/EPERM/"access is denied"         | "Windows or your security software refused to run `<binary>`. Check file permissions and any antivirus or AppLocker rule, then probe again"                                                                                    |
+| `binary-unrunnable`   | Found but the probe failed              | "Try `<binary> --version` in a terminal and fix what it reports (a broken npm shim usually needs a reinstall)"                                                                                                                 |
+| `timeout`             | No answer to `--version` in 8 s         | "Run it once in a terminal (a first run may download or update itself), then probe again"                                                                                                                                      |
+| `rate-limited`        | Provider reported a rate or usage limit | "Wait for the limit to reset or use a different account, then probe again"                                                                                                                                                     |
+
+`GET /api/connections/:id/health` returns the category, the remediation, `lastSuccessAt`, `lastProbeAt` and `authExpiresAt` (null unless a provider actually exposes an expiry — it is never guessed). `GET /api/connections/:id/probes` returns the newest 20 probes with the same detail. `GET /api/connections/doctor` says all of it in plain language for every connection at once.
+
+### Migration assistant
+
+Moving an agent from one runtime to another (`connections/migration.js`):
+
+```sh
+# What would carry over?
+curl "http://127.0.0.1:5173/api/connections/codex-default/migration-preview?agentId=nova&workspaceId=storefront"
+
+# Apply it (and optionally start a run on the same task)
+curl -X POST "http://127.0.0.1:5173/api/connections/codex-default/migrate?apply=1" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"nova","workspaceId":"storefront","taskId":"…","launch":false}'
+```
+
+- **Carries over**: `name`, `role`, `instructions`, `color`, `skills`, `specialty`.
+- **Does not carry over, each with the reason**: `model` (runtime-specific), `runtime` (replaced by the target), `connectionId` (connections are per provider), `workingState` (demo animation only).
+- Every plan carries `MIGRATION_WARNING` — _"behaviour will differ; hidden state does not transfer"_ — and the target's capability matrix and compatibility verdict, so an unsupported capability is visible before the move.
+- Conversation history, model state and tool permissions are **never** copied; no CLI is contacted by either `plan()` or `apply()`.
+- `apply` writes an audit entry, and starts a run only when `launch: true` **and** a `taskId` is given.
+
+Covered by `tests/connections.test.js` "migration plan lists what carries over and never promises parity" and "migration apply copies the profile, audits it, and can launch a run".
+
+## 9. Installing the Claude Code hooks
 
 The hook bridge turns interactive Claude Code sessions into policy-checked, inbox-approved runs. Without it, Claude Code sessions are still observed from transcripts, but Agent Space cannot answer permission prompts and `approve` is reported as `unknown`.
 
@@ -184,7 +268,7 @@ Flow per tool call (`hooks/claudeHookBridge.js`, `bin/agent-space.js hookClaudeC
 
 Fail-closed rules in the CLI: a server response that is not 2xx (including 401/403 in shared mode without a token) or a timeout prints a `PreToolUse` deny with the reason; only a connection-level failure (server not running) prints `{}` so Claude Code is never blocked by an absent Agent Space. The CLI always exits 0.
 
-## 9. Disabling observation
+## 10. Disabling observation
 
 - **Everything, at startup**: `AGENT_SPACE_OBSERVE=false` (observers stay registered, nothing polls; the startup line reads `observation: off`).
 - **Everything, at runtime**: `PUT /api/settings {"observation.enabled": false}` (polling keeps ticking but does nothing until re-enabled).
@@ -193,17 +277,20 @@ Fail-closed rules in the CLI: a server response that is not 2xx (including 401/4
 - **Point observers elsewhere**: set `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `CURSOR_HOME`, `GEMINI_HOME` to empty folders (this is what the Playwright config does) so the real machine is never read.
 - **Hooks**: `POST /api/hooks/claude-code/uninstall` or `agent-space hook uninstall` removes only the agent-space entries.
 
-## 10. Environment variables
+## 11. Environment variables
 
-| Variable                                                                        | Purpose                                                                                                              |
-| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `AGENT_SPACE_BIN_<PROVIDER>`                                                    | Command line override for a provider binary (`CLAUDE_CODE`, `CODEX`, `COPILOT`, `CURSOR`, `GEMINI`); quotes honoured |
-| `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `CURSOR_HOME`, `GEMINI_HOME` | Provider home directories read by detection and observation (also honoured by the CLIs themselves)                   |
-| `AGENT_SPACE_OBSERVE`                                                           | `false` disables observation polling                                                                                 |
-| `AGENT_SPACE_OBSERVE_INTERVAL`                                                  | Poll interval in ms (default 2000)                                                                                   |
-| `AGENT_SPACE_DATA_DIR`                                                          | Worktrees (`<dir>/worktrees/<runId>`) and artifacts; default `data/`                                                 |
-| `AGENT_SPACE_URL`                                                               | Server URL for the CLI and the hook command                                                                          |
-| `AGENT_SPACE_TOKEN`                                                             | Bearer token; required to bind to a non-loopback `HOST`                                                              |
-| `AGENT_SPACE_HOOK_TIMEOUT`                                                      | Hook CLI wait in seconds when `--timeout` is not given (default 55)                                                  |
+| Variable                                                                        | Purpose                                                                                                               |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_SPACE_BIN_<PROVIDER>`                                                    | Command line override for a provider binary (`CLAUDE_CODE`, `CODEX`, `COPILOT`, `CURSOR`, `GEMINI`); quotes honoured  |
+| `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `CURSOR_HOME`, `GEMINI_HOME` | Provider home directories read by detection and observation (also honoured by the CLIs themselves)                    |
+| `AGENT_SPACE_OBSERVE`                                                           | `false` disables observation polling                                                                                  |
+| `AGENT_SPACE_OBSERVE_INTERVAL`                                                  | Poll interval in ms (default 2000)                                                                                    |
+| `AGENT_SPACE_DATA_DIR`                                                          | Worktrees (`<dir>/worktrees/<runId>`), scoped output folders (`<dir>/outputs/<runId>`) and artifacts; default `data/` |
+| `AGENT_SPACE_URL`                                                               | Server URL for the CLI and the hook command                                                                           |
+| `AGENT_SPACE_TOKEN`                                                             | Bearer token; required to bind to a non-loopback `HOST`                                                               |
+| `AGENT_SPACE_HOOK_TIMEOUT`                                                      | Hook CLI wait in seconds when `--timeout` is not given (default 55)                                                   |
+| `AGENT_SPACE_BIN_GIT`, `AGENT_SPACE_BIN_GH`                                     | Connector binary overrides (tests point these at stubs; the real GitHub API is never called from tests)               |
+| `AGENT_SPACE_WEBHOOK_INTERVAL`                                                  | Outbound webhook drain interval in ms (default 30 000)                                                                |
+| `AGENT_SPACE_HEALTH_INTERVAL`                                                   | Health-level refresh interval in ms (default 60 000)                                                                  |
 
 See `.env.example` for the full list with defaults.
