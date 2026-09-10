@@ -1,10 +1,11 @@
 import { statSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolve, isAbsolute, sep, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { isSecretPath, DEFAULT_POLICY } from "../contracts.js";
 import { InputError } from "../TaskStore.js";
+import { rank } from "./relevance.js";
 
 // Private path helpers (packages/core/src/util/paths.js belongs to module A).
 const WIN = process.platform === "win32";
@@ -141,14 +142,31 @@ export class ContextManifest {
     return scopes;
   }
 
+  /**
+   * build({ workspaceId, taskId, agentId, runId, files, documents,
+   *         instructions, maxFileBytes, memory, knowledge, relevance })
+   *
+   * `memory` (default true) pulls scoped memory through services.memory:
+   * workspace knowledge for this workspace only, personal preferences when
+   * `memory.shareUserScope` allows it, and the run's own notes.
+   * `knowledge` is `true` (every workspace-access collection) or a list of
+   * collection ids; each item keeps its source attribution and captured_at.
+   * `relevance` is `true` or `{ include, exclude, maxItems, maxBytes,
+   * diffFiles }` and reorders the files deterministically, recording why each
+   * one is here and which ones fell outside the budget.
+   */
   build({
     workspaceId,
     taskId = null,
     agentId = null,
+    runId = null,
     files = [],
     documents = [],
     instructions = [],
     maxFileBytes = 200_000,
+    memory = true,
+    knowledge = null,
+    relevance = null,
   }) {
     const runtime = this.hub.get(workspaceId);
     const workspace = runtime.record;
@@ -247,6 +265,7 @@ export class ContextManifest {
         path: abs,
         revision,
         bytes: stat.size,
+        mtimeMs: Math.round(stat.mtimeMs),
         included: true,
         reason: null,
       });
@@ -266,6 +285,22 @@ export class ContextManifest {
     for (const line of instructions)
       if (String(line).trim()) lines.push(String(line).trim());
 
+    // Scoped memory. Workspace knowledge is read with the workspace id, so a
+    // sibling project's memory can never appear here; personal preferences
+    // are offered only when the setting allows it.
+    const scoped =
+      memory === false
+        ? null
+        : (this.services.memory?.forRun?.({ runId, workspaceId }) ?? null);
+    if (scoped) {
+      for (const entry of scoped.workspace)
+        lines.push(`Workspace knowledge - ${entry.key}: ${entry.value}`);
+      for (const entry of scoped.user)
+        lines.push(`Personal preference - ${entry.key}: ${entry.value}`);
+      for (const entry of scoped.run)
+        lines.push(`Run note - ${entry.key}: ${entry.value}`);
+    }
+
     const docs = documents
       .filter((doc) => doc && typeof doc === "object")
       .map((doc) => ({
@@ -275,17 +310,127 @@ export class ContextManifest {
         bytes: num(doc.bytes),
       }));
     const instructionBytes = Buffer.byteLength(lines.join("\n"));
+    // Named knowledge collections travel as documents with attribution.
+    const knowledgeItems = knowledge
+      ? (this.services.memory?.itemsForContext?.(
+          workspaceId,
+          Array.isArray(knowledge) ? knowledge : [],
+        ) ?? [])
+      : [];
+    for (const item of knowledgeItems)
+      docs.push({
+        title: item.title,
+        ref: item.sourceUrl ?? item.source ?? item.itemId,
+        revision: `knowledge:v${item.version}`,
+        bytes: item.bytes,
+        collection: item.collection,
+        source: item.source,
+        capturedAt: item.capturedAt,
+        freshnessCheckedAt: item.freshnessCheckedAt,
+      });
+
+    // Relevance ranking is deterministic and explains every decision.
+    let ranking = null;
+    if (relevance) {
+      const options = relevance === true ? {} : (relevance ?? {});
+      ranking = rank({
+        candidates: included.map((file) => ({
+          path: file.path,
+          bytes: file.bytes,
+          mtimeMs: file.mtimeMs,
+        })),
+        task: task
+          ? {
+              title: task.title,
+              deliverable: task.deliverable,
+              description: task.description,
+              target,
+            }
+          : null,
+        agent: agent ? { role: agent.role, skills: agent.skills ?? [] } : null,
+        memories: scoped ? [...scoped.workspace, ...scoped.user] : [],
+        diffFiles:
+          options.diffFiles ?? (runId ? this.diffFilesForRun(runId) : []),
+        include: options.include ?? [],
+        exclude: options.exclude ?? [],
+        maxItems: Number.isFinite(options.maxItems) ? options.maxItems : 40,
+        maxBytes: Number.isFinite(options.maxBytes)
+          ? options.maxBytes
+          : 200_000,
+        now: Number.isFinite(options.now) ? options.now : Date.now(),
+      });
+      const byPath = new Map(
+        included.map((file) => [pathKey(file.path), file]),
+      );
+      const kept = [];
+      for (const item of ranking.items) {
+        const file = byPath.get(pathKey(item.path));
+        if (!file) continue;
+        if (item.included) {
+          file.relevance = {
+            score: item.score,
+            why: item.why,
+            breakdown: item.breakdown,
+          };
+          kept.push(file);
+        } else {
+          excluded.push({
+            path: file.path,
+            reason: item.reason.startsWith("budget:")
+              ? "over-budget"
+              : "excluded-by-request",
+            detail: item.why,
+            score: item.score,
+          });
+        }
+      }
+      included.length = 0;
+      included.push(...kept);
+      totalBytes = kept.reduce((sum, file) => sum + file.bytes, 0);
+    }
+
     const docBytes = docs.reduce((sum, doc) => sum + (doc.bytes ?? 0), 0);
     const manifest = {
       version: 1,
       workspaceId,
       taskId,
       agentId,
+      runId,
       rootPath: workspace.rootPath ?? null,
       files: included,
       excluded,
       documents: docs,
       instructions: lines,
+      memory: scoped
+        ? {
+            userScopeShared: scoped.userScopeShared,
+            user: scoped.user.map((m) => ({ key: m.key, source: m.source })),
+            workspace: scoped.workspace.map((m) => ({
+              key: m.key,
+              source: m.source,
+            })),
+            run: scoped.run.map((m) => ({ key: m.key, source: m.source })),
+          }
+        : null,
+      knowledge: knowledgeItems,
+      relevance: ranking
+        ? {
+            deterministic: true,
+            weights: ranking.weights,
+            controls: ranking.controls,
+            budgets: ranking.budgets,
+            taskWords: ranking.taskWords,
+            items: ranking.items.map(
+              ({ path, score, included: keep, reason, why }) => ({
+                path,
+                score,
+                included: keep,
+                reason,
+                why,
+              }),
+            ),
+          }
+        : null,
       totalBytes: totalBytes + instructionBytes + docBytes,
       estimatedTokens: Math.ceil(
         (totalBytes + instructionBytes + docBytes) / 4,
@@ -353,6 +498,247 @@ export class ContextManifest {
       checkedAt: Date.now(),
     };
   }
+
+  /**
+   * Repository-relative paths from the run's `diff` artifacts, resolved
+   * against the run cwd/worktree. Used by relevance ranking so a file the run
+   * actually touched outranks one it never opened. Returns [] when the run,
+   * the table, or the artifact is missing.
+   */
+  diffFilesForRun(runId) {
+    if (!runId) return [];
+    let run = null;
+    try {
+      run = this.db.prepare("SELECT * FROM runs WHERE id = ?").get(runId);
+    } catch {
+      return [];
+    }
+    if (!run) return [];
+    const base = run.worktree || run.cwd || null;
+    const out = [];
+    let rows = [];
+    try {
+      rows = this.db
+        .prepare("SELECT metadata FROM artifacts WHERE run_id = ? AND kind = ?")
+        .all(runId, "diff");
+    } catch {
+      return [];
+    }
+    for (const row of rows) {
+      const meta = parseJson(row.metadata, {});
+      for (const entry of meta.files ?? []) {
+        const raw = typeof entry === "string" ? entry : entry?.path;
+        if (!raw) continue;
+        const abs = isAbsolute(String(raw))
+          ? normalizePath(raw)
+          : base
+            ? normalizePath(resolve(base, String(raw)))
+            : null;
+        if (abs && !out.includes(abs)) out.push(abs);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Records that a manifest was handed to a provider on a host: the visible
+   * record of which provider/host received which permitted inputs. Only
+   * paths (workspace-relative where possible), counts, and the manifest hash
+   * are stored - never file contents, and never a secret path.
+   */
+  recordTransfer({
+    runId,
+    provider = null,
+    host = "local",
+    manifest = null,
+    workspaceId = null,
+    at = Date.now(),
+  } = {}) {
+    if (!runId) throw new InputError("runId is required");
+    if (!manifest || !Array.isArray(manifest.files))
+      throw new InputError("manifest.files is required");
+    const run = this.db.prepare("SELECT * FROM runs WHERE id = ?").get(runId);
+    const wsId =
+      workspaceId ?? manifest.workspaceId ?? run?.workspace_id ?? null;
+    let root = manifest.rootPath ? normalizePath(manifest.rootPath) : null;
+    if (!root && wsId) {
+      const row = this.db
+        .prepare("SELECT root_path FROM workspaces WHERE id = ?")
+        .get(wsId);
+      root = row?.root_path ? normalizePath(row.root_path) : null;
+    }
+    const paths = [];
+    let bytes = 0;
+    for (const file of manifest.files) {
+      if (!file?.path) continue;
+      const abs = normalizePath(file.path);
+      if (isSecretPath(abs)) continue; // defence in depth: never record a secret
+      bytes += Number.isFinite(file.bytes) ? file.bytes : 0;
+      paths.push(root && isWithin(abs, root) ? relativeTo(root, abs) : abs);
+    }
+    const id = randomUUID();
+    const details = {
+      paths,
+      documents: (manifest.documents ?? []).map((doc) => ({
+        title: doc.title,
+        ref: doc.ref ?? null,
+        capturedAt: doc.capturedAt ?? null,
+      })),
+      knowledge: (manifest.knowledge ?? []).map((item) => ({
+        collection: item.collection,
+        title: item.title,
+        capturedAt: item.capturedAt,
+      })),
+      instructionCount: (manifest.instructions ?? []).length,
+      excludedCount: (manifest.excluded ?? []).length,
+      estimatedTokens: manifest.estimatedTokens ?? null,
+      estimateLabel: "estimate",
+      memoryScopes: manifest.memory
+        ? {
+            user: manifest.memory.user.length,
+            workspace: manifest.memory.workspace.length,
+            run: manifest.memory.run.length,
+            userScopeShared: manifest.memory.userScopeShared,
+          }
+        : null,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO context_transfers (id, run_id, workspace_id, provider, host, manifest_hash, file_count, byte_count, created_at, details)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        runId,
+        wsId,
+        provider ?? run?.provider ?? null,
+        String(host ?? "local"),
+        manifest.hash ?? hashManifest(manifest),
+        paths.length,
+        bytes,
+        at,
+        JSON.stringify(details),
+      );
+    this.services.audit?.record?.({
+      actor: "system",
+      action: "context.transfer",
+      target: `run:${runId}`,
+      workspaceId: wsId,
+      runId,
+      details: {
+        provider: provider ?? run?.provider ?? null,
+        host: String(host ?? "local"),
+        fileCount: paths.length,
+        byteCount: bytes,
+        manifestHash: manifest.hash ?? null,
+      },
+    });
+    return this.transfer(id);
+  }
+
+  transfer(id) {
+    const row = this.db
+      .prepare("SELECT * FROM context_transfers WHERE id = ?")
+      .get(id);
+    if (!row) throw new InputError("Transfer not found", 404);
+    return rowToTransfer(row);
+  }
+
+  /** Every recorded handover of inputs for one run, oldest first. */
+  transfersForRun(runId) {
+    return this.db
+      .prepare(
+        "SELECT * FROM context_transfers WHERE run_id = ? ORDER BY created_at ASC",
+      )
+      .all(runId)
+      .map(rowToTransfer);
+  }
+
+  transfersForWorkspace(workspaceId, { limit = 100 } = {}) {
+    return this.db
+      .prepare(
+        "SELECT * FROM context_transfers WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(workspaceId, Math.max(1, Math.min(Number(limit) || 100, 500)))
+      .map(rowToTransfer);
+  }
+
+  /**
+   * The staleness gate: call before accepting a patch or a review. When any
+   * pinned file changed since the manifest was built, the caller must
+   * re-review (or rebase) rather than apply stale line references.
+   *
+   * gateApply({ manifest, runId, workspaceId }) ->
+   *   { ok, action: 'apply' | 're-review', stale: [{ path, was, now }],
+   *     missing, excluded, checkedAt, reason }
+   */
+  gateApply({ manifest = null, runId = null, workspaceId = null } = {}) {
+    let subject = manifest;
+    let wsId = workspaceId;
+    if (!subject && runId) {
+      const run = this.db.prepare("SELECT * FROM runs WHERE id = ?").get(runId);
+      if (!run) throw new InputError("Run not found", 404);
+      wsId ??= run.workspace_id;
+      subject = parseJson(run.context, null);
+    }
+    if (!subject || !Array.isArray(subject.files))
+      return {
+        ok: true,
+        action: "apply",
+        stale: [],
+        missing: [],
+        excluded: [],
+        checkedAt: Date.now(),
+        reason: "no context manifest was pinned for this run; nothing to check",
+      };
+    wsId ??= subject.workspaceId ?? null;
+    const result = this.detectStale(subject, { workspaceId: wsId });
+    const stale = [
+      ...result.changed.map((entry) => ({
+        path: entry.path,
+        was: entry.previous,
+        now: entry.current,
+        state: "changed",
+      })),
+      ...result.missing.map((entry) => ({
+        path: entry.path,
+        was: entry.previous,
+        now: null,
+        state: "missing",
+      })),
+    ];
+    return {
+      ok: stale.length === 0,
+      action: stale.length === 0 ? "apply" : "re-review",
+      stale,
+      missing: result.missing,
+      excluded: result.excluded,
+      checkedAt: result.checkedAt,
+      reason: stale.length
+        ? `${stale.length} pinned file${stale.length === 1 ? "" : "s"} changed since the manifest was built; re-review or rebase instead of applying stale line references`
+        : "every pinned file still matches the revision recorded in the manifest",
+    };
+  }
+}
+
+function relativeTo(root, abs) {
+  const rest = abs.slice(root.length);
+  return rest.replace(/^[/\\]+/, "");
+}
+
+function rowToTransfer(row) {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    workspaceId: row.workspace_id ?? null,
+    provider: row.provider ?? null,
+    host: row.host,
+    manifestHash: row.manifest_hash ?? null,
+    fileCount: row.file_count,
+    byteCount: row.byte_count,
+    createdAt: row.created_at,
+    details: parseJson(row.details, {}),
+  };
 }
 
 function num(value) {

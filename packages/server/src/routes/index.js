@@ -2,6 +2,9 @@ import opsRoutes from "./ops.js";
 import webhookRoutes from "./webhooks.js";
 import searchRoutes from "./search.js";
 import connectorRoutes from "./connectors.js";
+import collabRoutes from "./collab.js";
+import evaluationRoutes from "./evaluation.js";
+import extensionRoutes from "./extensions.js";
 import connectionRoutes from "./connections.js";
 import sessionRoutes from "./sessions.js";
 import runRoutes from "./runs.js";
@@ -31,16 +34,20 @@ import workspaceRoutes from "./workspaces.js";
  * are listed first so a missing service surfaces as a 503 from the owning
  * module rather than a 404 from the catch-all.
  *
- * Route files named in the wave-2 plan that were never delivered — collab,
- * evaluation, extensions — are deliberately NOT imported: a static
- * import of a missing file would stop the server from booting. Add the import
- * and one array entry above workspaceRoutes when such a file lands.
+ * collab, evaluation and extensions landed in wave 2 and are registered
+ * before runRoutes/workflowRoutes because they claim sub-paths under prefixes
+ * those modules own (/api/runs/:id/decisions, /api/runs/:id/evaluate/*,
+ * /api/templates/:id/export). Each returns false for anything that is not
+ * theirs, so the owning module still sees every other path.
  */
 export const routes = [
   opsRoutes, // /api/ops*
   webhookRoutes, // /api/webhooks*
   searchRoutes, // /api/search*
-  connectorRoutes, // /api/connectors*
+  connectorRoutes, // /api/connectors*, /api/workspaces/:id/checks
+  collabRoutes, // /api/handover*, /api/decisions, /api/workspaces|runs/:id/{handover,decisions}
+  evaluationRoutes, // /api/evaluations*, /api/benchmarks*, /api/runs/:id/evaluate/*
+  extensionRoutes, // /api/extensions*, /api/templates/:id/export, /api/templates/import-preview
   connectionRoutes, // /api/providers, /api/connections*
   sessionRoutes, // /api/sessions*, /api/observation*
   runRoutes, // /api/workspaces/:id/tasks/:taskId/run, /api/runs/:id*

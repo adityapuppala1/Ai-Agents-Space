@@ -3,25 +3,29 @@
   "name": "DevOps incident room",
   "domain": "Operations",
   "priority": "Growth",
-  "description": "Alert -> collect evidence -> propose mitigation -> approve -> verify. Produces an incident timeline, approved change, and verification.",
+  "description": "Alert -> collect evidence -> propose mitigation -> approve -> verify. Produces an incident timeline, an approved change, and a recorded verification.",
+  "requiredResult": "Incident timeline, approved change, verification",
   "roles": [
     {
       "key": "responder",
       "name": "Incident responder",
       "workingState": "RESEARCHING",
-      "description": "Collects evidence."
+      "provider": null,
+      "skills": ["log analysis", "timeline building"]
     },
     {
       "key": "engineer",
-      "name": "Operations engineer",
+      "name": "Engineer",
       "workingState": "DEBUGGING",
-      "description": "Proposes and applies mitigation."
+      "provider": null,
+      "skills": ["mitigation", "rollback"]
     },
     {
       "key": "approver",
-      "name": "Incident commander",
+      "name": "Approver",
       "workingState": "REVIEWING",
-      "description": "Approves changes."
+      "provider": null,
+      "skills": ["change approval"]
     }
   ],
   "steps": [
@@ -29,74 +33,236 @@
       "key": "evidence",
       "title": "Collect evidence for {{incident}}",
       "role": "responder",
-      "deliverable": "Timeline with logs and metrics references",
-      "acceptance": "Every timeline entry references a log line, metric, or command output.",
+      "instructions": "Collect evidence for {{incident}}: run the read-only status, log, and health commands that are permitted here and write incident/{{incident}}/timeline.md with a timestamped entry per observation and the command that produced it.",
+      "deliverable": "incident/<incident>/timeline.md with commands and timestamps",
+      "acceptance": [
+        "file-edited:incident",
+        "command-exit-zero:/log|status|health|ps|journal/"
+      ],
+      "contract": {
+        "inputs": [
+          {
+            "key": "incident",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:incident",
+          "command-exit-zero:/log|status|health|ps|journal/"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["shell", "file.read", "file.edit", "search"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Collect evidence for {{incident}}: logs, metrics, recent changes. Build a timestamped timeline. Read-only."
+      "branchCondition": null
     },
     {
       "key": "mitigation",
       "title": "Propose mitigation for {{incident}}",
       "role": "engineer",
-      "deliverable": "Mitigation proposal with rollback plan",
-      "acceptance": "Proposal names exact commands/changes and their rollback.",
+      "instructions": "From the timeline, write incident/{{incident}}/mitigation.md: the proposed change, the blast radius, the rollback command, and what cannot be undone. Do not apply anything in this step.",
+      "deliverable": "incident/<incident>/mitigation.md",
+      "acceptance": ["file-edited:incident", "final-message-non-empty"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:incident",
+          "final-message-non-empty"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "search"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["evidence"],
-      "instructions": "Propose a mitigation for {{incident}} with exact steps and rollback. Do not apply it."
+      "branchCondition": null
     },
     {
       "key": "approve",
       "title": "Approve mitigation for {{incident}}",
       "role": "approver",
-      "deliverable": "Approval decision",
-      "acceptance": "Human decision recorded.",
+      "instructions": "Review the timeline and the proposed mitigation, then record an explicit decision. Interrupting or rolling back a change does not undo side effects that already happened.",
+      "deliverable": "Recorded approval decision",
+      "acceptance": ["artifact:message", "final-message-non-empty"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["artifact:message", "final-message-non-empty"],
+        "timeoutMs": 600000,
+        "allowedTools": ["file.read", "approval"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["mitigation"],
-      "instructions": "Review the proposal for {{incident}} and approve or deny.",
+      "branchCondition": null,
       "requiresApproval": true
     },
     {
       "key": "apply",
-      "title": "Apply mitigation for {{incident}}",
+      "title": "Apply the approved mitigation for {{incident}}",
       "role": "engineer",
-      "deliverable": "Applied change with command output",
-      "acceptance": "Only the approved steps were executed.",
+      "instructions": "Apply only the change that was approved. Record every command. Append what was applied, and at what time, to incident/{{incident}}/timeline.md.",
+      "deliverable": "Applied change (git diff) and timeline entry",
+      "acceptance": ["file-edited:incident", "artifact:diff"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited:incident", "artifact:diff"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell", "git.diff"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["approve"],
-      "instructions": "Apply the approved mitigation for {{incident}} exactly as approved. Record output."
+      "branchCondition": {
+        "when": "previous.review",
+        "equals": "accepted",
+        "then": "run"
+      }
     },
     {
       "key": "verify",
-      "title": "Verify recovery from {{incident}}",
+      "title": "Verify recovery for {{incident}}",
       "role": "responder",
-      "deliverable": "Verification evidence",
-      "acceptance": "Recovery shown by the same metrics/logs used for detection.",
+      "instructions": "Re-run the health or smoke command and record its exit code. Close the timeline with the verification result as JSON matching the output schema.",
+      "deliverable": "Verification command with a recorded exit code",
+      "acceptance": [
+        "command-exit-zero:/health|verify|smoke|status/",
+        "file-edited:incident",
+        "output-schema"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "incident": {
+              "type": "string"
+            },
+            "timelineFile": {
+              "type": "string"
+            },
+            "verificationCommand": {
+              "type": "string"
+            },
+            "verificationExitCode": {
+              "type": "integer"
+            },
+            "recovered": {
+              "type": "boolean"
+            },
+            "notUndone": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "incident",
+            "timelineFile",
+            "verificationCommand",
+            "verificationExitCode",
+            "recovered"
+          ]
+        },
+        "completionCriteria": [
+          "command-exit-zero:/health|verify|smoke|status/",
+          "file-edited:incident",
+          "output-schema"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["shell", "file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["apply"],
-      "instructions": "Verify the mitigation for {{incident}} using the original evidence sources."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["timeline", "mitigation", "approval", "verification"],
     "properties": {
-      "timeline": {
-        "type": "array"
-      },
-      "mitigation": {
+      "incident": {
         "type": "string"
       },
-      "approval": {
+      "timelineFile": {
         "type": "string"
       },
-      "verification": {
+      "mitigationFile": {
         "type": "string"
+      },
+      "approved": {
+        "type": "boolean"
+      },
+      "verificationCommand": {
+        "type": "string"
+      },
+      "verificationExitCode": {
+        "type": "integer"
+      },
+      "notUndone": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       }
-    }
+    },
+    "required": ["incident", "timelineFile", "approved", "verificationExitCode"]
   },
   "rubric": [
-    "Evidence before action",
-    "Approval before mutation",
-    "Verification uses detection signals"
+    {
+      "criterion": "Every timeline entry names the command that produced it",
+      "howMeasured": "The evidence step recorded command events and a file edit under incident/",
+      "failsWhen": "The timeline states a system fact with no recorded command behind it"
+    },
+    {
+      "criterion": "Nothing was applied before the decision",
+      "howMeasured": "The apply step depends on the approve step and carries a branch condition on the recorded review",
+      "failsWhen": "A file change or command from the apply step is recorded before the approval decision"
+    },
+    {
+      "criterion": "Recovery was verified by a command",
+      "howMeasured": "A recorded command matching health/verify/smoke/status reported exit code 0",
+      "failsWhen": "recovered is true with no recorded verification command"
+    },
+    {
+      "criterion": "Irreversible effects are listed",
+      "howMeasured": "notUndone lists the effects the mitigation cannot reverse",
+      "failsWhen": "The report implies a rollback undid everything"
+    }
   ],
-  "requiredTools": ["shell", "file.read", "approval"],
+  "requiredTools": [
+    "file.read",
+    "file.edit",
+    "search",
+    "shell",
+    "git.diff",
+    "approval"
+  ],
+  "requiredConnectors": ["local-filesystem", "git"],
   "sampleInputs": {
     "incident": "API latency spike after deploy"
-  }
+  },
+  "notes": "There is no alert connector in this build: the alert is a typed input. Agent Space never mutates a production system on its own; every mutation is a command the workspace policy allowed or a human approved."
 }

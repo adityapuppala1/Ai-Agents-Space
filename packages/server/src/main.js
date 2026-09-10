@@ -144,11 +144,20 @@ async function startup() {
     services.onClose(() => clearInterval(timer));
   }
 
-  // 9. Scheduled reports, when this build has them (see OPTIONAL_MODULES).
+  // 9. Scheduled reports (analytics.reports). The cadence timer is unref'd,
+  // a disabled report is never due, and a report only ever writes CSV/JSON to
+  // a local directory — nothing is transmitted anywhere.
+  let reportsLabel = "not available";
   try {
-    services.reports?.start?.();
+    const reports = services.analytics?.reports;
+    if (reports?.start) {
+      reports.start();
+      const enabled = (reports.list?.() ?? []).filter((r) => r.enabled).length;
+      reportsLabel = enabled ? `${enabled} enabled` : "none enabled";
+      services.onClose(() => reports.stop?.());
+    }
   } catch (error) {
-    console.error(`Scheduled reports failed to start: ${error.message}`);
+    reportsLabel = `error (${error.message})`;
   }
 
   // 10. Health. The snapshot is computed on demand; this timer only refreshes
@@ -210,7 +219,7 @@ async function startup() {
       incident?.unacknowledged?.length
         ? ` | ${incident.unacknowledged.length} stop request(s) not acknowledged by a run`
         : ""
-    } | circuit breakers: ${breakers.length ? breakers.join(", ") : "all closed"} | retention: ${retentionLabel} | health: ${healthLabel}${
+    } | circuit breakers: ${breakers.length ? breakers.join(", ") : "all closed"} | retention: ${retentionLabel} | scheduled reports: ${reportsLabel} | health: ${healthLabel}${
       optional.length ? ` | optional modules: ${optional.join(", ")}` : ""
     }`,
   );

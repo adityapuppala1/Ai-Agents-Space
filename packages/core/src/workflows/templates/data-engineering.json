@@ -3,90 +3,305 @@
   "name": "Data engineering",
   "domain": "Data",
   "priority": "Growth",
-  "description": "Ingest -> transform -> validate -> publish artifact. Produces a dataset version, lineage, and validation report.",
+  "description": "Ingest -> transform -> validate -> publish artifact. Produces a dataset version, a lineage record, and a validation report from executed commands.",
+  "requiredResult": "Dataset version, lineage, validation report",
   "roles": [
     {
       "key": "ingest",
-      "name": "Ingestion engineer",
+      "name": "Ingest engineer",
       "workingState": "CODING",
-      "description": "Loads source data."
+      "provider": null,
+      "skills": ["extraction", "file formats"]
     },
     {
       "key": "transform",
-      "name": "Transformation engineer",
+      "name": "Transform engineer",
       "workingState": "CODING",
-      "description": "Builds transformations."
+      "provider": null,
+      "skills": ["etl", "schema mapping"]
     },
     {
       "key": "validator",
-      "name": "Data validator",
+      "name": "Validator",
       "workingState": "TESTING",
-      "description": "Validates outputs."
+      "provider": null,
+      "skills": ["data quality", "assertions"]
     },
     {
       "key": "publisher",
       "name": "Publisher",
       "workingState": "REVIEWING",
-      "description": "Publishes the versioned artifact."
+      "provider": null,
+      "skills": ["lineage", "versioning"]
     }
   ],
   "steps": [
     {
       "key": "ingest",
-      "title": "Ingest {{dataset}}",
+      "title": "Ingest {{dataset}} from {{source}}",
       "role": "ingest",
-      "deliverable": "Raw snapshot with source lineage",
-      "acceptance": "Source, row count, and checksum recorded.",
+      "instructions": "Write an ingest script that copies {{source}} into data/raw/{{dataset}}/ and run it. Record the command, its exit code, the row count, and the byte size.",
+      "deliverable": "data/raw/<dataset>/ populated by an executed command",
+      "acceptance": [
+        "file-edited:data",
+        "command-exit-zero:/ingest|extract|copy|download|curl|node|python/"
+      ],
+      "contract": {
+        "inputs": [
+          {
+            "key": "dataset",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "source",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:data",
+          "command-exit-zero:/ingest|extract|copy|download|curl|node|python/"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Ingest {{dataset}} from {{source}}. Record source location, row count, and a checksum."
+      "branchCondition": null
     },
     {
       "key": "transform",
       "title": "Transform {{dataset}}",
       "role": "transform",
-      "deliverable": "Transformation code and output sample",
-      "acceptance": "Transformations are reproducible from code.",
+      "instructions": "Write and run the transform that produces data/curated/{{dataset}}/. Record the command, its exit code, and the input and output row counts.",
+      "deliverable": "data/curated/<dataset>/ produced by an executed command",
+      "acceptance": [
+        "file-edited:data",
+        "command-exit-zero:/transform|etl|node|python|dbt/"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:data",
+          "command-exit-zero:/transform|etl|node|python|dbt/"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["ingest"],
-      "instructions": "Write reproducible transformations for {{dataset}}. Include a sample of the output."
+      "branchCondition": null
     },
     {
       "key": "validate",
       "title": "Validate {{dataset}}",
       "role": "validator",
-      "deliverable": "Validation report",
-      "acceptance": "Checks executed with pass/fail counts.",
+      "instructions": "Run the data quality checks (row counts, null rates, key uniqueness, referential checks) and write data/validation/{{dataset}}.md plus a JSON report matching the output schema. A check that did not run is reported as not-run, never as passed.",
+      "deliverable": "Validation report with executed checks",
+      "acceptance": [
+        "command-exit-zero:/validate|check|assert|test/",
+        "file-edited:data",
+        "output-schema"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "dataset": {
+              "type": "string"
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["passed", "failed", "not-run"]
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "exitCode": {
+                    "type": "integer"
+                  }
+                },
+                "required": ["name", "status"]
+              }
+            },
+            "rowCount": {
+              "type": "integer"
+            }
+          },
+          "required": ["dataset", "checks"]
+        },
+        "completionCriteria": [
+          "command-exit-zero:/validate|check|assert|test/",
+          "file-edited:data",
+          "output-schema"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell", "shell.test"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["transform"],
-      "instructions": "Run schema and quality checks on the transformed {{dataset}}. Report each check result."
+      "branchCondition": null
     },
     {
       "key": "publish",
-      "title": "Publish {{dataset}} version",
+      "title": "Publish {{dataset}} with lineage",
       "role": "publisher",
-      "deliverable": "Versioned dataset artifact with lineage",
-      "acceptance": "Version id, lineage chain, and validation report attached.",
+      "instructions": "Write data/lineage/{{dataset}}.json: the dataset version, the source, every command that produced it with its exit code, the validation report path, and the output paths. Finish with JSON matching the output schema.",
+      "deliverable": "data/lineage/<dataset>.json",
+      "acceptance": ["file-edited:data", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "dataset": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "outputPath": {
+              "type": "string"
+            },
+            "validationReport": {
+              "type": "string"
+            },
+            "lineage": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "step": {
+                    "type": "string"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "exitCode": {
+                    "type": "integer"
+                  }
+                },
+                "required": ["step", "command"]
+              }
+            }
+          },
+          "required": [
+            "dataset",
+            "version",
+            "outputPath",
+            "validationReport",
+            "lineage"
+          ]
+        },
+        "completionCriteria": ["file-edited:data", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["validate"],
-      "instructions": "Publish {{dataset}} with a version id and lineage back to the raw snapshot."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["version", "lineage", "validationReport"],
     "properties": {
+      "dataset": {
+        "type": "string"
+      },
       "version": {
         "type": "string"
       },
-      "lineage": {
-        "type": "array"
+      "outputPath": {
+        "type": "string"
       },
       "validationReport": {
         "type": "string"
+      },
+      "lineage": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "step": {
+              "type": "string"
+            },
+            "command": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": "integer"
+            }
+          },
+          "required": ["step", "command"]
+        }
+      },
+      "rowCount": {
+        "type": "integer"
       }
-    }
+    },
+    "required": [
+      "dataset",
+      "version",
+      "outputPath",
+      "validationReport",
+      "lineage"
+    ]
   },
-  "rubric": ["Lineage complete", "Validation executed", "Artifact versioned"],
-  "requiredTools": ["file.read", "file.edit", "shell"],
+  "rubric": [
+    {
+      "criterion": "Each stage ran a command that exited 0",
+      "howMeasured": "Recorded command events for ingest, transform, and validate each report exit code 0",
+      "failsWhen": "A stage is reported complete with no recorded command"
+    },
+    {
+      "criterion": "Validation results are per check",
+      "howMeasured": "The checks array names each check with passed / failed / not-run and its exit code",
+      "failsWhen": "A check that never ran is reported as passed"
+    },
+    {
+      "criterion": "Lineage links every output to the command that produced it",
+      "howMeasured": "lineage entries pair a step with the recorded command and exit code",
+      "failsWhen": "An output path appears with no producing command"
+    },
+    {
+      "criterion": "The dataset version is explicit",
+      "howMeasured": "version is set in data/lineage/<dataset>.json",
+      "failsWhen": "The published dataset has no version string"
+    }
+  ],
+  "requiredTools": ["file.read", "file.edit", "shell", "shell.test"],
+  "requiredConnectors": ["local-filesystem", "object-storage"],
   "sampleInputs": {
     "dataset": "orders",
     "source": "data/raw/orders.csv"
-  }
+  },
+  "notes": "requiredConnectors lists object-storage, which is NOT implemented in this build. Everything runs against the local filesystem inside the run scope; lineage is a file this pack writes, not a catalogue service."
 }

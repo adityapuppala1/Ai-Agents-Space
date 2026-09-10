@@ -1,100 +1,289 @@
 {
   "id": "agency-delivery",
   "name": "Agency delivery",
-  "domain": "Agency",
+  "domain": "Client services",
   "priority": "Growth",
-  "description": "Client brief -> isolated workspace -> execution -> client review. Produces approved deliverables without other-client context.",
+  "description": "Client brief -> isolated workspace -> execution -> client review. Produces approved deliverables with no other-client context in scope.",
+  "requiredResult": "Approved deliverables without other-client context",
   "roles": [
     {
       "key": "account",
       "name": "Account lead",
       "workingState": "ANALYZING",
-      "description": "Owns the brief."
+      "provider": null,
+      "skills": ["scoping", "client communication"]
     },
     {
       "key": "builder",
       "name": "Builder",
       "workingState": "CODING",
-      "description": "Executes the work."
+      "provider": null,
+      "skills": ["implementation"]
     },
     {
       "key": "qa",
-      "name": "QA",
+      "name": "QA engineer",
       "workingState": "TESTING",
-      "description": "Checks deliverables."
+      "provider": null,
+      "skills": ["acceptance testing"]
     },
     {
       "key": "client",
       "name": "Client reviewer",
       "workingState": "REVIEWING",
-      "description": "Approves deliverables."
+      "provider": null,
+      "skills": ["acceptance"]
     }
   ],
   "steps": [
     {
       "key": "brief",
-      "title": "Scope brief for {{client}}",
+      "title": "Scope the brief for {{client}}: {{deliverable}}",
       "role": "account",
-      "deliverable": "Scoped brief with acceptance criteria",
-      "acceptance": "Criteria measurable; scope limited to this client workspace.",
+      "instructions": "Write client/{{client}}/brief.md: the deliverable, the acceptance criteria as checkable facts, the folders in scope, and the explicit statement that no other client's files are in scope. Finish with JSON matching the output schema.",
+      "deliverable": "client/<client>/brief.md with an explicit scope",
+      "acceptance": ["file-edited:client", "output-schema"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "client",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "deliverable",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "client": {
+              "type": "string"
+            },
+            "deliverable": {
+              "type": "string"
+            },
+            "scopeFolders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "acceptanceCriteria": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "client",
+            "deliverable",
+            "scopeFolders",
+            "acceptanceCriteria"
+          ]
+        },
+        "completionCriteria": ["file-edited:client", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Turn the brief for {{client}} into measurable acceptance criteria. Use only this workspace's context."
+      "branchCondition": null
     },
     {
       "key": "execute",
-      "title": "Deliver {{deliverable}} for {{client}}",
+      "title": "Build {{deliverable}} for {{client}}",
       "role": "builder",
-      "deliverable": "Deliverable",
-      "acceptance": "Deliverable meets the criteria; no cross-client context used.",
+      "instructions": "Implement {{deliverable}} inside the scope folders from the brief only. Any read outside those folders is a scope violation and must be reported instead of performed.",
+      "deliverable": "Deliverable diff inside the client scope",
+      "acceptance": ["artifact:diff", "file-edited:client"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["artifact:diff", "file-edited:client"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell.build", "git.diff"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["brief"],
-      "instructions": "Produce {{deliverable}} for {{client}} within this workspace only."
+      "branchCondition": null
     },
     {
       "key": "qa",
-      "title": "QA {{deliverable}} for {{client}}",
+      "title": "Check {{deliverable}} against the brief",
       "role": "qa",
-      "deliverable": "QA report",
-      "acceptance": "Each criterion checked with evidence.",
+      "instructions": "Check the deliverable against each acceptance criterion from the brief and run the project test command. Report the command and its exit code.",
+      "deliverable": "Recorded test output and a criterion-by-criterion check",
+      "acceptance": ["test-passed", "artifact:test-output"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["test-passed", "artifact:test-output"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "shell.test"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["execute"],
-      "instructions": "Check {{deliverable}} against every acceptance criterion and record evidence."
+      "branchCondition": null
     },
     {
       "key": "client-review",
       "title": "Client review of {{deliverable}}",
       "role": "client",
-      "deliverable": "Approval decision",
-      "acceptance": "Client decision recorded.",
+      "instructions": "Present the diff, the test output, and the acceptance criteria, then record the client decision. Finish with JSON matching the output schema.",
+      "deliverable": "Recorded client decision",
+      "acceptance": [
+        "artifact:message",
+        "final-message-non-empty",
+        "output-schema"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "client": {
+              "type": "string"
+            },
+            "deliverable": {
+              "type": "string"
+            },
+            "decision": {
+              "type": "string",
+              "enum": ["accepted", "changes-requested"]
+            },
+            "criteriaMet": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "criteriaOpen": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "client",
+            "deliverable",
+            "decision",
+            "criteriaMet",
+            "criteriaOpen"
+          ]
+        },
+        "completionCriteria": [
+          "artifact:message",
+          "final-message-non-empty",
+          "output-schema"
+        ],
+        "timeoutMs": 600000,
+        "allowedTools": ["file.read", "git.diff", "approval"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["qa"],
-      "instructions": "Present {{deliverable}} and the QA report to {{client}} for approval.",
+      "branchCondition": null,
       "requiresApproval": true
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["criteria", "deliverable", "qaReport", "approval"],
     "properties": {
-      "criteria": {
-        "type": "array"
+      "client": {
+        "type": "string"
       },
       "deliverable": {
         "type": "string"
       },
-      "qaReport": {
-        "type": "string"
+      "scopeFolders": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
-      "approval": {
+      "decision": {
+        "type": "string",
+        "enum": ["accepted", "changes-requested"]
+      },
+      "criteriaMet": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "criteriaOpen": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "patch": {
         "type": "string"
       }
-    }
+    },
+    "required": [
+      "client",
+      "deliverable",
+      "scopeFolders",
+      "decision",
+      "criteriaMet",
+      "criteriaOpen"
+    ]
   },
   "rubric": [
-    "Workspace isolation kept",
-    "Criteria measurable",
-    "Client approval recorded"
+    {
+      "criterion": "Only this client's folders were touched",
+      "howMeasured": "The diff artifact lists changed files and every one is under a scopeFolders entry",
+      "failsWhen": "The diff or a recorded read touches another client's folder"
+    },
+    {
+      "criterion": "Acceptance criteria are checkable facts",
+      "howMeasured": "acceptanceCriteria entries name a file, a command, or an artifact",
+      "failsWhen": "A criterion is a matter of taste that nobody can check"
+    },
+    {
+      "criterion": "Tests were executed",
+      "howMeasured": "A test-output artifact exists and a test command reported exit code 0",
+      "failsWhen": "The deliverable is presented as done with no recorded test run"
+    },
+    {
+      "criterion": "The client decision is recorded",
+      "howMeasured": "decision, criteriaMet, and criteriaOpen are recorded on the client-review step",
+      "failsWhen": "The work is marked accepted with no recorded decision"
+    }
   ],
-  "requiredTools": ["file.read", "file.edit", "approval"],
+  "requiredTools": [
+    "file.read",
+    "file.edit",
+    "shell.build",
+    "shell.test",
+    "git.diff",
+    "approval"
+  ],
+  "requiredConnectors": ["local-filesystem", "git"],
   "sampleInputs": {
     "client": "Acme",
     "deliverable": "landing page refresh"
-  }
+  },
+  "notes": "Isolation is by workspace: give each client its own workspace with its own rootPath and allowedFolders. There is no client portal; the client review is a human decision recorded in Agent Space."
 }

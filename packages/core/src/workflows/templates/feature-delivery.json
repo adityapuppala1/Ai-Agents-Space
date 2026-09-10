@@ -3,37 +3,43 @@
   "name": "Feature delivery",
   "domain": "Software engineering",
   "priority": "Launch",
-  "description": "Brief -> architect -> frontend/backend -> QA -> reviewer. Produces a reviewed patch, test results, and implementation notes.",
+  "description": "Brief -> architect -> frontend/backend -> QA -> reviewer. Produces a reviewed patch, recorded test results, and implementation notes.",
+  "requiredResult": "Reviewed patch, test results, implementation notes",
   "roles": [
     {
       "key": "architect",
       "name": "Architect",
       "workingState": "ANALYZING",
-      "description": "Turns the brief into a bounded technical plan."
+      "provider": null,
+      "skills": ["planning", "interface design", "risk analysis"]
     },
     {
       "key": "frontend",
       "name": "Frontend developer",
       "workingState": "CODING",
-      "description": "Implements UI changes within the plan."
+      "provider": null,
+      "skills": ["ui", "accessibility", "state management"]
     },
     {
       "key": "backend",
       "name": "Backend developer",
       "workingState": "CODING",
-      "description": "Implements API and data changes within the plan."
+      "provider": null,
+      "skills": ["api design", "data modelling", "migrations"]
     },
     {
       "key": "qa",
       "name": "QA engineer",
       "workingState": "TESTING",
-      "description": "Writes and runs tests against the implementation."
+      "provider": null,
+      "skills": ["test design", "regression testing"]
     },
     {
       "key": "reviewer",
       "name": "Reviewer",
       "workingState": "REVIEWING",
-      "description": "Reviews the combined patch and notes."
+      "provider": null,
+      "skills": ["code review", "risk review"]
     }
   ],
   "steps": [
@@ -41,72 +47,257 @@
       "key": "plan",
       "title": "Plan {{feature}}",
       "role": "architect",
+      "instructions": "Read the brief for {{feature}}. Write a plan to plans/{{feature}}.md listing the files to change, the interfaces, the data changes, and the risks. Do not write product code in this step.",
       "deliverable": "Implementation plan (files, interfaces, risks)",
-      "acceptance": "Plan names concrete files and interfaces; open questions listed explicitly.",
+      "acceptance": ["file-edited:plans", "final-message-non-empty"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "feature",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited:plans", "final-message-non-empty"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Read the brief for {{feature}}. Produce a short plan listing files to change, interfaces, data changes, and risks. Do not write code."
+      "branchCondition": null
     },
     {
       "key": "frontend",
       "title": "Implement UI for {{feature}}",
       "role": "frontend",
-      "deliverable": "Frontend patch",
-      "acceptance": "UI compiles and matches the plan; no unrelated changes.",
+      "instructions": "Implement the UI part of plans/{{feature}}.md. Keep the diff limited to the files named in the plan. Run the project build or lint command before finishing.",
+      "deliverable": "Frontend patch (git diff)",
+      "acceptance": ["file-edited", "artifact:diff"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "feature",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited", "artifact:diff"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell.build", "git.diff"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["plan"],
-      "instructions": "Implement the UI part of the plan for {{feature}}. Keep the diff limited to the files named in the plan."
+      "branchCondition": null
     },
     {
       "key": "backend",
       "title": "Implement backend for {{feature}}",
       "role": "backend",
-      "deliverable": "Backend patch",
-      "acceptance": "API/data changes match the plan; migrations are additive.",
+      "instructions": "Implement the API and data part of plans/{{feature}}.md. Keep schema changes additive. Run the project build command before finishing.",
+      "deliverable": "Backend patch (git diff)",
+      "acceptance": ["file-edited", "artifact:diff"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "feature",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited", "artifact:diff"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell.build", "git.diff"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["plan"],
-      "instructions": "Implement the backend part of the plan for {{feature}}. Keep changes additive and covered by tests."
+      "branchCondition": null
     },
     {
       "key": "qa",
       "title": "Test {{feature}}",
       "role": "qa",
-      "deliverable": "Test results (command output)",
-      "acceptance": "Tests run with recorded output; failures reported truthfully.",
+      "instructions": "Write or extend tests for {{feature}} and run the project test command. Report the exact command and its exit code. Never edit product code to make a test pass without saying so.",
+      "deliverable": "Recorded test command output",
+      "acceptance": ["test-passed", "artifact:test-output"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "feature",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": ["test-passed", "artifact:test-output"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell.test"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["frontend", "backend"],
-      "instructions": "Write or extend tests for {{feature}} and run the project test command. Report the exact command and output."
+      "branchCondition": null
     },
     {
       "key": "review",
       "title": "Review {{feature}} patch",
       "role": "reviewer",
-      "deliverable": "Review notes and accept/reject decision",
-      "acceptance": "Every changed file inspected; decision recorded with reasons.",
+      "instructions": "Review the combined diff and the recorded test output for {{feature}}. List defects with file and line. Finish with a JSON object matching the output schema.",
+      "deliverable": "Review report (JSON) and accept/reject decision",
+      "acceptance": [
+        "artifact:diff",
+        "final-message-non-empty",
+        "output-schema"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "decision": {
+              "type": "string",
+              "enum": ["accept", "reject"],
+              "description": "Recorded decision, not a quality score"
+            },
+            "changedFiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "testCommand": {
+              "type": "string"
+            },
+            "testExitCode": {
+              "type": "integer"
+            },
+            "defects": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  }
+                },
+                "required": ["file", "detail"]
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "changedFiles",
+            "testCommand",
+            "testExitCode"
+          ]
+        },
+        "completionCriteria": [
+          "artifact:diff",
+          "final-message-non-empty",
+          "output-schema"
+        ],
+        "timeoutMs": 600000,
+        "allowedTools": ["file.read", "git.diff", "search"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["qa"],
-      "instructions": "Review the combined diff and test output for {{feature}}. List defects, then accept or reject."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["patch", "testResults", "notes"],
     "properties": {
       "patch": {
         "type": "string",
-        "description": "Unified diff"
+        "description": "Unified diff captured as the run's diff artifact"
       },
-      "testResults": {
+      "testCommand": {
+        "type": "string"
+      },
+      "testExitCode": {
+        "type": "integer"
+      },
+      "testOutput": {
+        "type": "string"
+      },
+      "planFile": {
         "type": "string"
       },
       "notes": {
         "type": "string"
+      },
+      "decision": {
+        "type": "string",
+        "enum": ["accept", "reject"]
       }
-    }
+    },
+    "required": ["patch", "testCommand", "testExitCode", "decision"]
   },
   "rubric": [
-    "Diff limited to planned files",
-    "Tests executed with output captured",
-    "Reviewer decision recorded",
-    "No secrets or unrelated changes"
+    {
+      "criterion": "A plan file exists before code is written",
+      "howMeasured": "A file edit event under plans/ is recorded on the plan step",
+      "failsWhen": "The plan step recorded no file edit under plans/"
+    },
+    {
+      "criterion": "Every code step produced a diff",
+      "howMeasured": "The run captured a diff artifact (git diff in the run cwd or worktree)",
+      "failsWhen": "A code step finished with no diff artifact"
+    },
+    {
+      "criterion": "Tests were executed, not described",
+      "howMeasured": "A recorded test command reported exit code 0 and a test-output artifact exists",
+      "failsWhen": "The final message claims tests pass but no command event with exit code 0 was recorded"
+    },
+    {
+      "criterion": "The review decision is recorded",
+      "howMeasured": "The review step emitted JSON matching the output schema with a decision field",
+      "failsWhen": "The review step produced no parsable JSON result"
+    },
+    {
+      "criterion": "No secrets and no unrelated files in the patch",
+      "howMeasured": "The diff artifact skips secret paths (isSecretPath) and the reviewer lists changedFiles",
+      "failsWhen": "The diff touches files outside the plan and the review does not name them"
+    }
   ],
-  "requiredTools": ["file.read", "file.edit", "shell.test", "git.diff"],
+  "requiredTools": [
+    "file.read",
+    "file.edit",
+    "search",
+    "shell.build",
+    "shell.test",
+    "git.diff"
+  ],
+  "requiredConnectors": ["local-filesystem", "git"],
   "sampleInputs": {
     "feature": "Saved filters on the board view"
-  }
+  },
+  "notes": "Fan-out (frontend/backend) then fan-in at QA. The required result is produced by whichever provider runs the tasks; Agent Space records the evidence, it never judges quality."
 }

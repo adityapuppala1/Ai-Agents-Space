@@ -3,31 +3,36 @@
   "name": "Security review",
   "domain": "Security",
   "priority": "Growth",
-  "description": "Scoped scan -> triage -> suggested remediation -> retest. Produces findings with evidence and explicit scope.",
+  "description": "Scoped scan -> triage -> suggested remediation -> retest. Produces findings with recorded evidence and an explicit scope statement.",
+  "requiredResult": "Findings with evidence and explicit scope",
   "roles": [
     {
       "key": "scanner",
-      "name": "Security analyst",
+      "name": "Scanner",
       "workingState": "RESEARCHING",
-      "description": "Scans the scope."
+      "provider": null,
+      "skills": ["static analysis", "dependency audit"]
     },
     {
       "key": "triager",
       "name": "Triager",
       "workingState": "ANALYZING",
-      "description": "Prioritizes findings."
+      "provider": null,
+      "skills": ["risk triage", "exploitability"]
     },
     {
       "key": "developer",
       "name": "Developer",
       "workingState": "CODING",
-      "description": "Proposes remediation."
+      "provider": null,
+      "skills": ["secure coding"]
     },
     {
       "key": "tester",
       "name": "Tester",
       "workingState": "TESTING",
-      "description": "Retests."
+      "provider": null,
+      "skills": ["verification"]
     }
   ],
   "steps": [
@@ -35,60 +40,265 @@
       "key": "scan",
       "title": "Scan {{scope}}",
       "role": "scanner",
-      "deliverable": "Raw findings with file/line evidence",
-      "acceptance": "Scope stated explicitly; every finding has evidence.",
+      "instructions": "Scan only {{scope}}. Run the available audit or lint commands and record each command with its exit code. Write security/scan.md listing the scope you covered and the scope you did not. Do not touch paths outside {{scope}}.",
+      "deliverable": "security/scan.md with executed commands and the exact scope",
+      "acceptance": [
+        "file-edited:security",
+        "command-exit-zero:/audit|scan|lint|check/"
+      ],
+      "contract": {
+        "inputs": [
+          {
+            "key": "scope",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:security",
+          "command-exit-zero:/audit|scan|lint|check/"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "shell", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Scan {{scope}} for security issues (secrets, injection, unsafe file access). Read-only. Record file and line for each finding."
+      "branchCondition": null
     },
     {
       "key": "triage",
-      "title": "Triage findings for {{scope}}",
+      "title": "Triage findings in {{scope}}",
       "role": "triager",
-      "deliverable": "Prioritized findings",
-      "acceptance": "Each finding has severity and rationale; false positives marked.",
+      "instructions": "Write security/findings.json matching the output schema. Every finding names the file, the line, the evidence (the command output or the code excerpt), and a severity. A finding with no evidence is recorded as suspected, never as confirmed.",
+      "deliverable": "security/findings.json with evidence per finding",
+      "acceptance": ["file-edited:security/findings", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string"
+            },
+            "scopeExclusions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": ["critical", "high", "medium", "low"]
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["confirmed", "suspected", "false-positive"]
+                  },
+                  "evidence": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "file", "severity", "status", "evidence"]
+              }
+            }
+          },
+          "required": ["scope", "findings"]
+        },
+        "completionCriteria": [
+          "file-edited:security/findings",
+          "output-schema"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["scan"],
-      "instructions": "Triage the findings for {{scope}}. Assign severity and mark false positives with reasons."
+      "branchCondition": null
     },
     {
       "key": "remediate",
-      "title": "Remediation for {{scope}}",
+      "title": "Remediate confirmed findings in {{scope}}",
       "role": "developer",
-      "deliverable": "Patch or remediation notes",
-      "acceptance": "Changes address triaged findings only.",
+      "instructions": "Fix the findings whose status is confirmed, inside {{scope}} only. Reference the finding id in each change note.",
+      "deliverable": "Remediation diff mapped to finding ids",
+      "acceptance": ["artifact:diff", "file-edited"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["artifact:diff", "file-edited"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "git.diff"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["triage"],
-      "instructions": "Propose or implement remediation for the triaged findings in {{scope}}."
+      "branchCondition": null
     },
     {
       "key": "retest",
       "title": "Retest {{scope}}",
       "role": "tester",
-      "deliverable": "Retest evidence",
-      "acceptance": "Original findings re-checked with results recorded.",
+      "instructions": "Re-run the scan and the project test command. Record both commands and their exit codes and write security/retest.json matching the output schema. A finding is closed only when a recorded command shows it gone.",
+      "deliverable": "security/retest.json plus recorded test output",
+      "acceptance": ["test-passed", "artifact:test-output", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string"
+            },
+            "rescanCommand": {
+              "type": "string"
+            },
+            "rescanExitCode": {
+              "type": "integer"
+            },
+            "testCommand": {
+              "type": "string"
+            },
+            "testExitCode": {
+              "type": "integer"
+            },
+            "closed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "open": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "scope",
+            "rescanCommand",
+            "rescanExitCode",
+            "testCommand",
+            "testExitCode",
+            "closed",
+            "open"
+          ]
+        },
+        "completionCriteria": [
+          "test-passed",
+          "artifact:test-output",
+          "output-schema"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell", "shell.test"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["remediate"],
-      "instructions": "Re-run the checks for {{scope}} and record which findings are resolved."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["scope", "findings", "remediation", "retest"],
     "properties": {
       "scope": {
         "type": "string"
       },
-      "findings": {
-        "type": "array"
+      "scopeExclusions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
-      "remediation": {
+      "findingsFile": {
         "type": "string"
       },
-      "retest": {
-        "type": "string"
+      "closed": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "open": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "rescanExitCode": {
+        "type": "integer"
+      },
+      "testExitCode": {
+        "type": "integer"
       }
-    }
+    },
+    "required": ["scope", "findingsFile", "closed", "open"]
   },
-  "rubric": ["Scope explicit", "Evidence per finding", "Retest recorded"],
-  "requiredTools": ["file.read", "search", "shell.test"],
+  "rubric": [
+    {
+      "criterion": "The scope is explicit",
+      "howMeasured": "scope and scopeExclusions are recorded in security/findings.json and repeated in security/scan.md",
+      "failsWhen": "The report implies whole-repository coverage when only part was scanned"
+    },
+    {
+      "criterion": "Every finding carries evidence",
+      "howMeasured": "findings entries require evidence and a status of confirmed / suspected / false-positive",
+      "failsWhen": "A finding is called confirmed with no command output or code excerpt behind it"
+    },
+    {
+      "criterion": "Closure is proven by a rerun",
+      "howMeasured": "rescanExitCode and testExitCode come from recorded commands and closed lists only findings the rerun no longer reports",
+      "failsWhen": "A finding is closed because the fix looks right, with no rerun"
+    },
+    {
+      "criterion": "Nothing outside the scope was changed",
+      "howMeasured": "The diff artifact lists changed files, all inside the declared scope",
+      "failsWhen": "The diff touches a path outside {{scope}}"
+    }
+  ],
+  "requiredTools": [
+    "file.read",
+    "file.edit",
+    "search",
+    "shell",
+    "shell.test",
+    "git.diff"
+  ],
+  "requiredConnectors": ["local-filesystem", "git"],
   "sampleInputs": {
     "scope": "packages/server/src/routes"
-  }
+  },
+  "notes": "Agent Space runs no security scanner of its own: this pack runs whatever audit or lint command the repository already has, inside the workspace policy. Findings are the provider's, recorded with their evidence."
 }

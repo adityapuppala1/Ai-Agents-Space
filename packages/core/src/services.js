@@ -36,6 +36,17 @@ import { createHealthService } from "./ops/Health.js";
 import { createDiagnosticsService } from "./ops/Diagnostics.js";
 import { createRetentionService } from "./ops/Retention.js";
 import { createSearch } from "./search/Search.js";
+import { createConnectorRegistry } from "./connectors/index.js";
+import { createMemory } from "./context/memory.js";
+import { createRelevance } from "./context/relevance.js";
+import { createHandover } from "./collab/Handover.js";
+import { createDecisions } from "./collab/Decisions.js";
+import { createPricing } from "./analytics/pricing.js";
+import { createLineage } from "./analytics/lineage.js";
+import { createEvaluation } from "./analytics/evaluation.js";
+import { createExtensionRegistry } from "./extensions/registry.js";
+import { createMcpServer } from "./mcp/server.js";
+import { TOOLS as MCP_TOOLS } from "./mcp/tools.js";
 import { classifyFailure, retryPolicy } from "./runs/retry.js";
 
 const OBSERVER_FACTORIES = [
@@ -221,6 +232,12 @@ export function createServices(options = {}) {
   services.retry = { classifyFailure, retryPolicy };
   services.queue = services.runWorker?.queue ?? null;
 
+  // 5c. Decision history is composed before approvals so every approve /
+  // deny / request-change decision is recorded in decision_history from the
+  // first request onward (ApprovalService reads services.decisions lazily,
+  // so a container without it still decides — it just records less).
+  createDecisions(services); // → services.decisions
+
   // 6. Workflows (task graph + templates), analytics, context manifests.
   const graph = new TaskGraph(services);
   services.graph = graph;
@@ -228,12 +245,27 @@ export function createServices(options = {}) {
   createCheckpointService(services); // → services.checkpoints
   createDryRun(services); // → services.dryRun
   createSuggest(services); // → services.suggest
+  // 6b. Memory and relevance are composed BEFORE the context manifest:
+  // ContextManifest.build() attaches scoped memory, named knowledge items and
+  // a deterministic relevance ranking through them. Both are read with
+  // optional chaining there, so an older container still builds a manifest.
+  createMemory(services); // → services.memory
+  createRelevance(services); // → services.relevance ({ rank, WEIGHTS })
+
   services.analytics = new Analytics(services, {
     pricing: options.pricing ?? null,
   });
+  // These factories return their instance rather than attaching it, so the
+  // container assigns the key (the same pattern as createEvaluation below).
+  services.pricing = createPricing(services); // settings-backed price table
+  services.lineage = createLineage(services); // input → run → artifact graph
+  // createEvaluation/createExtensionRegistry return their instance rather
+  // than attaching it, so the container assigns the key here.
+  services.evaluation = createEvaluation(services); // five separate dimensions
   services.context = new ContextManifest(services, {
     git: options.git ?? true,
   });
+  createHandover(services); // → services.handover (briefs built from records)
 
   // 7. Outbound/inbound webhooks. Nothing is delivered until main.js (or a
   // test) calls services.webhooks.deliverDue(); creating the service starts
@@ -248,6 +280,25 @@ export function createServices(options = {}) {
   createHealthService(services); // → services.health
   createDiagnosticsService(services); // → services.diagnostics
   createRetentionService(services); // → services.retention
+
+  // 8b. Connectors (git / filesystem / GitHub through gh) and the extension
+  // registry. Every connector write goes policy → approval → audit inside the
+  // registry; nothing here reaches the network on construction.
+  createConnectorRegistry(services); // → services.connectorRegistry
+  services.extensions = createExtensionRegistry(services);
+
+  // 8c. MCP is exposed as a FACTORY and never started in-process: the bridge
+  // (bin/agent-space-mcp.js) runs as its own process and talks to this server
+  // over HTTP, so it can never contend for the SQLite write lock. Starting a
+  // stdio server here would also write protocol frames onto the server's own
+  // stdout.
+  services.mcp = {
+    started: false,
+    toolCount: MCP_TOOLS.length,
+    /** Builds a stdio MCP server around an HTTP client for this server. */
+    createServer: (options) => createMcpServer(options),
+    transport: "stdio (separate process: bin/agent-space-mcp.js)",
+  };
 
   // 9. Search across the records above (never the filesystem).
   createSearch(services); // → services.search
@@ -269,7 +320,7 @@ export function createServices(options = {}) {
 }
 
 /**
- * Modules planned for wave 2 that this build may or may not contain. Each
+ * Modules that this build may or may not contain. Each
  * entry is { key, path, factory }: when the file exists it is imported and
  * `factory(services)` is called, which is expected to attach `services[key]`.
  *
@@ -277,49 +328,20 @@ export function createServices(options = {}) {
  * here is required: an absent module leaves `services[key]` undefined and every
  * caller already guards with optional chaining, so the container degrades
  * instead of failing.
+ *
+ * Everything else that the wave-2 plan listed here now ships in this build and
+ * is composed statically above in dependency order (decisions, memory,
+ * relevance, handover, pricing, lineage, evaluation, connectorRegistry,
+ * extensions, mcp), so the container no longer has to guess at a filename.
+ * `services.connectors` remains optional: it is the provider-availability
+ * probe registry, which is a different thing from `services.connectorRegistry`
+ * (git / filesystem / GitHub reads and gated writes).
  */
 export const OPTIONAL_MODULES = Object.freeze([
-  { key: "mcp", path: "./mcp/McpServer.js", factory: "createMcpServer" },
   {
     key: "connectors",
     path: "./connectors/Connectors.js",
     factory: "createConnectors",
-  },
-  { key: "memory", path: "./memory/Memory.js", factory: "createMemory" },
-  {
-    key: "relevance",
-    path: "./memory/Relevance.js",
-    factory: "createRelevance",
-  },
-  {
-    key: "handover",
-    path: "./collab/Handover.js",
-    factory: "createHandover",
-  },
-  {
-    key: "decisions",
-    path: "./collab/Decisions.js",
-    factory: "createDecisions",
-  },
-  {
-    key: "pricing",
-    path: "./analytics/Pricing.js",
-    factory: "createPricing",
-  },
-  {
-    key: "lineage",
-    path: "./analytics/Lineage.js",
-    factory: "createLineage",
-  },
-  {
-    key: "evaluation",
-    path: "./evaluation/Evaluation.js",
-    factory: "createEvaluation",
-  },
-  {
-    key: "extensions",
-    path: "./extensions/Extensions.js",
-    factory: "createExtensions",
   },
 ]);
 

@@ -3,31 +3,36 @@
   "name": "Repository onboarding",
   "domain": "Software engineering",
   "priority": "Launch",
-  "description": "Explore -> architecture map -> setup checks -> guide. Produces a source-linked onboarding document.",
+  "description": "Explore -> architecture map -> setup checks -> guide. Produces a source-linked onboarding document whose setup commands were actually executed.",
+  "requiredResult": "Source-linked onboarding document",
   "roles": [
     {
       "key": "explorer",
       "name": "Explorer",
       "workingState": "RESEARCHING",
-      "description": "Surveys the repository structure."
+      "provider": null,
+      "skills": ["code reading", "search"]
     },
     {
       "key": "architect",
       "name": "Architect",
       "workingState": "ANALYZING",
-      "description": "Maps modules and their relationships."
+      "provider": null,
+      "skills": ["architecture mapping"]
     },
     {
       "key": "operator",
       "name": "Operator",
       "workingState": "DEBUGGING",
-      "description": "Verifies setup commands actually run."
+      "provider": null,
+      "skills": ["build systems", "environment setup"]
     },
     {
       "key": "writer",
       "name": "Technical writer",
       "workingState": "CODING",
-      "description": "Writes the guide."
+      "provider": null,
+      "skills": ["documentation"]
     }
   ],
   "steps": [
@@ -35,61 +40,206 @@
       "key": "explore",
       "title": "Explore {{repository}}",
       "role": "explorer",
-      "deliverable": "Inventory of top-level folders, entry points, and scripts",
-      "acceptance": "Every listed path exists in the repository.",
+      "instructions": "List the entry points, packages, scripts, and tests of {{repository}}. Write the inventory to onboarding/inventory.md with a file path behind every claim.",
+      "deliverable": "onboarding/inventory.md with file paths",
+      "acceptance": ["file-edited:onboarding", "final-message-non-empty"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "repository",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:onboarding",
+          "final-message-non-empty"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "List the top-level structure of {{repository}}, entry points, package scripts, and test locations. Cite paths."
+      "branchCondition": null
     },
     {
       "key": "map",
-      "title": "Architecture map for {{repository}}",
+      "title": "Map the architecture of {{repository}}",
       "role": "architect",
-      "deliverable": "Module map with dependencies",
-      "acceptance": "Each module links to its source folder; relationships are derived from imports, not guessed.",
+      "instructions": "From the inventory, write onboarding/architecture.md: modules, responsibilities, data flow, and the file that proves each statement.",
+      "deliverable": "onboarding/architecture.md",
+      "acceptance": ["file-edited:onboarding", "final-message-non-empty"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:onboarding",
+          "final-message-non-empty"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["explore"],
-      "instructions": "Describe the modules of {{repository}} and how they depend on each other, citing import statements."
+      "branchCondition": null
     },
     {
       "key": "setup",
-      "title": "Verify setup for {{repository}}",
+      "title": "Run setup checks for {{repository}}",
       "role": "operator",
-      "deliverable": "Setup checklist with command output",
-      "acceptance": "Commands were executed; failures reported verbatim.",
+      "instructions": "Run the documented install and build commands. Record each command and its exit code in onboarding/setup.md. Never claim a step works unless the command exited 0.",
+      "deliverable": "onboarding/setup.md with executed commands and exit codes",
+      "acceptance": [
+        "file-edited:onboarding",
+        "command-exit-zero:/install|setup|build|ci/"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:onboarding",
+          "command-exit-zero:/install|setup|build|ci/"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell", "shell.build"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["explore"],
-      "instructions": "Run the install, build, and test commands for {{repository}} and record output. Do not claim a command works without running it."
+      "branchCondition": null
     },
     {
       "key": "guide",
-      "title": "Onboarding guide for {{repository}}",
+      "title": "Write the onboarding guide for {{repository}}",
       "role": "writer",
-      "deliverable": "Onboarding document",
-      "acceptance": "Every claim links to a file path or a command output from earlier steps.",
+      "instructions": "Write onboarding/GUIDE.md from the inventory, the architecture map, and the executed setup commands. Every setup instruction must name the command that was executed and its exit code. Finish with JSON matching the output schema.",
+      "deliverable": "onboarding/GUIDE.md plus a JSON summary",
+      "acceptance": ["file-edited:onboarding", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "guideFile": {
+              "type": "string"
+            },
+            "sections": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "setupCommands": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "exitCode": {
+                    "type": "integer"
+                  }
+                },
+                "required": ["command", "exitCode"]
+              }
+            },
+            "sourceReferences": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": ["guideFile", "setupCommands", "sourceReferences"]
+        },
+        "completionCriteria": ["file-edited:onboarding", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["map", "setup"],
-      "instructions": "Write an onboarding guide for {{repository}} using the map and setup results. Link sources."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["guide", "sources"],
     "properties": {
-      "guide": {
+      "guideFile": {
         "type": "string"
       },
-      "sources": {
+      "architectureFile": {
+        "type": "string"
+      },
+      "inventoryFile": {
+        "type": "string"
+      },
+      "setupCommands": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": "integer"
+            }
+          },
+          "required": ["command", "exitCode"]
+        }
+      },
+      "sourceReferences": {
         "type": "array",
         "items": {
           "type": "string"
         }
       }
-    }
+    },
+    "required": ["guideFile", "setupCommands", "sourceReferences"]
   },
   "rubric": [
-    "Paths verified",
-    "Setup commands executed",
-    "Guide cites sources"
+    {
+      "criterion": "Every setup instruction was executed",
+      "howMeasured": "Each entry in setupCommands has an exitCode and a matching recorded command event",
+      "failsWhen": "The guide documents a command that was never run in this workspace"
+    },
+    {
+      "criterion": "At least one setup command succeeded",
+      "howMeasured": "A recorded command matching install/setup/build/ci reported exit code 0",
+      "failsWhen": "No setup command reported exit code 0"
+    },
+    {
+      "criterion": "Claims are source-linked",
+      "howMeasured": "sourceReferences lists repository paths and the guide cites them",
+      "failsWhen": "A statement about the code has no file path behind it"
+    },
+    {
+      "criterion": "The guide is a file, not a chat answer",
+      "howMeasured": "A file edit under onboarding/ is recorded on the guide step",
+      "failsWhen": "The guide exists only in the final message"
+    }
   ],
-  "requiredTools": ["file.read", "search", "shell"],
+  "requiredTools": ["file.read", "file.edit", "search", "shell", "shell.build"],
+  "requiredConnectors": ["local-filesystem"],
   "sampleInputs": {
     "repository": "Agent Space"
-  }
+  },
+  "notes": "Setup checks run real commands in the run cwd; the workspace policy decides which commands are allowed and which need approval."
 }

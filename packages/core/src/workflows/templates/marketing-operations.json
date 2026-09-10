@@ -3,97 +3,300 @@
   "name": "Marketing operations",
   "domain": "Marketing",
   "priority": "Explore",
-  "description": "Research -> draft content -> fact/brand review -> publishing approval. Produces approved campaign artifacts; never sends unsolicited outreach automatically.",
+  "description": "Research -> draft content -> fact and brand review -> publishing approval. Produces approved campaign artifacts as files. Agent Space never sends a message and never publishes.",
+  "requiredResult": "Approved campaign artifacts; no automatic unsolicited outreach",
   "roles": [
     {
       "key": "researcher",
       "name": "Researcher",
       "workingState": "RESEARCHING",
-      "description": "Gathers audience and product facts."
+      "provider": null,
+      "skills": ["market research", "source hygiene"]
     },
     {
       "key": "writer",
-      "name": "Content writer",
+      "name": "Writer",
       "workingState": "CODING",
-      "description": "Drafts content."
+      "provider": null,
+      "skills": ["copywriting"]
     },
     {
       "key": "reviewer",
-      "name": "Brand reviewer",
+      "name": "Fact and brand reviewer",
       "workingState": "REVIEWING",
-      "description": "Checks facts and brand."
+      "provider": null,
+      "skills": ["fact checking", "brand rules"]
     },
     {
       "key": "approver",
-      "name": "Publishing approver",
+      "name": "Approver",
       "workingState": "REVIEWING",
-      "description": "Approves publishing."
+      "provider": null,
+      "skills": ["publishing approval"]
     }
   ],
   "steps": [
     {
       "key": "research",
-      "title": "Research for {{campaign}}",
+      "title": "Research inputs for {{campaign}}",
       "role": "researcher",
-      "deliverable": "Fact sheet with sources",
-      "acceptance": "Every fact has a source.",
+      "instructions": "Collect the factual inputs for {{campaign}} and write campaign/{{campaign}}/research.json matching the output schema. Mark each claim verified only when you opened the source in this run and name it.",
+      "deliverable": "campaign/<campaign>/research.json with a source per claim",
+      "acceptance": ["file-edited:campaign", "output-schema"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "campaign",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "campaign": {
+              "type": "string"
+            },
+            "claims": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "claim": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["verified", "unverified"]
+                  }
+                },
+                "required": ["claim", "source", "status"]
+              }
+            }
+          },
+          "required": ["campaign", "claims"]
+        },
+        "completionCriteria": ["file-edited:campaign", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": [
+          "web.fetch",
+          "web.search",
+          "file.read",
+          "file.edit",
+          "search"
+        ],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Gather facts for {{campaign}} with sources. Do not contact anyone."
+      "branchCondition": null
     },
     {
       "key": "draft",
       "title": "Draft content for {{campaign}}",
       "role": "writer",
-      "deliverable": "Draft assets",
-      "acceptance": "Drafts use only facts from the fact sheet.",
+      "instructions": "Write the campaign artifacts as files under campaign/{{campaign}}/. Use only claims marked verified in research.json; drop or clearly hedge the rest.",
+      "deliverable": "Campaign artifact files",
+      "acceptance": ["file-edited:campaign", "final-message-non-empty"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:campaign",
+          "final-message-non-empty"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["research"],
-      "instructions": "Draft the content for {{campaign}} using the fact sheet."
+      "branchCondition": null
     },
     {
       "key": "review",
       "title": "Fact and brand review for {{campaign}}",
       "role": "reviewer",
-      "deliverable": "Review notes",
-      "acceptance": "Facts checked; brand issues listed.",
+      "instructions": "Check every statement in the draft against research.json and the brand rules, then write campaign/{{campaign}}/review.json matching the output schema.",
+      "deliverable": "campaign/<campaign>/review.json",
+      "acceptance": ["file-edited:campaign", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "campaign": {
+              "type": "string"
+            },
+            "statements": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "statement": {
+                    "type": "string"
+                  },
+                  "sourceClaim": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["supported", "unsupported", "off-brand"]
+                  }
+                },
+                "required": ["statement", "status"]
+              }
+            }
+          },
+          "required": ["campaign", "statements"]
+        },
+        "completionCriteria": ["file-edited:campaign", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["draft"],
-      "instructions": "Review {{campaign}} drafts for factual accuracy and brand fit."
+      "branchCondition": null
     },
     {
       "key": "approve",
       "title": "Publishing approval for {{campaign}}",
       "role": "approver",
-      "deliverable": "Approval decision",
-      "acceptance": "Human approval recorded; no automatic publishing or outreach.",
+      "instructions": "Record an explicit publishing decision for the campaign artifacts. Publishing itself happens outside Agent Space: nothing here sends email, posts, or contacts anybody.",
+      "deliverable": "Recorded publishing decision",
+      "acceptance": [
+        "artifact:message",
+        "final-message-non-empty",
+        "output-schema"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "campaign": {
+              "type": "string"
+            },
+            "decision": {
+              "type": "string",
+              "enum": ["approved", "hold"]
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unsupportedStatements": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": ["campaign", "decision", "artifacts"]
+        },
+        "completionCriteria": [
+          "artifact:message",
+          "final-message-non-empty",
+          "output-schema"
+        ],
+        "timeoutMs": 600000,
+        "allowedTools": ["file.read", "approval"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["review"],
-      "instructions": "Approve or deny publishing of {{campaign}}. Publishing and outreach are manual actions after approval.",
+      "branchCondition": null,
       "requiresApproval": true
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["factSheet", "assets", "review", "approval"],
     "properties": {
-      "factSheet": {
-        "type": "array"
-      },
-      "assets": {
-        "type": "array"
-      },
-      "review": {
+      "campaign": {
         "type": "string"
       },
-      "approval": {
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "decision": {
+        "type": "string",
+        "enum": ["approved", "hold"]
+      },
+      "unsupportedStatements": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "researchFile": {
+        "type": "string"
+      },
+      "reviewFile": {
         "type": "string"
       }
-    }
+    },
+    "required": [
+      "campaign",
+      "artifacts",
+      "decision",
+      "researchFile",
+      "reviewFile"
+    ]
   },
   "rubric": [
-    "Facts sourced",
-    "No unsolicited outreach",
-    "Approval before publishing"
+    {
+      "criterion": "Every published statement is supported",
+      "howMeasured": "review.json marks each statement supported / unsupported / off-brand against a research claim",
+      "failsWhen": "An unsupported statement stays in an approved artifact"
+    },
+    {
+      "criterion": "Verified means a source was opened",
+      "howMeasured": "research.json claims marked verified name the source that was fetched in this run",
+      "failsWhen": "A claim is verified because it is widely believed"
+    },
+    {
+      "criterion": "The approval is recorded before anything leaves the workspace",
+      "howMeasured": "The approve step recorded a decision and the artifacts list",
+      "failsWhen": "Artifacts are treated as published with no recorded decision"
+    },
+    {
+      "criterion": "No outreach happened here",
+      "howMeasured": "The pack writes files only; Agent Space has no send, post, or contact capability",
+      "failsWhen": "A step claims a message was sent - nothing in this build can do that"
+    }
   ],
-  "requiredTools": ["web.fetch", "file.edit", "approval"],
+  "requiredTools": [
+    "web.fetch",
+    "web.search",
+    "file.read",
+    "file.edit",
+    "search",
+    "approval"
+  ],
+  "requiredConnectors": ["local-filesystem", "web"],
   "sampleInputs": {
     "campaign": "Launch announcement"
-  }
+  },
+  "notes": "Explore priority. Agent Space sends nothing and publishes nothing: the approval records a human decision and the artifacts stay as files in the workspace."
 }

@@ -400,6 +400,191 @@ const migrations = [
       CREATE INDEX budget_reservations_run ON budget_reservations(run_id);
     `,
   },
+  {
+    // Roadmap §12: scoped memory, named knowledge collections, a visible
+    // record of which provider/host received which permitted inputs,
+    // handover briefs, and decision history.
+    //
+    // Notes on the extra columns beyond the plan list:
+    //   handover_briefs.thread_id  groups the versions of one brief
+    //   handover_briefs.generated  the generated baseline, kept next to the
+    //                              edited body so human edits stay visible.
+    // memories.scope_id is '' (never NULL) for user scope so the unique index
+    // works without an expression.
+    version: 8,
+    sql: `
+      CREATE TABLE memories (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL CHECK (scope IN ('user', 'workspace', 'run')),
+        scope_id TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL DEFAULT 'note',
+        key TEXT NOT NULL,
+        value TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'user',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER
+      );
+      CREATE UNIQUE INDEX memories_scope_key ON memories(scope, scope_id, key);
+      CREATE INDEX memories_expiry ON memories(expires_at);
+
+      CREATE TABLE knowledge_collections (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        access TEXT NOT NULL DEFAULT 'workspace' CHECK (access IN ('workspace', 'private')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE UNIQUE INDEX knowledge_collections_name ON knowledge_collections(workspace_id, name);
+
+      CREATE TABLE knowledge_items (
+        id TEXT PRIMARY KEY,
+        collection_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT '',
+        source_url TEXT,
+        content TEXT NOT NULL DEFAULT '',
+        content_hash TEXT NOT NULL DEFAULT '',
+        captured_at INTEGER NOT NULL,
+        freshness_checked_at INTEGER,
+        version INTEGER NOT NULL DEFAULT 1,
+        deleted_at INTEGER
+      );
+      CREATE INDEX knowledge_items_collection ON knowledge_items(collection_id, deleted_at);
+
+      CREATE TABLE context_transfers (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        workspace_id TEXT,
+        provider TEXT,
+        host TEXT NOT NULL DEFAULT 'local',
+        manifest_hash TEXT,
+        file_count INTEGER NOT NULL DEFAULT 0,
+        byte_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        details TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX context_transfers_run ON context_transfers(run_id, created_at DESC);
+      CREATE INDEX context_transfers_workspace ON context_transfers(workspace_id, created_at DESC);
+
+      CREATE TABLE handover_briefs (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        task_id TEXT,
+        run_id TEXT,
+        author TEXT NOT NULL DEFAULT 'system',
+        generated TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        edited_by TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE INDEX handover_briefs_thread ON handover_briefs(thread_id, version DESC);
+      CREATE INDEX handover_briefs_workspace ON handover_briefs(workspace_id, updated_at DESC);
+
+      CREATE TABLE decision_history (
+        id TEXT PRIMARY KEY,
+        approval_id TEXT,
+        workspace_id TEXT,
+        run_id TEXT,
+        actor TEXT NOT NULL DEFAULT 'local-user',
+        decision TEXT NOT NULL,
+        note TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX decision_history_approval ON decision_history(approval_id, created_at);
+      CREATE INDEX decision_history_run ON decision_history(run_id, created_at);
+      CREATE INDEX decision_history_workspace ON decision_history(workspace_id, created_at);
+    `,
+  },
+  {
+    // Wave 2, analytics/evaluation/lineage (roadmap §15): saved analytics
+    // views, scheduled report definitions, regression benchmarks with frozen
+    // (hashed, never copied) inputs, and per-run evaluation records.
+    //
+    // Written so it does not depend on any other wave-2 migration having run:
+    // it creates only new tables and references v1/v2 ids by value (no foreign
+    // keys), so the order migrations interleave in this array is irrelevant.
+    version: 9,
+    sql: `
+      CREATE TABLE analytics_saved_views (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        workspace_id TEXT,
+        filters TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX analytics_saved_views_workspace
+        ON analytics_saved_views(workspace_id, name);
+
+      CREATE TABLE scheduled_reports (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        workspace_id TEXT,
+        format TEXT NOT NULL DEFAULT 'json',
+        filters TEXT NOT NULL DEFAULT '{}',
+        cadence TEXT NOT NULL DEFAULT 'daily',
+        next_run_at INTEGER,
+        last_run_at INTEGER,
+        output_dir TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX scheduled_reports_due ON scheduled_reports(enabled, next_run_at);
+
+      CREATE TABLE benchmarks (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        workspace_id TEXT,
+        created_at INTEGER NOT NULL,
+        definition TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX benchmarks_workspace ON benchmarks(workspace_id, created_at DESC);
+
+      CREATE TABLE benchmark_cases (
+        id TEXT PRIMARY KEY,
+        benchmark_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        inputs TEXT NOT NULL DEFAULT '{}',
+        expectations TEXT NOT NULL DEFAULT '{}',
+        frozen_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX benchmark_cases_key ON benchmark_cases(benchmark_id, key);
+
+      CREATE TABLE benchmark_runs (
+        id TEXT PRIMARY KEY,
+        benchmark_id TEXT NOT NULL,
+        case_id TEXT,
+        run_id TEXT,
+        variant TEXT NOT NULL DEFAULT 'baseline',
+        started_at INTEGER,
+        ended_at INTEGER,
+        result TEXT NOT NULL DEFAULT '{}',
+        scores TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX benchmark_runs_benchmark ON benchmark_runs(benchmark_id, variant);
+      CREATE INDEX benchmark_runs_run ON benchmark_runs(run_id);
+
+      CREATE TABLE evaluations (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        dimension TEXT NOT NULL,
+        verdict TEXT NOT NULL DEFAULT 'unknown',
+        score REAL,
+        grader TEXT NOT NULL DEFAULT '{}',
+        rubric TEXT,
+        evidence TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX evaluations_run ON evaluations(run_id, dimension);
+      CREATE INDEX evaluations_dimension ON evaluations(dimension, created_at DESC);
+    `,
+  },
 ];
 
 export function openDatabase(path = ":memory:") {

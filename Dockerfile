@@ -13,8 +13,10 @@ RUN apk add --no-cache git
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY packages ./packages
-# bin/ holds agent-space.js (CLI + Claude hook bridge) and, when this build has
-# the MCP module, agent-space-mcp.js (stdio MCP bridge for external clients).
+# bin/ holds agent-space.js (CLI + Claude hook bridge) and agent-space-mcp.js
+# (stdio MCP bridge). The MCP bridge is NOT started by this image: an MCP
+# client spawns it as its own process and it reaches the server over HTTP
+# (AGENT_SPACE_URL), so it never opens the SQLite file.
 COPY bin ./bin
 COPY docs ./docs
 COPY --from=build /app/apps/web/dist ./apps/web/dist

@@ -1319,3 +1319,226 @@ test("orchestration: a contract the run cannot meet opens a review task, and a c
     JSON.stringify(restored.data),
   );
 });
+
+test("lineage, evaluation dimensions, and the collab/extension routes after a fake-CLI managed run", async (t) => {
+  const { services, api, cleanup } = await boot(t, { demo: false });
+  await services.connections.refresh();
+  const root = tempDir(cleanup, "lineage-repo");
+  const workspaceId = (
+    await api("POST", "/api/workspaces", { name: "Lineage", rootPath: root })
+  ).data.id;
+  const task = (
+    await api("POST", `/api/workspaces/${workspaceId}/tasks`, {
+      title: "Trace me",
+      provider: "claude-code",
+      deliverable: "A greeting",
+    })
+  ).data;
+  const run = (
+    await api("POST", `/api/workspaces/${workspaceId}/tasks/${task.id}/run`, {
+      provider: "claude-code",
+      prompt: "hello lineage",
+    })
+  ).data;
+  const done = await services.runWorker.wait(run.id, 20000);
+  assert.equal(done.status, "completed");
+
+  // Lineage: input -> run -> tool -> artifact, reachable through the
+  // registered analytics route as well as the composed service.
+  const lineage = await api("GET", `/api/analytics/lineage?run=${run.id}`);
+  assert.equal(lineage.status, 200, JSON.stringify(lineage.data));
+  const nodes = lineage.data.nodes ?? [];
+  const edges = lineage.data.edges ?? [];
+  assert.ok(
+    nodes.some((node) => node.type === "run"),
+    `no run node: ${JSON.stringify(nodes.slice(0, 5))}`,
+  );
+  assert.ok(edges.length > 0, "lineage edges");
+  assert.ok(services.lineage, "services.lineage is composed");
+
+  // Evaluation: five separate dimensions, and two we refuse to assert.
+  const dimensions = await api("GET", "/api/evaluations/dimensions");
+  assert.equal(dimensions.status, 200, JSON.stringify(dimensions.data));
+  assert.ok(dimensions.data.dimensions.length >= 5);
+  assert.deepEqual(dimensions.data.neverAssertedByUs, [
+    "correctness",
+    "security",
+  ]);
+
+  // An objective grader may not assert correctness: the API says why.
+  const refused = await api("POST", "/api/evaluations", {
+    runId: run.id,
+    dimension: "correctness",
+    verdict: "pass",
+    grader: { kind: "objective", identity: "agent-space" },
+  });
+  assert.equal(refused.status, 400, JSON.stringify(refused.data));
+
+  // A human verdict on the same dimension is stored as a claim with its grader.
+  const recorded = await api("POST", "/api/evaluations", {
+    runId: run.id,
+    dimension: "correctness",
+    verdict: "pass",
+    grader: { kind: "human", identity: "local-user" },
+    rubric: "The greeting is present",
+  });
+  assert.equal(recorded.status, 201, JSON.stringify(recorded.data));
+  const listed = await api("GET", `/api/evaluations?run=${run.id}`);
+  assert.equal(listed.data.evaluations.length, 1);
+  assert.equal(listed.data.evaluations[0].grader.kind, "human");
+
+  // Objective dimensions ARE computed from what was recorded.
+  const objective = await api(
+    "POST",
+    `/api/runs/${run.id}/evaluate/objective`,
+    {},
+  );
+  assert.equal(objective.status, 200, JSON.stringify(objective.data));
+
+  // Collab routes are registered before workspaces.js: a handover brief is
+  // built from stored records only.
+  const brief = await api(
+    "POST",
+    `/api/workspaces/${workspaceId}/handover/preview`,
+    { runId: run.id },
+  );
+  assert.equal(brief.status, 200, JSON.stringify(brief.data));
+  assert.ok(brief.data.markdown.length > 0);
+  const decisions = await api("GET", `/api/runs/${run.id}/decisions`);
+  assert.equal(decisions.status, 200, JSON.stringify(decisions.data));
+
+  // Extension routes are registered and claim only their own template paths;
+  // GET /api/templates still belongs to workflows.js.
+  const templates = await api("GET", "/api/templates");
+  assert.equal(templates.status, 200);
+  assert.ok((templates.data.templates ?? templates.data).length >= 13);
+  const exported = await api("GET", "/api/templates/feature-delivery/export");
+  assert.equal(exported.status, 200, JSON.stringify(exported.data));
+  const extensions = await api("GET", "/api/extensions");
+  assert.equal(extensions.status, 200, JSON.stringify(extensions.data));
+  assert.ok(Array.isArray(extensions.data.extensions ?? extensions.data));
+});
+
+test("git connector reads a temp repository through the API; writes stay refused", async (t) => {
+  const { services, api, cleanup } = await boot(t, { demo: false });
+  const root = tempDir(cleanup, "connector-repo");
+  const { execFileSync } = await import("node:child_process");
+  const git = (args) =>
+    execFileSync("git", args, {
+      cwd: root,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  let hasGit = true;
+  try {
+    git(["init", "-b", "main"]);
+    git(["config", "user.email", "test@example.invalid"]);
+    git(["config", "user.name", "Agent Space Test"]);
+    fs.writeFileSync(path.join(root, "README.md"), "hello\n");
+    git(["add", "README.md"]);
+    git(["commit", "-m", "first"]);
+  } catch {
+    hasGit = false;
+  }
+
+  const workspaceId = (
+    await api("POST", "/api/workspaces", { name: "Repo", rootPath: root })
+  ).data.id;
+
+  const capabilities = await api("GET", "/api/connectors/git/capabilities");
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.data));
+  // Writes are declared empty whether or not git is installed.
+  assert.deepEqual(capabilities.data.writes, []);
+  assert.ok(services.connectorRegistry, "services.connectorRegistry composed");
+  if (!capabilities.data.available || !hasGit) {
+    // Honest degradation: a reason, never a guessed status.
+    assert.ok(capabilities.data.reason, "an unavailable connector says why");
+    return;
+  }
+
+  const status = await api("POST", "/api/connectors/git/read", {
+    op: "status",
+    params: { workspaceId },
+  });
+  assert.equal(status.status, 200, JSON.stringify(status.data));
+  assert.equal(status.data.result.clean, true);
+  assert.equal(status.data.result.branch, "main");
+
+  const log = await api("POST", "/api/connectors/git/read", {
+    op: "log",
+    params: { workspaceId, limit: 5 },
+  });
+  assert.equal(log.status, 200, JSON.stringify(log.data));
+  assert.ok(JSON.stringify(log.data.result).includes("first"));
+
+  // A write op the connector does not declare is refused, not attempted.
+  const write = await api("POST", "/api/connectors/git/write", {
+    op: "push",
+    params: { workspaceId },
+    confirm: true,
+  });
+  assert.ok(write.status >= 400, JSON.stringify(write.data));
+});
+
+test("the MCP stdio bridge answers initialize and a tool call over the HTTP API", async (t) => {
+  const { api, base } = await boot(t, { demo: false });
+  await api("POST", "/api/workspaces", {
+    name: "Bridged",
+    rootPath: path.join(os.tmpdir(), "agent-space-bridged"),
+  });
+  const { spawn } = await import("node:child_process");
+  const script = path.join(here, "..", "bin", "agent-space-mcp.js");
+  const child = spawn(process.execPath, [script, "--url", base], {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  t.after(() => child.kill());
+
+  let stdout = "";
+  const frames = [];
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    const lines = stdout.split("\n");
+    stdout = lines.pop() ?? "";
+    for (const line of lines) if (line.trim()) frames.push(JSON.parse(line));
+  });
+  const frameFor = (id) =>
+    waitFor(() => frames.find((frame) => frame.id === id) ?? null, {
+      timeout: 15000,
+    });
+  const send = (message) => child.stdin.write(JSON.stringify(message) + "\n");
+
+  send({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      clientInfo: { name: "integration-test", version: "1" },
+      capabilities: {},
+    },
+  });
+  const initialized = await frameFor(1);
+  assert.equal(initialized.result.serverInfo.name, "agent-space");
+  assert.ok(initialized.result.capabilities.tools);
+  send({ jsonrpc: "2.0", method: "notifications/initialized" });
+
+  send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  const tools = await frameFor(2);
+  assert.ok(tools.result.tools.length >= 11);
+  assert.ok(tools.result.tools.some((tool) => tool.name === "list_workspaces"));
+
+  send({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: { name: "list_workspaces", arguments: {} },
+  });
+  const called = await frameFor(3);
+  assert.equal(called.result.isError, false, JSON.stringify(called.result));
+  assert.match(JSON.stringify(called.result.content), /Bridged/);
+
+  // stdout carried protocol frames only: every line above parsed as JSON.
+  assert.equal(stdout.trim(), "");
+});

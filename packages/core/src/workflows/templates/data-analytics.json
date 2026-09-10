@@ -3,93 +3,274 @@
   "name": "Data analytics",
   "domain": "Data",
   "priority": "Growth",
-  "description": "Question -> scoped query -> analyze -> chart -> review. Produces query, results, chart, assumptions, and a reproducible report.",
+  "description": "Question -> scoped query -> analyze -> chart -> review. A generated query is never a result: this pack requires a query file AND a result file produced by a command that exited 0.",
+  "requiredResult": "Query, results, chart, assumptions, reproducible report",
   "roles": [
     {
       "key": "analyst",
       "name": "Analyst",
       "workingState": "ANALYZING",
-      "description": "Scopes and runs the analysis."
+      "provider": null,
+      "skills": ["sql", "statistics", "assumption tracking"]
     },
     {
       "key": "visualizer",
       "name": "Visualizer",
       "workingState": "CODING",
-      "description": "Builds the chart."
+      "provider": null,
+      "skills": ["charting", "reproducible scripts"]
     },
     {
       "key": "reviewer",
       "name": "Reviewer",
       "workingState": "REVIEWING",
-      "description": "Checks assumptions and reproducibility."
+      "provider": null,
+      "skills": ["reproducibility review"]
     }
   ],
   "steps": [
     {
       "key": "scope",
-      "title": "Scope query for: {{question}}",
+      "title": "Scope the query for: {{question}}",
       "role": "analyst",
-      "deliverable": "Query text and assumptions",
-      "acceptance": "Query is written; execution status stated separately from generation.",
+      "instructions": "Write the query that answers {{question}} to analysis/query.sql and list your assumptions in analysis/assumptions.md. Do not report any numbers in this step: nothing has been executed yet.",
+      "deliverable": "analysis/query.sql plus analysis/assumptions.md (generated, NOT executed)",
+      "acceptance": [
+        "file-edited:analysis/query.sql",
+        "file-edited:analysis/assumptions"
+      ],
+      "contract": {
+        "inputs": [
+          {
+            "key": "question",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:analysis/query.sql",
+          "file-edited:analysis/assumptions"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "search"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Write a query answering {{question}}. List assumptions. State clearly whether the query has been executed."
+      "branchCondition": null
     },
     {
       "key": "analyze",
-      "title": "Run and analyze: {{question}}",
+      "title": "Execute the query and analyze: {{question}}",
       "role": "analyst",
-      "deliverable": "Executed results and findings",
-      "acceptance": "Results come from an actual execution with row counts.",
+      "instructions": "Execute analysis/query.sql against the configured read-only database or data file and write the output to analysis/results.csv. The command you run must name analysis/query.sql so the execution is recorded. Report the row count and the exit code. If the query cannot be executed here, say so and stop: an unexecuted query is not a result.",
+      "deliverable": "analysis/results.csv produced by a recorded command that exited 0",
+      "acceptance": [
+        "command-exit-zero:analysis/query.sql",
+        "file-edited:analysis/results",
+        "final-message-non-empty"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "command-exit-zero:analysis/query.sql",
+          "file-edited:analysis/results",
+          "final-message-non-empty"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell", "sql.read"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["scope"],
-      "instructions": "Execute the query for {{question}}, record results and row counts, then summarize findings."
+      "branchCondition": null
     },
     {
       "key": "chart",
-      "title": "Chart results for: {{question}}",
+      "title": "Chart the executed results for: {{question}}",
       "role": "visualizer",
-      "deliverable": "Chart file and generating code",
-      "acceptance": "Chart is generated from the executed results.",
+      "instructions": "Write analysis/chart.(js|py) that reads analysis/results.csv and produces analysis/chart.svg or .png, then run it. Charts are built from the executed results file only, never from numbers in a message.",
+      "deliverable": "analysis/chart.* plus the script that produced it",
+      "acceptance": [
+        "file-edited:analysis/chart",
+        "command-exit-zero:/chart|plot|render|matplotlib/"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:analysis/chart",
+          "command-exit-zero:/chart|plot|render|matplotlib/"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["analyze"],
-      "instructions": "Build a chart from the executed results for {{question}}. Save the chart and the code that produced it."
+      "branchCondition": null
     },
     {
       "key": "review",
-      "title": "Review analysis: {{question}}",
+      "title": "Review the analysis for: {{question}}",
       "role": "reviewer",
-      "deliverable": "Review notes",
-      "acceptance": "Assumptions checked; report reproducible from query + code.",
+      "instructions": "Check that analysis/query.sql was executed (a recorded command with exit code 0), that analysis/results.csv exists, that the chart was generated from it, and that assumptions are listed. Write analysis/report.md and finish with JSON matching the output schema. Set executed to false when no execution was recorded.",
+      "deliverable": "analysis/report.md and a JSON summary",
+      "acceptance": ["file-edited:analysis/report", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "queryFile": {
+              "type": "string"
+            },
+            "executed": {
+              "type": "boolean",
+              "description": "True only when a recorded command running the query exited 0"
+            },
+            "executionCommand": {
+              "type": "string"
+            },
+            "executionExitCode": {
+              "type": "integer"
+            },
+            "resultFile": {
+              "type": "string"
+            },
+            "rowCount": {
+              "type": "integer"
+            },
+            "chartFile": {
+              "type": "string"
+            },
+            "assumptions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reportFile": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "question",
+            "queryFile",
+            "executed",
+            "executionCommand",
+            "executionExitCode",
+            "resultFile",
+            "chartFile",
+            "assumptions",
+            "reportFile"
+          ]
+        },
+        "completionCriteria": ["file-edited:analysis/report", "output-schema"],
+        "timeoutMs": 600000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["chart"],
-      "instructions": "Review the analysis for {{question}}: assumptions, query correctness, reproducibility."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["query", "executed", "results", "chart", "assumptions"],
     "properties": {
-      "query": {
+      "question": {
+        "type": "string"
+      },
+      "queryFile": {
         "type": "string"
       },
       "executed": {
         "type": "boolean"
       },
-      "results": {
+      "executionCommand": {
         "type": "string"
       },
-      "chart": {
+      "executionExitCode": {
+        "type": "integer"
+      },
+      "resultFile": {
+        "type": "string"
+      },
+      "rowCount": {
+        "type": "integer"
+      },
+      "chartFile": {
         "type": "string"
       },
       "assumptions": {
-        "type": "array"
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "reportFile": {
+        "type": "string"
       }
-    }
+    },
+    "required": [
+      "question",
+      "queryFile",
+      "executed",
+      "executionExitCode",
+      "resultFile",
+      "chartFile",
+      "assumptions"
+    ]
   },
   "rubric": [
-    "Generated query distinguished from executed result",
-    "Assumptions listed",
-    "Chart traceable to results"
+    {
+      "criterion": "A generated query is not a result",
+      "howMeasured": "The analyze step requires command-exit-zero:analysis/query.sql AND a file edit under analysis/results",
+      "failsWhen": "analysis/query.sql exists but no recorded command running it reported exit code 0 - the pack has failed, whatever the report says"
+    },
+    {
+      "criterion": "The result file came from that execution",
+      "howMeasured": "analysis/results.csv was edited in the same step whose command matched the query file",
+      "failsWhen": "results.csv was written with no recorded execution command"
+    },
+    {
+      "criterion": "The chart was rendered from the result file",
+      "howMeasured": "A recorded command matching chart/plot/render exited 0 and a file edit under analysis/chart is recorded",
+      "failsWhen": "The chart file appears with no generating command, or is drawn from numbers quoted in a message"
+    },
+    {
+      "criterion": "Assumptions are written down",
+      "howMeasured": "analysis/assumptions.md exists and the assumptions array is non-empty",
+      "failsWhen": "The report states a number with no assumption list"
+    },
+    {
+      "criterion": "Reproducible end to end",
+      "howMeasured": "reportFile, queryFile, resultFile, and chartFile are all recorded paths and every one names its command",
+      "failsWhen": "Any of the four is missing, so the analysis cannot be re-run from the record"
+    }
   ],
-  "requiredTools": ["sql.read", "file.edit", "shell"],
+  "requiredTools": ["file.read", "file.edit", "search", "shell", "sql.read"],
+  "requiredConnectors": ["local-filesystem", "sql-database"],
   "sampleInputs": {
     "question": "Which providers have the highest retry rate?"
-  }
+  },
+  "notes": "requiredConnectors lists sql-database, which is NOT implemented in this build: there is no SQL connector, so queries run through the shell tool against a read-only client or a local data file, and the workspace policy decides whether that command is allowed. executed:false is a valid, honest outcome - it is never a pass."
 }

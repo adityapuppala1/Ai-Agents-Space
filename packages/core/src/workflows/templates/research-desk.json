@@ -3,78 +3,305 @@
   "name": "Research desk",
   "domain": "Research",
   "priority": "Growth",
-  "description": "Question -> sources -> evidence comparison -> cited brief. Produces citations, uncertainties, and an inspectable source set.",
+  "description": "Question -> sources -> evidence comparison -> cited brief. Every source carries a retrieved flag and a separate verification flag; a retrieved source is not a verified claim.",
+  "requiredResult": "Citations, uncertainties, and inspectable source set",
   "roles": [
     {
       "key": "researcher",
       "name": "Researcher",
       "workingState": "RESEARCHING",
-      "description": "Finds and records sources."
+      "provider": null,
+      "skills": ["source finding", "citation hygiene"]
     },
     {
       "key": "analyst",
       "name": "Analyst",
       "workingState": "ANALYZING",
-      "description": "Compares evidence."
+      "provider": null,
+      "skills": ["evidence comparison", "uncertainty"]
     },
     {
       "key": "writer",
       "name": "Writer",
       "workingState": "CODING",
-      "description": "Writes the brief."
+      "provider": null,
+      "skills": ["technical writing"]
     }
   ],
   "steps": [
     {
       "key": "sources",
-      "title": "Gather sources: {{question}}",
+      "title": "Collect sources for: {{question}}",
       "role": "researcher",
-      "deliverable": "Source list with URLs/paths and retrieval dates",
-      "acceptance": "Each source is retrievable; retrieved vs verified is stated.",
+      "instructions": "Find sources for {{question}} and write research/sources.json matching the output schema. For every source set retrieval to retrieved only when you actually fetched it in this run, and set verification to unverified unless you checked the claim against the primary document or a second independent source, naming that check in verifiedBy. Never mark a source verified because it sounds right.",
+      "deliverable": "research/sources.json with a retrieval flag and a verification flag per source",
+      "acceptance": ["file-edited:research/sources", "output-schema"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "question",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "retrievedAt": {
+                    "type": "string"
+                  },
+                  "retrieval": {
+                    "type": "string",
+                    "enum": ["retrieved", "not-retrieved"],
+                    "description": "retrieved means the document was fetched in this run"
+                  },
+                  "verification": {
+                    "type": "string",
+                    "enum": [
+                      "unverified",
+                      "verified-primary",
+                      "verified-second-source",
+                      "contradicted"
+                    ],
+                    "description": "verification is about the claim, not about the fetch"
+                  },
+                  "verifiedBy": {
+                    "type": "string"
+                  },
+                  "quote": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "title", "url", "retrieval", "verification"]
+              }
+            }
+          },
+          "required": ["question", "sources"]
+        },
+        "completionCriteria": ["file-edited:research/sources", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": [
+          "web.fetch",
+          "web.search",
+          "file.read",
+          "file.edit",
+          "search"
+        ],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Collect sources for {{question}}. Record URL or path, retrieval time, and a one-line summary. Mark each as retrieved only."
+      "branchCondition": null
     },
     {
       "key": "compare",
-      "title": "Compare evidence: {{question}}",
+      "title": "Compare the evidence for: {{question}}",
       "role": "analyst",
-      "deliverable": "Evidence table (claim, source, agreement, uncertainty)",
-      "acceptance": "Each claim maps to at least one source; disagreements noted.",
+      "instructions": "Write research/evidence.json matching the output schema: one entry per claim, the source ids that support it, and a status that never exceeds the verification of its sources. A claim supported only by unverified sources is retrieved-only. List what remains uncertain.",
+      "deliverable": "research/evidence.json with per-claim status and uncertainties",
+      "acceptance": ["file-edited:research/evidence", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "claims": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "claim": {
+                    "type": "string"
+                  },
+                  "supportedBy": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "verified",
+                      "retrieved-only",
+                      "unverified",
+                      "contradicted"
+                    ]
+                  }
+                },
+                "required": ["claim", "supportedBy", "status"]
+              }
+            },
+            "uncertainties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": ["claims", "uncertainties"]
+        },
+        "completionCriteria": [
+          "file-edited:research/evidence",
+          "output-schema"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "web.fetch"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["sources"],
-      "instructions": "Compare the sources for {{question}}. Build a claim table and flag uncertainties."
+      "branchCondition": null
     },
     {
       "key": "brief",
-      "title": "Cited brief: {{question}}",
+      "title": "Write the cited brief for: {{question}}",
       "role": "writer",
-      "deliverable": "Brief with inline citations",
-      "acceptance": "Every claim cites the evidence table; uncertainties preserved.",
+      "instructions": "Write research/brief.md. Every statement cites a source id from research/sources.json, and every claim carries its status from research/evidence.json. Open with the uncertainties. Finish with JSON matching the output schema.",
+      "deliverable": "research/brief.md with citations and per-claim status",
+      "acceptance": ["file-edited:research/brief", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "briefFile": {
+              "type": "string"
+            },
+            "sourceFile": {
+              "type": "string"
+            },
+            "evidenceFile": {
+              "type": "string"
+            },
+            "verifiedClaims": {
+              "type": "integer"
+            },
+            "retrievedOnlyClaims": {
+              "type": "integer"
+            },
+            "uncertainties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "question",
+            "briefFile",
+            "sourceFile",
+            "evidenceFile",
+            "uncertainties"
+          ]
+        },
+        "completionCriteria": ["file-edited:research/brief", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["compare"],
-      "instructions": "Write a brief answering {{question}} with inline citations and an uncertainty section."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["brief", "sources", "uncertainties"],
     "properties": {
-      "brief": {
+      "question": {
         "type": "string"
       },
-      "sources": {
-        "type": "array"
+      "briefFile": {
+        "type": "string"
+      },
+      "sourceFile": {
+        "type": "string"
+      },
+      "evidenceFile": {
+        "type": "string"
+      },
+      "verifiedClaims": {
+        "type": "integer"
+      },
+      "retrievedOnlyClaims": {
+        "type": "integer"
       },
       "uncertainties": {
-        "type": "array"
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       }
-    }
+    },
+    "required": [
+      "question",
+      "briefFile",
+      "sourceFile",
+      "evidenceFile",
+      "uncertainties"
+    ]
   },
   "rubric": [
-    "Sources inspectable",
-    "Retrieved vs verified distinguished",
-    "Uncertainties stated"
+    {
+      "criterion": "Every source records retrieval and verification separately",
+      "howMeasured": "research/sources.json validates against the sources step schema, where retrieval and verification are separate required enums",
+      "failsWhen": "A source is missing either flag, or verification is used to mean the document was fetched"
+    },
+    {
+      "criterion": "Retrieved is not verified",
+      "howMeasured": "A claim whose supporting sources are all unverified has status retrieved-only",
+      "failsWhen": "A claim is marked verified while every supporting source is unverified - the pack has failed"
+    },
+    {
+      "criterion": "The source set is inspectable",
+      "howMeasured": "research/sources.json is a recorded file edit and lists url and quote per source",
+      "failsWhen": "The brief cites sources that are not in the source file"
+    },
+    {
+      "criterion": "Uncertainties are stated",
+      "howMeasured": "The uncertainties array is present in research/evidence.json and repeated in the brief",
+      "failsWhen": "The brief presents a contested question as settled"
+    }
   ],
-  "requiredTools": ["web.fetch", "file.read"],
+  "requiredTools": [
+    "web.fetch",
+    "web.search",
+    "file.read",
+    "file.edit",
+    "search"
+  ],
+  "requiredConnectors": ["local-filesystem", "web"],
   "sampleInputs": {
     "question": "How do Codex approval requests differ from Claude hooks?"
-  }
+  },
+  "notes": "Web access depends on the provider's own web tool and on the workspace policy: when network is denied, sources must be local documents and retrieval is recorded as not-retrieved for anything that could not be fetched."
 }

@@ -360,3 +360,136 @@ test("routes: list, get, decide, inbox through the ctx contract", async () => {
     (e) => e.status === 404,
   );
 });
+
+test("urgency ranks blocking, risky, old, high-priority approvals first", () => {
+  const { services, workspace, run, advance } = setup();
+  // A low-urgency question on a run that is not blocked.
+  const other = workspace.createAgent({
+    name: "Idle",
+    role: "Coding assistant",
+  });
+  const idleRun = services.recorder.ensureRun({
+    workspaceId: workspace.id,
+    agentId: other.id,
+    mode: "observed",
+    provider: "copilot",
+    providerSessionId: "s-idle",
+    createTask: { title: "Quiet work", priority: "low" },
+  });
+  services.recorder.setStatus(idleRun.id, "completed");
+  const question = services.approvals.request({
+    runId: idleRun.id,
+    kind: "question",
+    payload: { question: "Which branch?" },
+  });
+  assert.equal(services.approvals.urgency(question).level, "normal");
+
+  // A risky command blocking a live run whose task is critical.
+  services.db
+    .prepare("UPDATE tasks SET priority = 'critical' WHERE id = ?")
+    .run(run.taskId);
+  const risky = services.approvals.request({
+    runId: run.id,
+    kind: "command",
+    payload: { command: "git push origin main" },
+    rule: "command.risky.git-push",
+    reason: "push needs approval",
+  });
+  const urgency = services.approvals.urgency(risky);
+  assert.equal(urgency.level, "critical");
+  assert.equal(urgency.blocking, true);
+  assert.equal(urgency.risk, "high");
+  assert.equal(urgency.taskPriority, "critical");
+  assert.match(urgency.reason, /blocks a waiting_approval run/);
+
+  const inbox = services.approvals.inbox();
+  assert.equal(inbox.approvals[0].id, risky.id, "most urgent first");
+  assert.equal(inbox.approvals[0].urgency.level, "critical");
+  assert.equal(inbox.approvals[0].proposedAction.type, "command");
+  assert.equal(
+    inbox.approvals[0].proposedAction.command,
+    "git push origin main",
+  );
+  assert.ok(
+    inbox.approvals[0].affectedResources.some(
+      (r) => r.type === "run" && r.value === run.id,
+    ),
+  );
+  assert.equal(inbox.urgencyCounts.critical, 1);
+  assert.equal(inbox.approvals.at(-1).id, question.id);
+
+  // Age alone lifts a plain approval.
+  advance(45 * 60 * 1000);
+  assert.notEqual(services.approvals.urgency(question).level, "critical");
+  assert.ok(services.approvals.urgency(question).ageMs >= 45 * 60 * 1000);
+});
+
+test("request-change records the decision, keeps the run waiting, and reaches the inbox", () => {
+  const { services, run } = setup();
+  const approval = services.approvals.request({
+    runId: run.id,
+    kind: "file",
+    payload: { path: "C:\work\app.js", diff: "--- a\n+++ b\n+one\n-two\n" },
+  });
+  assert.equal(services.recorder.get(run.id).status, "waiting_approval");
+  const outcome = services.approvals.decide(approval.id, {
+    decision: "request-change",
+    actor: "alice",
+    note: "scope it to one file",
+  });
+  assert.equal(outcome.status, "pending", "the approval is still open");
+  assert.equal(outcome.stillWaiting, true);
+  assert.equal(outcome.changeRequests.length, 1);
+  assert.equal(outcome.changeRequests[0].actor, "alice");
+  assert.equal(
+    services.recorder.get(run.id).status,
+    "waiting_approval",
+    "the run is not resumed",
+  );
+  assert.ok(
+    !services.recorder
+      .events(run.id)
+      .some(
+        (e) =>
+          e.kind === "approval.decision" &&
+          e.data?.decision === "request-change",
+      ),
+    "a change request is not an approval.decision",
+  );
+  const row = services.db
+    .prepare(
+      "SELECT * FROM decision_history WHERE approval_id = ? ORDER BY created_at",
+    )
+    .all(approval.id);
+  assert.equal(row.length, 1);
+  assert.equal(row[0].decision, "request-change");
+  assert.equal(row[0].actor, "alice");
+
+  const inbox = services.approvals.inbox();
+  assert.equal(inbox.urgencyCounts.changeRequests, 1);
+  assert.deepEqual(Object.keys(inbox.counts).sort(), [
+    "approvals",
+    "questions",
+    "reviews",
+    "runs",
+    "total",
+  ]);
+  assert.equal(inbox.changeRequests[0].note, "scope it to one file");
+  assert.equal(inbox.approvals[0].proposedAction.type, "diff");
+  assert.equal(inbox.approvals[0].proposedAction.diffSummary.added, 1);
+  assert.equal(inbox.approvals[0].proposedAction.diffSummary.removed, 1);
+
+  // Approve still works afterwards and resumes the run.
+  const approved = services.approvals.decide(approval.id, {
+    decision: "approve",
+    actor: "alice",
+  });
+  assert.equal(approved.status, "approved");
+  assert.equal(services.recorder.get(run.id).status, "running");
+  assert.equal(services.approvals.inbox().urgencyCounts.changeRequests, 0);
+  assert.throws(
+    () =>
+      services.approvals.decide(approval.id, { decision: "request-change" }),
+    (e) => e.status === 409,
+  );
+});

@@ -1,33 +1,38 @@
 {
   "id": "release-room",
   "name": "Release room",
-  "domain": "Software engineering",
+  "domain": "Delivery",
   "priority": "Growth",
-  "description": "Changes -> build -> tests -> release notes -> deployment approval. Produces versioned release artifacts and an approval trail.",
+  "description": "Changes -> build -> tests -> release notes -> deployment approval. Produces versioned release artifacts and an approval trail. Build and test status come from locally executed commands, never from an external CI system.",
+  "requiredResult": "Versioned release artifacts and approval trail",
   "roles": [
     {
       "key": "release-manager",
       "name": "Release manager",
       "workingState": "ANALYZING",
-      "description": "Collects changes and drafts notes."
+      "provider": null,
+      "skills": ["change tracking", "versioning"]
     },
     {
       "key": "builder",
       "name": "Build engineer",
       "workingState": "DEBUGGING",
-      "description": "Runs the build."
+      "provider": null,
+      "skills": ["build systems"]
     },
     {
       "key": "qa",
       "name": "QA engineer",
       "workingState": "TESTING",
-      "description": "Runs the test suite."
+      "provider": null,
+      "skills": ["release testing"]
     },
     {
       "key": "approver",
       "name": "Approver",
       "workingState": "REVIEWING",
-      "description": "Approves deployment."
+      "provider": null,
+      "skills": ["risk approval"]
     }
   ],
   "steps": [
@@ -35,83 +40,243 @@
       "key": "collect",
       "title": "Collect changes for {{version}}",
       "role": "release-manager",
-      "deliverable": "Change list from version control",
-      "acceptance": "Every item references a commit or PR.",
+      "instructions": "Run git log since the previous tag and write the change list to release/{{version}}/changes.md. Record the exact git command.",
+      "deliverable": "release/<version>/changes.md",
+      "acceptance": ["file-edited:release", "command-exit-zero:git log"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "version",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": [
+          "file-edited:release",
+          "command-exit-zero:git log"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["git.log", "shell", "file.edit", "file.read"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "List the changes since the last release for {{version}} using git log. Cite commits."
+      "branchCondition": null
     },
     {
       "key": "build",
       "title": "Build {{version}}",
       "role": "builder",
-      "deliverable": "Build output and artifact paths",
-      "acceptance": "Build command executed with captured output.",
+      "instructions": "Run the project build command. Record the command and its exit code in release/{{version}}/build.md. A build is green only when the recorded exit code is 0.",
+      "deliverable": "Executed build command with exit code 0",
+      "acceptance": [
+        "command-exit-zero:/build|compile|package/",
+        "file-edited:release"
+      ],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": [
+          "command-exit-zero:/build|compile|package/",
+          "file-edited:release"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["shell.build", "file.edit", "file.read"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["collect"],
-      "instructions": "Run the build for {{version}} and record output and artifact locations."
+      "branchCondition": null
     },
     {
       "key": "test",
       "title": "Test {{version}}",
       "role": "qa",
-      "deliverable": "Test results",
-      "acceptance": "Test command executed; failures listed.",
+      "instructions": "Run the project test command against the built artifact. Report the command and the exit code.",
+      "deliverable": "Recorded test output",
+      "acceptance": ["test-passed", "artifact:test-output"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["test-passed", "artifact:test-output"],
+        "timeoutMs": 900000,
+        "allowedTools": ["shell.test", "file.read"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["build"],
-      "instructions": "Run the full test suite for {{version}} and record results."
+      "branchCondition": null
     },
     {
       "key": "notes",
-      "title": "Release notes for {{version}}",
+      "title": "Write release notes for {{version}}",
       "role": "release-manager",
-      "deliverable": "Release notes",
-      "acceptance": "Notes match the change list; no invented items.",
+      "instructions": "Write release/{{version}}/RELEASE_NOTES.md from the change list and the recorded build and test results. State the build and test commands with their exit codes. Finish with JSON matching the output schema.",
+      "deliverable": "release/<version>/RELEASE_NOTES.md and a JSON summary",
+      "acceptance": ["file-edited:release", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "notesFile": {
+              "type": "string"
+            },
+            "changes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "buildCommand": {
+              "type": "string"
+            },
+            "buildExitCode": {
+              "type": "integer"
+            },
+            "testCommand": {
+              "type": "string"
+            },
+            "testExitCode": {
+              "type": "integer"
+            },
+            "statusSource": {
+              "type": "string",
+              "enum": ["local-command"],
+              "description": "Agent Space has no CI/CD connector in this build"
+            }
+          },
+          "required": [
+            "version",
+            "notesFile",
+            "buildCommand",
+            "buildExitCode",
+            "testCommand",
+            "testExitCode",
+            "statusSource"
+          ]
+        },
+        "completionCriteria": ["file-edited:release", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["collect", "test"],
-      "instructions": "Write release notes for {{version}} from the change list and test results."
+      "branchCondition": null
     },
     {
       "key": "approve",
-      "title": "Deployment approval for {{version}}",
+      "title": "Approve deployment of {{version}}",
       "role": "approver",
-      "deliverable": "Approval decision",
-      "acceptance": "Explicit approve/deny recorded by a person; no automatic deployment.",
+      "instructions": "Review the release notes, the recorded build exit code, and the recorded test exit code, then record an explicit deployment decision. Agent Space does not deploy: a deploy command is a policy-gated approval request.",
+      "deliverable": "Recorded approval decision (final message artifact)",
+      "acceptance": ["artifact:message", "final-message-non-empty"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["artifact:message", "final-message-non-empty"],
+        "timeoutMs": 600000,
+        "allowedTools": ["file.read", "approval"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["notes"],
-      "instructions": "Review build, tests, and notes for {{version}}. Record the decision. Deployment itself requires a separate approved action.",
+      "branchCondition": null,
       "requiresApproval": true
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": [
-      "changes",
-      "buildOutput",
-      "testResults",
-      "releaseNotes",
-      "approval"
-    ],
     "properties": {
-      "changes": {
-        "type": "array"
-      },
-      "buildOutput": {
+      "version": {
         "type": "string"
       },
-      "testResults": {
+      "notesFile": {
         "type": "string"
       },
-      "releaseNotes": {
+      "buildCommand": {
         "type": "string"
       },
-      "approval": {
+      "buildExitCode": {
+        "type": "integer"
+      },
+      "testCommand": {
         "type": "string"
+      },
+      "testExitCode": {
+        "type": "integer"
+      },
+      "statusSource": {
+        "type": "string",
+        "enum": ["local-command"]
+      },
+      "decision": {
+        "type": "string",
+        "enum": ["approve", "hold"]
       }
-    }
+    },
+    "required": [
+      "version",
+      "notesFile",
+      "buildExitCode",
+      "testExitCode",
+      "statusSource"
+    ]
   },
   "rubric": [
-    "Changes trace to commits",
-    "Build and tests executed",
-    "Human approval recorded before deployment"
+    {
+      "criterion": "Build status came from an executed command",
+      "howMeasured": "A recorded command matching build/compile/package reported exit code 0",
+      "failsWhen": "The notes call the build green with no recorded exit code"
+    },
+    {
+      "criterion": "Test status came from an executed command",
+      "howMeasured": "A test-output artifact exists and a test command reported exit code 0",
+      "failsWhen": "The notes claim tests pass with no recorded test command"
+    },
+    {
+      "criterion": "No external CI status is claimed",
+      "howMeasured": "statusSource is local-command; this build has no CI/CD connector",
+      "failsWhen": "A release note quotes a pipeline or deployment status that Agent Space never observed"
+    },
+    {
+      "criterion": "The approval is recorded",
+      "howMeasured": "The approve step produced a final message artifact and, when a deploy command was attempted, an approval row",
+      "failsWhen": "The release is marked approved with no recorded decision"
+    }
   ],
-  "requiredTools": ["git.log", "shell.build", "shell.test"],
+  "requiredTools": [
+    "file.read",
+    "file.edit",
+    "shell",
+    "shell.build",
+    "shell.test",
+    "git.log",
+    "approval"
+  ],
+  "requiredConnectors": ["local-filesystem", "git", "ci-cd"],
   "sampleInputs": {
     "version": "v0.2.0"
-  }
+  },
+  "notes": "requiredConnectors lists ci-cd, which is NOT implemented in this build (see docs/EXTENSIONS.md). Until a CI connector exists, every build and deployment status in this pack must come from a command executed here with a recorded exit code."
 }

@@ -3,19 +3,22 @@
   "name": "Design review",
   "domain": "Design",
   "priority": "Growth",
-  "description": "Screens -> accessibility/layout review -> proposed edits. Produces annotated findings and reviewable changes.",
+  "description": "Screens -> accessibility and layout review -> proposed edits. Produces annotated findings tied to a component file and a reviewable diff.",
+  "requiredResult": "Annotated findings and reviewable changes",
   "roles": [
     {
       "key": "reviewer",
       "name": "Design reviewer",
       "workingState": "REVIEWING",
-      "description": "Reviews screens."
+      "provider": null,
+      "skills": ["accessibility", "layout", "design systems"]
     },
     {
       "key": "developer",
-      "name": "Frontend developer",
+      "name": "Developer",
       "workingState": "CODING",
-      "description": "Proposes edits."
+      "provider": null,
+      "skills": ["ui implementation"]
     }
   ],
   "steps": [
@@ -23,45 +26,271 @@
       "key": "accessibility",
       "title": "Accessibility review of {{screen}}",
       "role": "reviewer",
-      "deliverable": "Findings with WCAG references",
-      "acceptance": "Each finding cites the element and a criterion.",
+      "instructions": "Review {{screen}} against the accessibility checks that can be made from the source: name/role/value on interactive elements, focus order, keyboard reachability, contrast tokens, reduced-motion handling, and text alternatives. Write design/findings-accessibility.json matching the output schema, one entry per finding with the file and the check it failed.",
+      "deliverable": "design/findings-accessibility.json",
+      "acceptance": ["file-edited:design/findings", "output-schema"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "screen",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "screen": {
+              "type": "string"
+            },
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": ["blocker", "major", "minor"]
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "proposedFix": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "file", "check", "severity", "detail"]
+              }
+            }
+          },
+          "required": ["screen", "findings"]
+        },
+        "completionCriteria": ["file-edited:design/findings", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Review {{screen}} for accessibility: contrast, focus order, labels, reduced motion. Cite elements."
+      "branchCondition": null
     },
     {
       "key": "layout",
       "title": "Layout review of {{screen}}",
       "role": "reviewer",
-      "deliverable": "Layout findings",
-      "acceptance": "Findings reference breakpoints and components.",
+      "instructions": "Review {{screen}} for layout: responsive breakpoints, overflow, spacing scale, and truncation. Write design/findings-layout.json in the same shape, with the file behind every finding.",
+      "deliverable": "design/findings-layout.json",
+      "acceptance": ["file-edited:design/findings", "output-schema"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "screen",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "screen": {
+              "type": "string"
+            },
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "check": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": ["blocker", "major", "minor"]
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "proposedFix": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "file", "check", "severity", "detail"]
+              }
+            }
+          },
+          "required": ["screen", "findings"]
+        },
+        "completionCriteria": ["file-edited:design/findings", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Review {{screen}} layout across breakpoints. Cite components."
+      "branchCondition": null
     },
     {
       "key": "edits",
-      "title": "Proposed edits for {{screen}}",
+      "title": "Apply the agreed edits for {{screen}}",
       "role": "developer",
-      "deliverable": "Patch addressing findings",
-      "acceptance": "Each change maps to a finding; nothing else changed.",
+      "instructions": "Apply the fixes for the findings marked blocker and major. Leave the finding id in the commit message or the change note so each edit maps back to a finding. Finish with JSON matching the output schema.",
+      "deliverable": "Reviewable diff mapped to finding ids",
+      "acceptance": ["artifact:diff", "file-edited", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "screen": {
+              "type": "string"
+            },
+            "addressed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "findingId": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  }
+                },
+                "required": ["findingId", "file"]
+              }
+            },
+            "deferred": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "findingId": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": ["findingId", "reason"]
+              }
+            }
+          },
+          "required": ["screen", "addressed", "deferred"]
+        },
+        "completionCriteria": ["artifact:diff", "file-edited", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "git.diff", "shell.build"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["accessibility", "layout"],
-      "instructions": "Implement reviewable changes for the findings on {{screen}}. Map each change to a finding."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["findings", "patch"],
     "properties": {
-      "findings": {
-        "type": "array"
+      "screen": {
+        "type": "string"
+      },
+      "findingFiles": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "addressed": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "findingId": {
+              "type": "string"
+            },
+            "file": {
+              "type": "string"
+            }
+          },
+          "required": ["findingId", "file"]
+        }
+      },
+      "deferred": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "findingId": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": ["findingId", "reason"]
+        }
       },
       "patch": {
         "type": "string"
       }
-    }
+    },
+    "required": ["screen", "findingFiles", "addressed", "deferred"]
   },
-  "rubric": ["Findings cite elements", "Edits map to findings"],
-  "requiredTools": ["file.read", "file.edit"],
+  "rubric": [
+    {
+      "criterion": "Every finding names a file and a check",
+      "howMeasured": "The findings files validate against the step schema, where file, check, and severity are required",
+      "failsWhen": "A finding is an opinion with no file or named check behind it"
+    },
+    {
+      "criterion": "Edits map back to findings",
+      "howMeasured": "Each addressed entry carries a findingId that exists in the findings files",
+      "failsWhen": "The diff changes files that no finding asked for, with no note"
+    },
+    {
+      "criterion": "Deferred findings are recorded, not dropped",
+      "howMeasured": "deferred lists a reason per finding id",
+      "failsWhen": "A blocker finding is absent from both addressed and deferred"
+    },
+    {
+      "criterion": "The change is reviewable",
+      "howMeasured": "The edits step captured a diff artifact",
+      "failsWhen": "The edits step reports changes with no diff artifact"
+    }
+  ],
+  "requiredTools": [
+    "file.read",
+    "file.edit",
+    "search",
+    "git.diff",
+    "shell.build"
+  ],
+  "requiredConnectors": ["local-filesystem", "git", "design-files"],
   "sampleInputs": {
     "screen": "Decision inbox"
-  }
+  },
+  "notes": "requiredConnectors lists design-files, which is NOT implemented in this build: review is made against the source files in the workspace, not against a design tool. Nothing here renders or screenshots a screen."
 }

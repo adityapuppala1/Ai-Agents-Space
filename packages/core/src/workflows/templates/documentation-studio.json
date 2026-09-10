@@ -3,25 +3,29 @@
   "name": "Documentation studio",
   "domain": "Documentation",
   "priority": "Growth",
-  "description": "Code/doc inputs -> draft -> fact check -> review. Produces a versioned document with source references.",
+  "description": "Code and doc inputs -> draft -> fact check -> review. Produces a versioned document whose statements point at a source file or a recorded command.",
+  "requiredResult": "Versioned document with source references",
   "roles": [
     {
       "key": "writer",
       "name": "Writer",
       "workingState": "CODING",
-      "description": "Drafts the document."
+      "provider": null,
+      "skills": ["technical writing", "structure"]
     },
     {
       "key": "checker",
       "name": "Fact checker",
       "workingState": "RESEARCHING",
-      "description": "Verifies claims against code."
+      "provider": null,
+      "skills": ["verification", "source tracing"]
     },
     {
       "key": "reviewer",
       "name": "Reviewer",
       "workingState": "REVIEWING",
-      "description": "Approves the document."
+      "provider": null,
+      "skills": ["editorial review"]
     }
   ],
   "steps": [
@@ -29,48 +33,188 @@
       "key": "draft",
       "title": "Draft {{document}}",
       "role": "writer",
-      "deliverable": "Draft document",
-      "acceptance": "Draft covers the requested scope with source references.",
+      "instructions": "Draft {{document}} into docs/. Every statement about behaviour names the source file or the command that proves it. Mark anything you could not verify with TODO(verify).",
+      "deliverable": "Draft document under docs/",
+      "acceptance": ["file-edited:docs", "final-message-non-empty"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "document",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited:docs", "final-message-non-empty"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "search"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Draft {{document}} from the provided code and documents. Reference source files inline."
+      "branchCondition": null
     },
     {
       "key": "check",
       "title": "Fact check {{document}}",
       "role": "checker",
-      "deliverable": "Fact-check table",
-      "acceptance": "Every claim verified against a file or command output; mismatches listed.",
+      "instructions": "Open every source referenced by the draft, run the commands it documents where that is permitted, and write docs/factcheck.json matching the output schema. A statement whose source could not be opened is reported as unverified, never removed silently.",
+      "deliverable": "docs/factcheck.json with one entry per statement",
+      "acceptance": ["file-edited:docs", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "document": {
+              "type": "string"
+            },
+            "statements": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "statement": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["verified", "unverified", "wrong"]
+                  },
+                  "evidence": {
+                    "type": "string"
+                  }
+                },
+                "required": ["statement", "source", "status"]
+              }
+            }
+          },
+          "required": ["document", "statements"]
+        },
+        "completionCriteria": ["file-edited:docs", "output-schema"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "shell", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["draft"],
-      "instructions": "Verify every claim in the draft of {{document}} against the code. List mismatches."
+      "branchCondition": null
     },
     {
       "key": "review",
       "title": "Review {{document}}",
       "role": "reviewer",
-      "deliverable": "Reviewed, versioned document",
-      "acceptance": "Mismatches resolved; version recorded.",
+      "instructions": "Apply the fact-check results, fix or flag every wrong or unverified statement, and record the document version. Finish with JSON matching the output schema.",
+      "deliverable": "Reviewed document and a recorded diff",
+      "acceptance": ["artifact:diff", "file-edited:docs", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "document": {
+              "type": "string"
+            },
+            "documentFile": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "sourceReferences": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "unverifiedStatements": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "document",
+            "documentFile",
+            "version",
+            "sourceReferences"
+          ]
+        },
+        "completionCriteria": [
+          "artifact:diff",
+          "file-edited:docs",
+          "output-schema"
+        ],
+        "timeoutMs": 600000,
+        "allowedTools": ["file.read", "file.edit", "git.diff"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["check"],
-      "instructions": "Apply fact-check corrections to {{document}} and record the version."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["document", "version", "references"],
     "properties": {
       "document": {
+        "type": "string"
+      },
+      "documentFile": {
         "type": "string"
       },
       "version": {
         "type": "string"
       },
-      "references": {
-        "type": "array"
+      "sourceReferences": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "unverifiedStatements": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       }
-    }
+    },
+    "required": ["document", "documentFile", "version", "sourceReferences"]
   },
-  "rubric": ["Claims verified", "References present", "Version recorded"],
-  "requiredTools": ["file.read", "file.edit"],
+  "rubric": [
+    {
+      "criterion": "Every statement has a source",
+      "howMeasured": "docs/factcheck.json lists a source per statement and sourceReferences is non-empty",
+      "failsWhen": "A behavioural claim appears with no file or command behind it"
+    },
+    {
+      "criterion": "Unverified statements survive as unverified",
+      "howMeasured": "unverifiedStatements lists what the fact check could not confirm",
+      "failsWhen": "An unverified statement is published as fact, or deleted without a note"
+    },
+    {
+      "criterion": "The document is versioned",
+      "howMeasured": "version is recorded and the review step produced a diff artifact",
+      "failsWhen": "The document changed with no recorded diff or version"
+    }
+  ],
+  "requiredTools": ["file.read", "file.edit", "search", "shell", "git.diff"],
+  "requiredConnectors": ["local-filesystem", "git"],
   "sampleInputs": {
     "document": "Hook installation guide"
-  }
+  },
+  "notes": "There is no document-store connector in this build; inputs and outputs are files inside the workspace scope."
 }

@@ -11,7 +11,33 @@ export const APPROVAL_KINDS = [
   "question",
   "permission",
 ];
-const DECISIONS = ["approve", "deny"];
+const DECISIONS = ["approve", "deny", "request-change"];
+
+/**
+ * Urgency (roadmap §12) is computed from stored facts only: whether the
+ * request blocks a run that is waiting on it, how long it has waited, the
+ * risk level of the rule that raised it, and the priority of its task.
+ * Nothing is predicted and no score is invented for display.
+ */
+export const URGENCY_LEVELS = ["normal", "high", "critical"];
+export const URGENCY_AGE_HIGH_MS = 10 * 60 * 1000;
+export const URGENCY_AGE_CRITICAL_MS = 30 * 60 * 1000;
+
+const HIGH_RISK_RULES =
+  /deny|denied|risky|deploy|publish|push|secret|network|outside|force/i;
+
+/** 'high' | 'medium' | 'low' from the policy rule id and the request kind. */
+function riskLevel(approval) {
+  const rule = approval.payload?._rule ?? approval.payload?.rule ?? null;
+  const ruleId =
+    typeof rule === "string" ? rule : (rule?.id ?? rule?.category ?? "");
+  if (ruleId && HIGH_RISK_RULES.test(String(ruleId))) return "high";
+  if (approval.kind === "command" || approval.kind === "network") return "high";
+  if (approval.kind === "file" || approval.kind === "policy") return "medium";
+  if (approval.kind === "permission" || approval.kind === "tool")
+    return "medium";
+  return "low";
+}
 
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
@@ -258,6 +284,8 @@ export class ApprovalService {
         "Approval payload changed since it was shown; refresh and decide again",
         409,
       );
+    if (decision === "request-change")
+      return this.#requestChange(approval, { actor, note, storedHash });
     const decidedAt = this.now();
     const status = decision === "approve" ? "approved" : "denied";
     const noteText = note ? String(note).slice(0, 1000) : null;
@@ -301,9 +329,199 @@ export class ApprovalService {
         payloadHash: storedHash,
       },
     });
+    this.#history({
+      approvalId: id,
+      workspaceId: approval.workspaceId,
+      runId: approval.runId,
+      actor,
+      decision,
+      note: noteText,
+      at: decidedAt,
+    });
     this.#resolveWaiters(id, updated);
     this.bus?.emit("global");
     return updated;
+  }
+
+  /**
+   * 'request-change' records the outcome and leaves the approval pending: the
+   * run stays waiting, no waiter is resolved, and the change request is
+   * carried in the inbox so the agent picks it up on its next attempt. It is
+   * deliberately NOT an approval.decision event, because that event would
+   * return the run to `running`.
+   */
+  #requestChange(approval, { actor, note, storedHash }) {
+    const at = this.now();
+    const noteText = note ? String(note).slice(0, 1000) : null;
+    const changes = Array.isArray(approval.payload?._changeRequests)
+      ? approval.payload._changeRequests
+      : [];
+    const entry = { actor: String(actor).slice(0, 120), note: noteText, at };
+    this.db
+      .prepare(
+        "UPDATE approvals SET payload = ? WHERE id = ? AND status = 'pending'",
+      )
+      .run(
+        JSON.stringify({
+          ...approval.payload,
+          _changeRequests: [...changes, entry],
+        }),
+        approval.id,
+      );
+    this.services.recorder?.applyEvent(approval.runId, {
+      kind: "status",
+      provenance: "user",
+      summary: `Change requested by ${actor}: ${approval.action}${noteText ? ` - ${truncate(noteText, 120)}` : ""}`,
+      timestamp: at,
+      data: {
+        approvalId: approval.id,
+        decision: "request-change",
+        actor,
+        note: noteText,
+        payloadHash: storedHash,
+        stillWaiting: true,
+      },
+    });
+    this.services.audit?.record({
+      actor,
+      action: "approval.decide",
+      target: `approval:${approval.id}`,
+      workspaceId: approval.workspaceId,
+      runId: approval.runId,
+      policyDecision: "request-change",
+      details: {
+        kind: approval.kind,
+        decision: "request-change",
+        note: noteText,
+        payloadHash: storedHash,
+      },
+    });
+    this.#history({
+      approvalId: approval.id,
+      workspaceId: approval.workspaceId,
+      runId: approval.runId,
+      actor,
+      decision: "request-change",
+      note: noteText,
+      at,
+    });
+    this.bus?.emit("global");
+    const updated = this.#get(approval.id);
+    return {
+      ...updated,
+      changeRequests: updated.payload?._changeRequests ?? [],
+      stillWaiting: true,
+    };
+  }
+
+  /** One decision_history row. Falls back silently when the table is absent. */
+  #history({ approvalId, workspaceId, runId, actor, decision, note, at }) {
+    if (this.services.decisions?.record) {
+      try {
+        return this.services.decisions.record({
+          approvalId,
+          workspaceId,
+          runId,
+          actor,
+          decision,
+          note,
+          at,
+        });
+      } catch {
+        /* fall through to the direct insert */
+      }
+    }
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO decision_history (id, approval_id, workspace_id, run_id, actor, decision, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          approvalId,
+          workspaceId,
+          runId,
+          String(actor).slice(0, 120),
+          String(decision).slice(0, 60),
+          note ?? null,
+          at,
+        );
+    } catch {
+      /* the decision_history table is not in this database; the approval row
+         and the audit log still carry the decision. */
+    }
+    return null;
+  }
+
+  /**
+   * urgency(approval) → { level: 'critical'|'high'|'normal', score, reason,
+   * factors }. Blocking a waiting run, age, rule risk, task priority and an
+   * imminent expiry each contribute a fixed, documented amount.
+   */
+  urgency(approval, { now = this.now() } = {}) {
+    const factors = [];
+    let score = 0;
+    const run = approval.runId
+      ? this.db
+          .prepare("SELECT id, status, mode FROM runs WHERE id = ?")
+          .get(approval.runId)
+      : null;
+    const blocking =
+      !!run && ["waiting_approval", "running", "blocked"].includes(run.status);
+    if (blocking) {
+      score += 2;
+      factors.push(`blocks a ${run.status} run`);
+    }
+    const risk = riskLevel(approval);
+    if (risk === "high") {
+      score += 2;
+      factors.push("the policy rule that raised it is high risk");
+    } else if (risk === "medium") {
+      score += 1;
+      factors.push("medium-risk request");
+    }
+    const task = approval.taskId
+      ? this.db
+          .prepare("SELECT priority FROM tasks WHERE id = ?")
+          .get(approval.taskId)
+      : null;
+    if (task?.priority === "critical") {
+      score += 2;
+      factors.push("its task is critical priority");
+    } else if (task?.priority === "high") {
+      score += 1;
+      factors.push("its task is high priority");
+    }
+    const ageMs = Math.max(0, now - (approval.requestedAt ?? now));
+    if (ageMs > URGENCY_AGE_CRITICAL_MS) {
+      score += 2;
+      factors.push(`waiting ${Math.round(ageMs / 60000)} minutes`);
+    } else if (ageMs > URGENCY_AGE_HIGH_MS) {
+      score += 1;
+      factors.push(`waiting ${Math.round(ageMs / 60000)} minutes`);
+    }
+    if (
+      approval.status === "pending" &&
+      Number.isFinite(approval.expiresAt) &&
+      approval.expiresAt - now <= 2 * 60 * 1000
+    ) {
+      score += 1;
+      factors.push("expires in under two minutes");
+    }
+    const level = score >= 5 ? "critical" : score >= 3 ? "high" : "normal";
+    return {
+      level,
+      score,
+      ageMs,
+      risk,
+      blocking,
+      taskPriority: task?.priority ?? null,
+      factors,
+      reason: factors.length
+        ? `${level}: ${factors.join("; ")}`
+        : "normal: nothing is blocked and it has just arrived",
+    };
   }
 
   #expire(id) {
@@ -452,9 +670,111 @@ export class ApprovalService {
     return this.list({ runId, limit: 500 });
   }
 
-  /** Everything that needs a person: approvals, broken runs, review requests. */
+  /**
+   * The exact action a person is being asked to allow: the command, the path,
+   * the URL, or a summary of the diff. Contents are never summarised away -
+   * the payload itself still travels with the approval - this is the short
+   * form the inbox shows first.
+   */
+  proposedAction(approval) {
+    const payload = approval.payload ?? {};
+    const input = payload.tool_input ?? payload.input ?? {};
+    const command = payload.command ?? input.command ?? null;
+    const path = payload.path ?? payload.file ?? input.file_path ?? null;
+    const url = payload.url ?? input.url ?? null;
+    const diff = payload.diff ?? payload.patch ?? input.patch ?? null;
+    const action = {
+      type: command
+        ? "command"
+        : url
+          ? "network"
+          : diff
+            ? "diff"
+            : path
+              ? "file"
+              : (approval.kind ?? "tool"),
+      tool: payload.tool_name ?? payload.tool ?? input.tool ?? null,
+      command: command ? String(command) : null,
+      path: path ? String(path) : null,
+      url: url ? String(url) : null,
+      text: approval.action,
+    };
+    if (diff) {
+      const lines = String(diff).split(/\r?\n/);
+      action.diffSummary = {
+        files: lines.filter((line) => line.startsWith("+++ ")).length,
+        added: lines.filter(
+          (line) => line.startsWith("+") && !line.startsWith("+++"),
+        ).length,
+        removed: lines.filter(
+          (line) => line.startsWith("-") && !line.startsWith("---"),
+        ).length,
+        bytes: Buffer.byteLength(String(diff)),
+      };
+    }
+    return action;
+  }
+
+  /** Everything this decision would touch, as typed rows for the UI. */
+  affectedResources(approval) {
+    const action = this.proposedAction(approval);
+    const out = [];
+    if (action.path) out.push({ type: "file", value: action.path });
+    if (action.command) out.push({ type: "command", value: action.command });
+    if (action.url) out.push({ type: "url", value: action.url });
+    for (const file of approval.payload?.files ?? [])
+      out.push({
+        type: "file",
+        value: typeof file === "string" ? file : (file?.path ?? String(file)),
+      });
+    if (approval.runId) out.push({ type: "run", value: approval.runId });
+    if (approval.taskId) out.push({ type: "task", value: approval.taskId });
+    if (approval.workspaceId)
+      out.push({ type: "workspace", value: approval.workspaceId });
+    return out;
+  }
+
+  /** Change requests recorded against still-pending approvals. */
+  changeRequests({ workspaceId = null } = {}) {
+    const out = [];
+    for (const approval of this.pending({ workspaceId }))
+      for (const entry of approval.payload?._changeRequests ?? [])
+        out.push({
+          approvalId: approval.id,
+          runId: approval.runId,
+          workspaceId: approval.workspaceId,
+          taskId: approval.taskId,
+          action: approval.action,
+          actor: entry.actor,
+          note: entry.note ?? null,
+          at: entry.at,
+          state: "waiting for the agent's next attempt",
+        });
+    return out.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+  }
+
+  /**
+   * Everything that needs a person: approvals, broken runs, review requests.
+   * Approvals carry `urgency`, the exact `proposedAction` and the
+   * `affectedResources`, and are ordered most urgent first (oldest first
+   * within one level). Existing fields are unchanged.
+   */
   inbox({ workspaceId = null } = {}) {
-    const approvals = this.pending({ workspaceId });
+    const approvals = this.pending({ workspaceId }).map((approval) => ({
+      ...approval,
+      urgency: this.urgency(approval),
+      proposedAction: this.proposedAction(approval),
+      affectedResources: this.affectedResources(approval),
+      changeRequests: approval.payload?._changeRequests ?? [],
+    }));
+    const rankOf = (approval) =>
+      URGENCY_LEVELS.indexOf(approval.urgency?.level ?? "normal");
+    approvals.sort(
+      (a, b) =>
+        rankOf(b) - rankOf(a) ||
+        (b.urgency?.score ?? 0) - (a.urgency?.score ?? 0) ||
+        (a.requestedAt ?? 0) - (b.requestedAt ?? 0),
+    );
     const runRows = this.db
       .prepare(
         `SELECT r.id, r.workspace_id, r.task_id, r.agent_id, r.provider, r.mode, r.status, r.title, r.error, r.started_at, r.ended_at, r.last_event_at, r.attempt, t.title AS task_title
@@ -505,13 +825,43 @@ export class ApprovalService {
       });
     }
     const questions = approvals.filter((a) => a.kind === "question");
+    const changeRequests = approvals.flatMap((approval) =>
+      (approval.changeRequests ?? []).map((entry) => ({
+        approvalId: approval.id,
+        runId: approval.runId,
+        workspaceId: approval.workspaceId,
+        taskId: approval.taskId,
+        action: approval.action,
+        actor: entry.actor,
+        note: entry.note ?? null,
+        at: entry.at,
+        state: "waiting for the agent's next attempt",
+      })),
+    );
     const counts = {
       approvals: approvals.length,
       runs: runs.length,
       reviews: reviews.length,
       questions: questions.length,
+      // `total` keeps its original meaning (things needing a first decision);
+      // change requests belong to an approval that is already counted.
       total: approvals.length + runs.length + reviews.length,
     };
-    return { approvals, runs, reviews, questions, counts };
+    // Added as its own object so `counts` keeps exactly the keys it always had.
+    const urgencyCounts = {
+      critical: approvals.filter((a) => a.urgency?.level === "critical").length,
+      high: approvals.filter((a) => a.urgency?.level === "high").length,
+      normal: approvals.filter((a) => a.urgency?.level === "normal").length,
+      changeRequests: changeRequests.length,
+    };
+    return {
+      approvals,
+      runs,
+      reviews,
+      questions,
+      changeRequests,
+      counts,
+      urgencyCounts,
+    };
   }
 }

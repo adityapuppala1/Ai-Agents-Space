@@ -3,25 +3,29 @@
   "name": "Bug clinic",
   "domain": "Software engineering",
   "priority": "Launch",
-  "description": "Issue -> reproduce -> diagnose -> fix -> regression test. Produces reproduction evidence and a verified fix.",
+  "description": "Issue -> reproduce -> diagnose -> fix -> regression test. Produces reproduction evidence and a fix verified by a recorded passing test.",
+  "requiredResult": "Reproduction evidence and verified fix",
   "roles": [
     {
       "key": "investigator",
       "name": "Investigator",
       "workingState": "DEBUGGING",
-      "description": "Reproduces and diagnoses the issue."
+      "provider": null,
+      "skills": ["reproduction", "log reading", "bisecting"]
     },
     {
       "key": "developer",
       "name": "Developer",
       "workingState": "CODING",
-      "description": "Implements the fix."
+      "provider": null,
+      "skills": ["debugging", "minimal patches"]
     },
     {
       "key": "qa",
       "name": "QA engineer",
       "workingState": "TESTING",
-      "description": "Adds the regression test."
+      "provider": null,
+      "skills": ["regression testing"]
     }
   ],
   "steps": [
@@ -29,64 +33,170 @@
       "key": "reproduce",
       "title": "Reproduce: {{issue}}",
       "role": "investigator",
-      "deliverable": "Reproduction steps and captured output",
-      "acceptance": "Failure reproduced with an exact command or steps and captured output.",
+      "instructions": "Reproduce {{issue}}. Write the exact steps and the failing command to repro/{{issue}}.md, and add a failing test or script when one is possible. Record the command you ran and its exit code; a non-zero exit code here is the expected evidence.",
+      "deliverable": "repro/ file with the failing command and its recorded exit code",
+      "acceptance": ["file-edited:repro", "final-message-non-empty"],
+      "contract": {
+        "inputs": [
+          {
+            "key": "issue",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited:repro", "final-message-non-empty"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell", "search"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": [],
-      "instructions": "Reproduce {{issue}}. Record the exact command, environment, and observed vs expected output. If you cannot reproduce, say so."
+      "branchCondition": null
     },
     {
       "key": "diagnose",
-      "title": "Diagnose root cause of {{issue}}",
+      "title": "Diagnose: {{issue}}",
       "role": "investigator",
-      "deliverable": "Root cause note with file/line references",
-      "acceptance": "Root cause points to specific code and explains the mechanism.",
+      "instructions": "Using the reproduction, find the responsible code path. Append the diagnosis, with file and line references, to repro/{{issue}}.md. Do not fix anything yet.",
+      "deliverable": "Diagnosis appended to the repro file",
+      "acceptance": ["file-edited:repro", "final-message-non-empty"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited:repro", "final-message-non-empty"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "search", "git.log", "file.edit"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["reproduce"],
-      "instructions": "Find the root cause of {{issue}} using the reproduction. Cite files and lines."
+      "branchCondition": null
     },
     {
       "key": "fix",
-      "title": "Fix {{issue}}",
+      "title": "Fix: {{issue}}",
       "role": "developer",
-      "deliverable": "Patch",
-      "acceptance": "Fix addresses the diagnosed cause; diff is minimal.",
+      "instructions": "Apply the smallest change that fixes {{issue}} according to the diagnosis. Do not change unrelated files.",
+      "deliverable": "Fix patch (git diff)",
+      "acceptance": ["file-edited", "artifact:diff"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": null,
+        "completionCriteria": ["file-edited", "artifact:diff"],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "git.diff"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": null
+      },
       "dependsOn": ["diagnose"],
-      "instructions": "Implement the smallest fix for the diagnosed cause of {{issue}}."
+      "branchCondition": null
     },
     {
       "key": "regression",
-      "title": "Regression test for {{issue}}",
+      "title": "Regression test: {{issue}}",
       "role": "qa",
-      "deliverable": "Test that fails before and passes after the fix",
-      "acceptance": "Test output shows failure on the old code and success on the fix.",
+      "instructions": "Add a regression test that fails without the fix, then run the project test command. Report the command and its exit code as JSON matching the output schema.",
+      "deliverable": "Passing regression test output",
+      "acceptance": ["test-passed", "artifact:test-output", "output-schema"],
+      "contract": {
+        "inputs": [],
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "testCommand": {
+              "type": "string"
+            },
+            "testExitCode": {
+              "type": "integer"
+            },
+            "testFile": {
+              "type": "string"
+            }
+          },
+          "required": ["testCommand", "testExitCode"]
+        },
+        "completionCriteria": [
+          "test-passed",
+          "artifact:test-output",
+          "output-schema"
+        ],
+        "timeoutMs": 900000,
+        "allowedTools": ["file.read", "file.edit", "shell.test"],
+        "budget": {
+          "maxTokens": null,
+          "maxRuns": 2
+        },
+        "reviewer": "human"
+      },
       "dependsOn": ["fix"],
-      "instructions": "Add a regression test for {{issue}}. Run it and record the output."
+      "branchCondition": null
     }
   ],
   "outputSchema": {
     "type": "object",
-    "required": ["reproduction", "rootCause", "patch", "testOutput"],
     "properties": {
-      "reproduction": {
+      "reproFile": {
         "type": "string"
       },
-      "rootCause": {
+      "diagnosis": {
         "type": "string"
       },
       "patch": {
         "type": "string"
       },
-      "testOutput": {
+      "testCommand": {
         "type": "string"
+      },
+      "testExitCode": {
+        "type": "integer"
       }
-    }
+    },
+    "required": ["reproFile", "patch", "testCommand", "testExitCode"]
   },
   "rubric": [
-    "Reproduction captured before fixing",
-    "Root cause cites code",
-    "Regression test present and executed"
+    {
+      "criterion": "The bug was reproduced before it was fixed",
+      "howMeasured": "A file edit under repro/ is recorded on the reproduce step, before the fix step's diff",
+      "failsWhen": "The fix step ran with no recorded reproduction file"
+    },
+    {
+      "criterion": "The fix is a recorded diff",
+      "howMeasured": "The run captured a diff artifact",
+      "failsWhen": "The final message claims a fix with no diff artifact"
+    },
+    {
+      "criterion": "A regression test passed after the fix",
+      "howMeasured": "A recorded test command reported exit code 0 and a test-output artifact exists",
+      "failsWhen": "No test command reported exit code 0; a described-but-unrun test is not evidence"
+    },
+    {
+      "criterion": "The change is limited to the diagnosed path",
+      "howMeasured": "The diff artifact lists the changed files",
+      "failsWhen": "Files unrelated to the diagnosis appear in the diff without an explanation"
+    }
   ],
-  "requiredTools": ["file.read", "file.edit", "shell.test"],
+  "requiredTools": [
+    "file.read",
+    "file.edit",
+    "search",
+    "shell",
+    "shell.test",
+    "git.diff",
+    "git.log"
+  ],
+  "requiredConnectors": ["local-filesystem", "git"],
   "sampleInputs": {
     "issue": "Task progress resets after reload"
-  }
+  },
+  "notes": "The reproduce step is expected to record a failing command; Agent Space stores the exit code as evidence and never rewrites it."
 }

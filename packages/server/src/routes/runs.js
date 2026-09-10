@@ -142,6 +142,22 @@ function reviewRun({ db, hub, worker, runId, input, actor, services }) {
     );
   const workspace = hub.get(run.workspaceId);
   const task = workspace.store.get(run.taskId);
+  // Roadmap section 12: never accept a result whose pinned inputs changed
+  // underneath it. Re-review is forced unless the reviewer acknowledges the
+  // drift explicitly, because the patch may reference stale line numbers.
+  if (decision === "accept" && input?.acknowledgeStale !== true) {
+    const gate = services?.context?.gateApply?.({ runId });
+    if (gate && gate.action === "re-review") {
+      const paths = gate.stale
+        .map((entry) => entry.path)
+        .slice(0, 5)
+        .join(", ");
+      throw new InputError(
+        `Inputs changed since this run started (${paths}${gate.stale.length > 5 ? ", …" : ""}). Re-review the result, or accept again with acknowledgeStale to record that you checked.`,
+        409,
+      );
+    }
+  }
   const review = {
     runId,
     status: decision === "accept" ? "accepted" : "rejected",
