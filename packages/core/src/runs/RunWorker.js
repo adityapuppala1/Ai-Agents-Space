@@ -175,6 +175,14 @@ export class RunWorker {
     this.children = new Map(); // runId → entry
     this.specs = new Map(); // runId → launch spec (queued or running)
     this.waiters = new Map(); // runId → [resolve]
+    /**
+     * Runs whose child has exited but whose bookkeeping (artifacts, the
+     * terminal event, the final status) is still being written. The child is
+     * removed from `children` first so the concurrency slot frees at once, so
+     * without this set wait() could resolve in that gap and a caller would see
+     * a finished run whose last event had not been recorded yet.
+     */
+    this.finalizing = new Set();
     this.starting = new Map(); // runId → workspaceId (launch in flight)
     this.retryTimers = new Map(); // runId → automatic-retry timer
     this.wakeTimer = null;
@@ -1163,6 +1171,7 @@ export class RunWorker {
     if (entry.timer) clearTimeout(entry.timer);
     this.children.delete(entry.runId);
     this.specs.delete(entry.runId);
+    this.finalizing.add(entry.runId);
     try {
       await this.finishRun(entry, code, signal, spawnError);
     } catch (error) {
@@ -1172,6 +1181,7 @@ export class RunWorker {
         `[runs] could not finalize run ${entry.runId}: ${error?.message ?? error}`,
       );
     } finally {
+      this.finalizing.delete(entry.runId);
       this.settle(entry.runId);
       try {
         this.drain(entry.workspaceId);
@@ -1893,6 +1903,7 @@ export class RunWorker {
     if (
       !this.children.has(runId) &&
       !this.specs.has(runId) &&
+      !this.finalizing.has(runId) &&
       (TERMINAL_RUN_STATUSES.includes(run.status) ||
         run.status === "disconnected")
     )
