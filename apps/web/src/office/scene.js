@@ -260,6 +260,11 @@ export function createRenderer(container) {
     return null;
   }
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // Deliberately NO filmic tone mapping: the stylised palette and the light rig
+  // were tuned for a linear response, and ACES flattened the floor to white and
+  // washed out the wood and grid. Explicit sRGB output only.
+  if (THREE.SRGBColorSpace !== undefined)
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.setClearColor("#000000", 0);
   container.prepend(renderer.domElement);
   renderer.domElement.setAttribute(

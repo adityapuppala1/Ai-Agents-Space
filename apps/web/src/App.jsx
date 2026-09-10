@@ -322,6 +322,9 @@ export const RAIL_GROUPS = RAIL_GROUP_ORDER.map((name) => [
   VIEWS.filter((v) => v.group === name),
 ]).filter(([, items]) => items.length);
 
+/** Views that show the workspace overview strip; others go straight to content. */
+const STATS_VIEWS = new Set(["office", "tasks", "agents"]);
+
 const VIEW_IDS = new Set(VIEWS.map((v) => v.id));
 
 function readJson(key, fallback) {
@@ -2236,45 +2239,49 @@ export default function App() {
               </div>
             ) : (
               <>
-                <section className="stats" aria-label="Workspace statistics">
-                  {[
-                    [
-                      Users,
-                      `${agents.filter((a) => a.taskId).length}`,
-                      `/ ${agents.length}`,
-                      "Agents on task",
-                      "blue",
-                    ],
-                    [
-                      Antenna,
-                      liveSessions.length,
-                      "",
-                      "Live sessions",
-                      "violet",
-                    ],
-                    [Inbox, needsDecision, "", "Needs decision", "amber"],
-                    [
-                      CheckCheck,
-                      completed.length,
-                      "",
-                      "Tasks completed",
-                      "green",
-                    ],
-                  ].map(([Icon, number, suffix, label, color]) => (
-                    <div className="stat" key={label}>
-                      <span className={`stat-icon ${color}`}>
-                        <Icon size={20} />
-                      </span>
-                      <div>
-                        <strong>
-                          {number}
-                          <span>{suffix}</span>
-                        </strong>
-                        <p>{label}</p>
+                {/* The overview strip belongs on the workspace overview. Repeating it on
+                    every page pushed each page's real content below the fold. */}
+                {STATS_VIEWS.has(view) ? (
+                  <section className="stats" aria-label="Workspace statistics">
+                    {[
+                      [
+                        Users,
+                        `${agents.filter((a) => a.taskId).length}`,
+                        `/ ${agents.length}`,
+                        "Agents on task",
+                        "blue",
+                      ],
+                      [
+                        Antenna,
+                        liveSessions.length,
+                        "",
+                        "Live sessions",
+                        "violet",
+                      ],
+                      [Inbox, needsDecision, "", "Needs decision", "amber"],
+                      [
+                        CheckCheck,
+                        completed.length,
+                        "",
+                        "Tasks completed",
+                        "green",
+                      ],
+                    ].map(([Icon, number, suffix, label, color]) => (
+                      <div className="stat" key={label}>
+                        <span className={`stat-icon ${color}`}>
+                          <Icon size={20} />
+                        </span>
+                        <div>
+                          <strong>
+                            {number}
+                            <span>{suffix}</span>
+                          </strong>
+                          <p>{label}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </section>
+                    ))}
+                  </section>
+                ) : null}
                 <FilterChips />
                 <div
                   className={`workspace-layout ${view !== "office" ? "alternate-view" : ""} ${fullView ? "full-view" : ""}`}
