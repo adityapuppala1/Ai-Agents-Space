@@ -2,8 +2,16 @@
 // count (desk grid in front, shared zones along the back wall). Zone
 // furniture is rebuilt on theme change; agent figures are not.
 import * as THREE from "three";
-import { builders, textTexture, basename } from "./scene.js";
+import { builders, textTexture, swapTexture } from "./scene.js";
+import { basename, maskPrivate } from "./data.js";
 import { themeMaterials } from "./themes.js";
+
+/** One honest line about the artifacts on the review table. */
+function artifactLine(chips) {
+  if (!chips.length) return "no artifacts linked yet";
+  if (chips.length === 1) return `1 artifact: ${chips[0].title}`;
+  return `${chips.length} artifacts linked`;
+}
 
 export const ZONE_IDS = ["research", "qa", "review", "meeting", "breakArea"];
 
@@ -117,7 +125,8 @@ export function buildZones(group, theme, layout, agents, res) {
         box(0.06, 0.89, 0.06, mat.base, dx, 0.43, dz, g);
     box(0.6, 0.04, 0.26, mat.metal, -0.1, 1.02, -0.6, g);
     box(0.05, 0.25, 0.05, mat.metal, -0.1, 1.16, -0.63, g);
-    box(1.05, 0.64, 0.06, mat.dark, -0.1, 1.5, -0.63, g);
+    const frame = box(1.05, 0.64, 0.06, mat.dark, -0.1, 1.5, -0.63, g);
+    frame.userData.monitorAgentId = agent.id;
     const texture = textTexture(res, {
       lines: [agent.name ?? "", "no file"],
       bg: p.screenBg,
@@ -133,6 +142,7 @@ export function buildZones(group, theme, layout, agents, res) {
       -0.595,
       g,
     );
+    screen.userData.monitorAgentId = agent.id;
     box(0.62, 0.03, 0.22, mat.base, -0.1, 1.01, -0.1, g);
     cylinder(
       0.075,
@@ -291,11 +301,35 @@ export function buildZones(group, theme, layout, agents, res) {
       -layout.depth / 2 + 0.17,
       group,
     );
-    return { screen, texture, key: "" };
+    // Up to three artifact chips lying on the table. Each is a click target
+    // that opens the real artifact; they stay hidden when none was recorded.
+    const chips = [0, 1, 2].map((i) => {
+      const chipTexture = textTexture(res, {
+        lines: ["artifact"],
+        bg: "#eef2f6",
+        fg: "#41556a",
+        w: 256,
+        h: 96,
+        bold: "bold 26px sans-serif",
+      });
+      const mesh = plane(
+        0.66,
+        0.26,
+        screenMaterial(chipTexture),
+        zone.x - 0.66 + i * 0.66,
+        0.945,
+        zone.z - 0.2,
+        group,
+      );
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.visible = false;
+      return { screen: mesh, texture: chipTexture, key: "", artifactId: null };
+    });
+    return { screen, texture, key: "", chips };
   })();
 
-  // Meeting area: round table and chairs.
-  {
+  // Meeting area: round table, chairs and the task handoff card.
+  const handoff = (() => {
     const zone = z.meeting;
     label(zone, theme.rooms.meeting);
     cylinder(1.0, 1.0, 0.08, mat.wood, zone.x, 0.82, zone.z - 0.1, group, 28);
@@ -314,7 +348,27 @@ export function buildZones(group, theme, layout, agents, res) {
       );
     }
     sphere(0.08, mat.green, zone.x, 0.95, zone.z - 0.1, group);
-  }
+    const texture = textTexture(res, {
+      lines: ["Handoff", "no handoff recorded"],
+      bg: "#fdf6e6",
+      fg: "#6c5a33",
+      w: 384,
+      h: 160,
+      bold: "bold 30px sans-serif",
+      mono: "18px sans-serif",
+    });
+    const card = plane(
+      1.4,
+      0.58,
+      screenMaterial(texture),
+      zone.x,
+      1.72,
+      zone.z - 0.1,
+      group,
+    );
+    card.visible = false;
+    return { screen: card, texture, key: "" };
+  })();
 
   // Break area: sofa, coffee table and the cluster marker.
   const cluster = (() => {
@@ -358,57 +412,123 @@ export function buildZones(group, theme, layout, agents, res) {
     monitors,
     qa,
     review,
+    handoff,
     cluster,
     theme,
-    /** Redraws a monitor when its content key changed. */
+    /**
+     * Redraws a monitor when its content key changed. `preview` holds already
+     * sanitized artifact lines (masked by the caller under presentation mode).
+     */
     updateMonitor(
       agentId,
       agent,
-      { typing = false, caret = false, activityLabel = "" } = {},
+      {
+        typing = false,
+        caret = false,
+        activityLabel = "",
+        preview = null,
+        mask = false,
+      } = {},
     ) {
       const m = monitors.get(agentId);
       if (!m) return;
-      const file = basename(agent.currentFile);
-      const action = agent.currentAction
+      const rawFile = basename(agent.currentFile);
+      const file = mask ? maskPrivate(rawFile) : rawFile;
+      const rawAction = agent.currentAction
         ? String(agent.currentAction).slice(0, 40)
         : "";
-      const key = `${file}|${activityLabel}|${action}|${typing ? (caret ? "c1" : "c0") : "s"}`;
+      const action = mask ? maskPrivate(rawAction) : rawAction;
+      const previewLines = Array.isArray(preview) ? preview.slice(0, 3) : [];
+      const key = [
+        file,
+        activityLabel,
+        action,
+        previewLines.join("/"),
+        typing ? (caret ? "c1" : "c0") : "s",
+      ].join("|");
       if (key === m.key) return;
       m.key = key;
+      const lines = previewLines.length
+        ? [file || agent.name || "", ...previewLines]
+        : [file || agent.name || "", activityLabel, action];
       swapTexture(res, m, {
-        lines: [file || agent.name || "", activityLabel, action],
+        lines,
         bg: p.screenBg,
         fg: p.screenFg,
         accent: agent.color,
-        caret: typing && caret,
+        caret: typing && caret && !previewLines.length,
       });
     },
-    updateQa(names) {
-      const key = names.join(",");
+    /**
+     * QA screen: the real pass/fail counts from the run's test output, or an
+     * explicit "no test output yet" when nothing was recorded.
+     */
+    updateQa(screen) {
+      const lines = screen?.lines?.length
+        ? screen.lines
+        : [theme.rooms.qa, "no test output yet"];
+      const key = `${screen?.tone ?? "none"}|${lines.join(",")}`;
       if (key === qa.key) return;
       qa.key = key;
-      swapTexture(res, qa, {
-        lines: names.length
-          ? ["tests running", ...names.slice(0, 4)]
-          : [theme.rooms.qa, "idle"],
-        bg: p.screenBg,
-        fg: names.length ? "#9be7b5" : p.screenFg,
-        w: 384,
-        h: 192,
+      const tone = screen?.tone ?? "none";
+      let fg = p.screenFg;
+      if (tone === "pass") fg = "#9be7b5";
+      else if (tone === "fail") fg = "#f2a3a0";
+      swapTexture(res, qa, { lines, bg: p.screenBg, fg, w: 384, h: 192 });
+    },
+    /** Whiteboard names plus up to three clickable artifact chips. */
+    updateReview(names, chips = []) {
+      const list = Array.isArray(chips) ? chips.slice(0, 3) : [];
+      const key = `${names.join(",")}|${list.map((c) => c.id).join(",")}`;
+      if (key !== review.key) {
+        review.key = key;
+        let lines;
+        if (names.length)
+          lines = ["reviewing", ...names.slice(0, 3), artifactLine(list)];
+        else if (list.length) lines = [theme.rooms.review, artifactLine(list)];
+        else lines = [theme.rooms.review, "nothing under review"];
+        swapTexture(res, review, {
+          lines,
+          bg: "#f7f7f2",
+          fg: "#41556a",
+          w: 384,
+          h: 192,
+        });
+      }
+      review.chips.forEach((chip, i) => {
+        const data = list[i];
+        chip.screen.visible = !!data;
+        chip.artifactId = data?.id ?? null;
+        chip.screen.userData.artifactId = data?.id ?? null;
+        const chipKey = data ? `${data.id}|${data.title}` : "";
+        if (chipKey === chip.key) return;
+        chip.key = chipKey;
+        if (!data) return;
+        swapTexture(res, chip, {
+          lines: [data.title || data.kind || "artifact"],
+          bg: "#eef2f6",
+          fg: "#41556a",
+          w: 256,
+          h: 96,
+          bold: "bold 24px sans-serif",
+        });
       });
     },
-    updateReview(names) {
-      const key = names.join(",");
-      if (key === review.key) return;
-      review.key = key;
-      swapTexture(res, review, {
-        lines: names.length
-          ? ["reviewing", ...names.slice(0, 4)]
-          : [theme.rooms.review, "nothing under review"],
-        bg: "#f7f7f2",
-        fg: "#41556a",
+    /** Task handoff card above the meeting table; hidden when none recorded. */
+    updateHandoff(card) {
+      handoff.screen.visible = !!card;
+      const key = card ? card.lines.join("|") : "";
+      if (key === handoff.key) return;
+      handoff.key = key;
+      if (!card) return;
+      swapTexture(res, handoff, {
+        lines: card.lines,
+        bg: "#fdf6e6",
+        fg: "#6c5a33",
         w: 384,
-        h: 192,
+        h: 160,
+        bold: "bold 30px sans-serif",
+        mono: "18px sans-serif",
       });
     },
     updateCluster(count) {
@@ -426,14 +546,4 @@ export function buildZones(group, theme, layout, agents, res) {
       });
     },
   };
-}
-
-function swapTexture(res, handle, opts) {
-  const next = textTexture(res, opts);
-  if (!next) return;
-  const material = handle.screen.material;
-  res.release(material.map);
-  material.map = next;
-  material.needsUpdate = true;
-  handle.texture = next;
 }

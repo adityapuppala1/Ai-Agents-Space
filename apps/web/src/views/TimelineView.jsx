@@ -10,6 +10,10 @@ import {
 } from "../hooks/useApi.js";
 import ProviderBadge from "../components/ProviderBadge.jsx";
 import Provenance from "../components/Provenance.jsx";
+import EmptyState from "../components/EmptyState.jsx";
+import VirtualList from "../components/VirtualList.jsx";
+import EventLink from "../components/EventLink.jsx";
+import { useSelection, FilterChips } from "../components/SelectionProvider.jsx";
 
 const LANE = 26;
 const LEFT = 190;
@@ -22,14 +26,20 @@ const LEFT = 190;
  *   workspaceId: string,
  *   runs?: any[],            // optional; falls back to GET /api/workspaces/:id/runs
  *   onOpenRun?: (runId: string) => void,
+ *   onOpenEvent?: (ref: { runId:string, eventId:string, event:any }) => void,
  *   presentation?: boolean
  * }} props
+ *
+ * Selection and filters come from SelectionProvider, so the run selected here
+ * is the run selected on the Board, in the Office and on the Dependency Map.
  */
 export default function TimelineView({
   workspaceId,
   runs: givenRuns,
   onOpenRun,
+  onOpenEvent,
 }) {
+  const selection = useSelection();
   const fetched = useApi(
     givenRuns ? null : `/workspaces/${encodeURIComponent(workspaceId)}/runs`,
     { interval: 5000 },
@@ -39,11 +49,20 @@ export default function TimelineView({
       givenRuns ??
       (Array.isArray(fetched.data) ? fetched.data : (fetched.data?.runs ?? []));
     return [...source]
-      .filter((r) => r.startedAt)
+      .filter((r) => r.startedAt && selection.matchesRun(r))
       .sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt))
       .slice(-60);
-  }, [givenRuns, fetched.data]);
-  const [selectedId, setSelectedId] = useState(null);
+  }, [givenRuns, fetched.data, selection]);
+  const [localSelectedId, setLocalSelectedId] = useState(null);
+  const selectedId = selection.selectedRunId ?? localSelectedId;
+  const setSelectedId = (runId) => {
+    setLocalSelectedId(runId);
+    const run = runs.find((entry) => entry.id === runId) ?? null;
+    selection.selectRun?.(runId, {
+      taskId: run?.taskId ?? undefined,
+      agentId: run?.agentId ?? undefined,
+    });
+  };
   const [events, setEvents] = useState([]);
   const [cursor, setCursor] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -100,17 +119,27 @@ export default function TimelineView({
           {runs.length} runs · {formatElapsed(span)} window
         </span>
       </header>
+      <FilterChips label="Filters shared with every view" />
       {fetched.error ? (
-        <div className="form-error" role="alert">
-          {fetched.error.message}
-        </div>
+        <EmptyState
+          compact
+          title="Runs could not be loaded"
+          error={fetched.error}
+          missingRoutes={["GET /api/workspaces/:id/runs"]}
+        />
       ) : null}
       {runs.length === 0 ? (
-        <div className="empty-state">
-          <Clock3 size={28} aria-hidden="true" />
-          <h3>No runs yet</h3>
-          <p>Runs appear here as bars once an agent starts working.</p>
-        </div>
+        <EmptyState
+          icon={<Clock3 size={28} />}
+          title="No runs to place on the timeline"
+          description="Runs appear here as bars once an agent starts working. If a filter is active, clear it to see the rest."
+          actions={[
+            {
+              label: "Clear filters",
+              onClick: () => selection.clearFilters?.(),
+            },
+          ]}
+        />
       ) : null}
       {runs.length > 0 ? (
         <div className="as-timeline-scroll">
@@ -217,30 +246,41 @@ export default function TimelineView({
               aria-valuetext={cursor ? formatTime(cursor) : "no events"}
             />
           </label>
-          <ol
-            className="as-events as-events-replay"
-            aria-label="Replayed events"
-          >
-            {visible.length === 0 ? (
-              <li className="as-muted">
-                No recorded events before this point.
-              </li>
-            ) : null}
-            {visible.slice(-200).map((event) => (
-              <li key={event.id} className="as-event">
-                <time dateTime={new Date(event.timestamp).toISOString()}>
-                  {formatTime(event.timestamp)}
-                </time>
-                <span className="as-event-kind">{event.kind}</span>
-                <span className="as-event-msg">
-                  {event.message ?? event.summary}
+          {visible.length === 0 ? (
+            <p className="as-muted">No recorded events before this point.</p>
+          ) : (
+            <VirtualList
+              items={visible}
+              itemHeight={26}
+              height={260}
+              label="Replayed events"
+              className="as-events as-events-replay"
+              getKey={(event) => event.id}
+              stickToBottom
+              renderItem={(event) => (
+                <span className="as-event">
+                  <time dateTime={new Date(event.timestamp).toISOString()}>
+                    {formatTime(event.timestamp)}
+                  </time>
+                  <span className="as-event-kind">{event.kind}</span>
+                  <span className="as-event-msg">
+                    {event.message ?? event.summary}
+                  </span>
+                  <span className="as-event-meta">
+                    <Provenance value={event.provenance} />
+                    <EventLink
+                      size="small"
+                      event={event}
+                      runId={selected.id}
+                      label="open"
+                      showProvenance={false}
+                      onOpenEvent={onOpenEvent}
+                    />
+                  </span>
                 </span>
-                <span className="as-event-meta">
-                  <Provenance value={event.provenance} />
-                </span>
-              </li>
-            ))}
-          </ol>
+              )}
+            />
+          )}
         </div>
       ) : null}
     </section>

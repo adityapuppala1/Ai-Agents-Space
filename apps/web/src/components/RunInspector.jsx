@@ -20,6 +20,7 @@ import {
   Check,
   X,
   TriangleAlert,
+  Share2,
 } from "lucide-react";
 import {
   apiFetch,
@@ -39,6 +40,8 @@ import ProviderBadge from "./ProviderBadge.jsx";
 import Provenance from "./Provenance.jsx";
 import ActivityBadge from "./ActivityBadge.jsx";
 import Tabs from "./Tabs.jsx";
+import RunLineage from "./RunLineage.jsx";
+import { PinToggle } from "./PinnedRuns.jsx";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: <Info size={13} /> },
@@ -47,6 +50,7 @@ const TABS = [
   { id: "tools", label: "Tools", icon: <Wrench size={13} /> },
   { id: "deps", label: "Dependencies", icon: <GitBranch size={13} /> },
   { id: "usage", label: "Usage", icon: <Gauge size={13} /> },
+  { id: "lineage", label: "Lineage", icon: <Share2 size={13} /> },
   { id: "history", label: "History", icon: <History size={13} /> },
 ];
 
@@ -266,6 +270,7 @@ export default function RunInspector({
           </p>
         </div>
         <div className="as-controls" role="group" aria-label="Run controls">
+          <PinToggle runId={run.id} title="this run" />
           <Control
             icon={<Square size={12} />}
             label="Cancel"
@@ -382,6 +387,13 @@ export default function RunInspector({
           />
         )}
         {tab === "usage" && <Usage run={run} events={allEvents} />}
+        {tab === "lineage" && (
+          <RunLineage
+            run={run}
+            workspaceId={workspaceId ?? run.workspaceId}
+            presentation={presentation}
+          />
+        )}
         {tab === "history" && (
           <HistoryTab
             run={run}

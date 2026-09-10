@@ -2,6 +2,7 @@
 // geometry/material/texture can be disposed), procedural mesh builders,
 // canvas text textures, renderer creation and graphics presets.
 import * as THREE from "three";
+import { lightingFor } from "./data.js";
 
 /** Graphics presets. `frameMs` is the minimum time between rendered frames. */
 export const GRAPHICS = {
@@ -11,6 +12,9 @@ export const GRAPHICS = {
     particles: false,
     frameMs: 33,
     shadowSize: 512,
+    avatarDetail: "low",
+    labelDensity: "active",
+    animationRate: 0.5,
   },
   medium: {
     shadows: true,
@@ -18,6 +22,9 @@ export const GRAPHICS = {
     particles: true,
     frameMs: 16,
     shadowSize: 1024,
+    avatarDetail: "medium",
+    labelDensity: "all",
+    animationRate: 1,
   },
   high: {
     shadows: true,
@@ -25,6 +32,9 @@ export const GRAPHICS = {
     particles: true,
     frameMs: 0,
     shadowSize: 2048,
+    avatarDetail: "high",
+    labelDensity: "all",
+    animationRate: 1,
   },
 };
 
@@ -194,6 +204,20 @@ export function textTexture(
   return res.texture(canvas);
 }
 
+/**
+ * Replaces the texture on a `{ screen, texture }` handle, disposing the old
+ * one. Used by every live screen in the office.
+ */
+export function swapTexture(res, handle, opts) {
+  const next = textTexture(res, opts);
+  if (!next) return;
+  const material = handle.screen.material;
+  res.release(material.map);
+  material.map = next;
+  material.needsUpdate = true;
+  handle.texture = next;
+}
+
 /** Basename of a path (both separators, tolerant of null). */
 export function basename(file) {
   if (!file) return "";
@@ -248,14 +272,14 @@ export function applyGraphics(renderer, scene, sun, presetName) {
   return preset;
 }
 
-/** Creates the light rig. `scale` widens the shadow frustum for large rooms. */
-export function createLights(scene, theme, scale = 1) {
-  const hemi = new THREE.HemisphereLight(
-    theme.light.sky,
-    theme.light.ground,
-    theme.light.hemi,
-  );
-  const sun = new THREE.DirectionalLight(theme.light.sunColor, theme.light.sun);
+/**
+ * Creates the light rig. `scale` widens the shadow frustum for large rooms;
+ * `lighting` is a preset name ("day" | "evening" | "focus").
+ */
+export function createLights(scene, theme, scale = 1, lighting = "day") {
+  const light = lightingFor(theme, lighting);
+  const hemi = new THREE.HemisphereLight(light.sky, light.ground, light.hemi);
+  const sun = new THREE.DirectionalLight(light.sunColor, light.sun);
   sun.position.set(1 * scale, 16 * scale, 8 * scale);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);

@@ -47,12 +47,13 @@ test("connections view lists providers with statuses and capability chips", asyn
       timeout: 15000,
     });
   const claude = rows.filter({ hasText: "Claude Code" });
+  // Columns: Provider (row header), Kind, Alias, Status, ...
   // The fake CLI answers --version, so Claude Code is at least "detected".
-  await expect(claude.locator("td").nth(0)).toHaveText(/ready|detected/);
+  await expect(claude.locator("td").nth(2)).toHaveText(/ready|detected/);
   await expect(claude.locator(".as-cap").first()).toBeVisible();
   await expect(claude.locator(".as-cap-verified").first()).toBeVisible();
   const cursor = rows.filter({ hasText: "Cursor" });
-  await expect(cursor.locator("td").nth(0)).toHaveText(
+  await expect(cursor.locator("td").nth(2)).toHaveText(
     /missing|detected|unknown|error/,
   );
 });

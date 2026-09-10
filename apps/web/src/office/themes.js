@@ -2,7 +2,8 @@
 // decorative room shell. Zones and avatars are theme-independent so a theme
 // switch only rebuilds decoration and never touches agent state.
 import * as THREE from "three";
-import { builders, textTexture } from "./scene.js";
+import { builders, textTexture, swapTexture } from "./scene.js";
+import { clean } from "./data.js";
 
 export const THEMES = {
   studio: {
@@ -110,12 +111,13 @@ export function themeMaterials(theme, res) {
  * Builds the room shell (floor, walls, windows or pipeline wall, plants or
  * server racks) into `group`. Everything created is tracked by `res`.
  */
-export function buildRoom(group, theme, layout, res) {
+export function buildRoom(group, theme, layout, res, options = {}) {
   const p = theme.palette;
   const { box, plane } = builders(res);
   const W = layout.width;
   const D = layout.depth;
   const mat = themeMaterials(theme, res);
+  let handles = {};
 
   box(W + 0.5, 0.28, D + 0.5, mat.base, 0, -0.18, 0, group);
   box(W + 0.15, 0.08, D + 0.1, mat.floor, 0, 0.005, 0, group);
@@ -131,7 +133,7 @@ export function buildRoom(group, theme, layout, res) {
   box(0.09, 0.11, D, mat.base, -W / 2 + 0.03, 0.1, 0, group);
 
   if (theme.id === "operations")
-    buildOperationsShell(group, theme, layout, res, mat);
+    handles = buildOperationsShell(group, theme, layout, res, mat, options);
   else buildStudioShell(group, theme, layout, res, mat);
 
   // Room name sign on the back wall (top-left).
@@ -150,6 +152,7 @@ export function buildRoom(group, theme, layout, res) {
     );
     plane(3.2, 0.75, signMaterial, -W / 2 + 2.3, 2.45, -D / 2 - 0.01, group);
   }
+  return handles;
 }
 
 function buildStudioShell(group, theme, layout, res, mat) {
@@ -211,12 +214,18 @@ function buildStudioShell(group, theme, layout, res, mat) {
   cylinder(0.22, 0.37, 0.36, mat.base, W / 2 - 0.6, 1.95, D / 2 - 2.2, group);
 }
 
-function buildOperationsShell(group, theme, layout, res, mat) {
+function buildOperationsShell(group, theme, layout, res, mat, options = {}) {
   const p = theme.palette;
   const { box, plane } = builders(res);
   const W = layout.width;
   const D = layout.depth;
-  // Pipeline wall: a long status strip with stage blocks.
+  const screenMaterial = (texture) =>
+    res.track(new THREE.MeshBasicMaterial({ map: texture }));
+
+  // CI/CD wall: one panel per recorded build/deploy event. The panels are
+  // filled from `options.pipeline` (see data.pipelinePanels) and say so
+  // honestly when no build event was recorded.
+  const PANELS = 4;
   const stripW = Math.min(W - 6, 8);
   const stripX = W / 2 - stripW / 2 - 0.6;
   box(
@@ -229,40 +238,64 @@ function buildOperationsShell(group, theme, layout, res, mat) {
     -D / 2 + 0.02,
     group,
   );
-  const stages = ["BUILD", "TEST", "STAGE", "DEPLOY"];
-  stages.forEach((label, i) => {
-    const x = stripX - stripW / 2 + (i + 0.5) * (stripW / stages.length);
-    const t = textTexture(res, {
-      lines: [label, "recorded events only"],
+  const panelW = stripW / PANELS;
+  const panels = [];
+  for (let i = 0; i < PANELS; i++) {
+    const x = stripX - stripW / 2 + (i + 0.5) * panelW;
+    const texture = textTexture(res, {
+      lines: ["Pipeline", "no build events recorded"],
       bg: "#101826",
       fg: p.screenFg,
       w: 256,
       h: 128,
-      bold: "bold 30px sans-serif",
-      mono: "16px sans-serif",
+      bold: "bold 28px sans-serif",
+      mono: "15px sans-serif",
     });
-    if (t)
-      plane(
-        stripW / stages.length - 0.25,
-        0.9,
-        res.track(new THREE.MeshBasicMaterial({ map: t })),
-        x,
-        2.1,
-        -D / 2 + 0.07,
-        group,
-      );
-    if (i < stages.length - 1)
+    const screen = plane(
+      panelW - 0.25,
+      0.9,
+      screenMaterial(texture),
+      x,
+      2.1,
+      -D / 2 + 0.07,
+      group,
+    );
+    screen.visible = i === 0;
+    panels.push({ screen, texture, key: "", eventId: null });
+    if (i < PANELS - 1)
       box(
         0.22,
         0.04,
         0.05,
         mat.accent,
-        x + stripW / stages.length / 2,
+        x + panelW / 2,
         2.1,
         -D / 2 + 0.08,
         group,
       );
+  }
+
+  // Service map: providers and execution hosts as nodes, active runs as edges.
+  const mapTexture = textTexture(res, {
+    lines: ["Service map", "no connected runtime recorded"],
+    bg: "#0d1420",
+    fg: p.screenFg,
+    w: 384,
+    h: 224,
+    bold: "bold 28px sans-serif",
+    mono: "16px sans-serif",
   });
+  const mapScreen = plane(
+    2.2,
+    1.25,
+    screenMaterial(mapTexture),
+    stripX - stripW / 2 - 1.35,
+    1.95,
+    -D / 2 + 0.07,
+    group,
+  );
+  const serviceMapHandle = { screen: mapScreen, texture: mapTexture, key: "" };
+
   // Server racks along the left wall.
   const rack = res.material("#171d27", { metalness: 0.3, roughness: 0.5 });
   const led = res.material(p.green, {
@@ -298,4 +331,79 @@ function buildOperationsShell(group, theme, layout, res, mat) {
     emissiveIntensity: 0.25,
   });
   box(W - 2, 0.012, 0.05, guide, 0, 0.056, -D / 2 + 3.05, group);
+
+  const handles = {
+    /** Fills the CI/CD wall from recorded build events. */
+    updatePipeline(list = []) {
+      const items =
+        Array.isArray(list) && list.length ? list.slice(-PANELS) : [];
+      panels.forEach((panel, i) => {
+        const item = items[i] ?? null;
+        panel.screen.visible = i === 0 || !!item;
+        panel.eventId = item?.id ?? null;
+        panel.screen.userData.buildEventId = item?.id ?? null;
+        const key = item ? `${item.title}|${item.status}` : "empty";
+        if (key === panel.key) return;
+        panel.key = key;
+        swapTexture(res, panel, {
+          lines: item
+            ? [item.title || item.kind || "build", item.detail]
+            : ["Pipeline", "no build events recorded"],
+          bg: "#101826",
+          fg: statusColor(item?.status, p.screenFg),
+          w: 256,
+          h: 128,
+          bold: "bold 28px sans-serif",
+          mono: "15px sans-serif",
+        });
+      });
+    },
+    /** Draws the service map from providers, runners and active runs. */
+    updateServiceMap(map) {
+      const nodes = map?.nodes ?? [];
+      const edges = map?.edges ?? [];
+      const key = `${nodes.map((n) => n.id).join(",")}|${edges
+        .map((e) => `${e.id}:${e.runs}`)
+        .join(",")}`;
+      if (key === serviceMapHandle.key) return;
+      serviceMapHandle.key = key;
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const lines = ["Service map"];
+      if (!nodes.length) lines.push("no connected runtime recorded");
+      else if (!edges.length) {
+        lines.push(...nodes.slice(0, 3).map((n) => `${n.label} (${n.kind})`));
+        lines.push("no active run recorded");
+      } else {
+        for (const edge of edges.slice(0, 3)) {
+          const from = byId.get(edge.from)?.label ?? "runtime";
+          const to = byId.get(edge.to)?.label ?? "host";
+          lines.push(
+            `${clean(from, 14)} -> ${clean(to, 12)} (${edge.runs} run${edge.runs === 1 ? "" : "s"})`,
+          );
+        }
+      }
+      swapTexture(res, serviceMapHandle, {
+        lines,
+        bg: "#0d1420",
+        fg: p.screenFg,
+        w: 384,
+        h: 224,
+        bold: "bold 28px sans-serif",
+        mono: "16px sans-serif",
+      });
+    },
+  };
+  handles.updatePipeline(options.pipeline ?? []);
+  handles.updateServiceMap(options.serviceMap ?? null);
+  return handles;
+}
+
+/** Colour for a recorded build status; unknown statuses keep the theme text. */
+function statusColor(status, fallback) {
+  const value = String(status ?? "").toLowerCase();
+  if (!value) return fallback;
+  if (value.includes("fail") || value.includes("error")) return "#f2a3a0";
+  if (value.includes("pass") || value.includes("success")) return "#9be7b5";
+  if (value.includes("run") || value.includes("progress")) return "#ffd79a";
+  return fallback;
 }

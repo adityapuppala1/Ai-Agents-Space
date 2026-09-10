@@ -20,6 +20,7 @@ import {
 } from "../hooks/useApi.js";
 import { useGlobal } from "../hooks/useGlobal.js";
 import ProviderBadge from "./ProviderBadge.jsx";
+import EmptyState from "./EmptyState.jsx";
 import Dialog from "./Dialog.jsx";
 import TaskLauncher from "./TaskLauncher.jsx";
 
@@ -96,6 +97,241 @@ function Toggle({ label, checked, onChange, disabled }) {
  *   onLaunched?: (run: any, task: any) => void
  * }} props
  */
+/**
+ * Expanded detail for one connection: its error category with the plain
+ * remediation, its recorded probe history, and the migration assistant.
+ * Every block degrades to a named missing route rather than an empty list.
+ */
+function ConnectionDetail({ connection, agents, workspace }) {
+  const probes = useApi(
+    `/connections/${encodeURIComponent(connection.id)}/probes`,
+  );
+  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const rows = Array.isArray(probes.data)
+    ? probes.data
+    : (probes.data?.probes ?? []);
+
+  const runPreview = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const params = new URLSearchParams();
+      if (agentId) params.set("agentId", agentId);
+      if (workspace?.id) params.set("workspaceId", workspace.id);
+      setPreview(
+        await apiFetch(
+          `/connections/${encodeURIComponent(connection.id)}/migration-preview?${params}`,
+        ),
+      );
+    } catch (err) {
+      setError(err.message);
+      setPreview(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="as-conn-detail">
+      <section aria-label="Connection health">
+        <h5>Health</h5>
+        <dl className="as-passport">
+          <div>
+            <dt>Error category</dt>
+            <dd>
+              {connection.errorCategory ? (
+                <span className="as-tag as-tag-warn">
+                  {String(connection.errorCategory).replace(/-/g, " ")}
+                </span>
+              ) : (
+                "none recorded"
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>Remediation</dt>
+            <dd>{connection.remediation ?? "nothing to fix"}</dd>
+          </div>
+          <div>
+            <dt>Last successful event</dt>
+            <dd>
+              {connection.lastSuccessAt || connection.lastEventAt
+                ? formatTime(connection.lastSuccessAt ?? connection.lastEventAt)
+                : "never recorded"}
+            </dd>
+          </div>
+          <div>
+            <dt>Credential expiry</dt>
+            <dd>
+              {connection.authExpiresAt
+                ? formatTime(connection.authExpiresAt)
+                : "not derivable — Agent Space only checks that the credential file exists"}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section aria-label="Probe history">
+        <h5>Probe history</h5>
+        {probes.error ? (
+          <EmptyState
+            compact
+            title="Probe history unavailable"
+            error={probes.error}
+            missingRoutes={["GET /api/connections/:id/probes"]}
+          />
+        ) : rows.length === 0 ? (
+          <p className="as-muted as-small">
+            No probe recorded yet. Press Probe to run a read-only check.
+          </p>
+        ) : (
+          <ul className="as-probe-list" role="list">
+            {rows.slice(0, 12).map((probe) => (
+              <li key={probe.id ?? probe.probedAt}>
+                <span className={`as-tag ${probe.ok ? "" : "as-tag-warn"}`}>
+                  {probe.ok ? "ok" : (probe.category ?? "failed")}
+                </span>
+                <time>{formatTime(probe.probedAt)}</time>
+                <span className="as-muted as-small">
+                  {probe.detail ?? (probe.ok ? "responded" : "no detail")}
+                </span>
+                {probe.remediation ? (
+                  <span className="as-small">Fix: {probe.remediation}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section aria-label="Migration assistant">
+        <h5>Migration assistant</h5>
+        <p className="as-muted as-small">
+          Moving an agent to another runtime copies only settings both sides
+          understand. No conversation, memory, or hidden provider state
+          transfers — the new provider starts from the task brief.
+        </p>
+        <div className="as-row as-wrap">
+          <label className="as-inline-label">
+            Agent
+            <select
+              value={agentId}
+              onChange={(event) => setAgentId(event.target.value)}
+            >
+              <option value="">Choose an agent…</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="button"
+            onClick={runPreview}
+            disabled={busy || !agentId}
+          >
+            Preview the migration
+          </button>
+          {preview ? (
+            <button
+              type="button"
+              className="button primary"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setError("");
+                try {
+                  const result = await apiFetch(
+                    `/connections/${encodeURIComponent(connection.id)}/migrate?apply=1`,
+                    {
+                      method: "POST",
+                      body: { agentId, workspaceId: workspace?.id },
+                    },
+                  );
+                  setMessage(
+                    `Applied. ${result?.applied?.length ?? 0} field(s) copied; ${result?.unsupported?.length ?? preview.unsupported?.length ?? 0} left behind. No run was started.`,
+                  );
+                } catch (err) {
+                  setError(err.message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Apply the plan
+            </button>
+          ) : null}
+        </div>
+        {error ? (
+          <div className="form-error" role="alert">
+            {error}
+          </div>
+        ) : null}
+        {message ? (
+          <p className="as-feedback" role="status">
+            {message}
+          </p>
+        ) : null}
+        {preview ? (
+          <div className="as-migration">
+            <div>
+              <h6>Copied</h6>
+              <ul>
+                {(preview.compatible ?? []).length === 0 ? (
+                  <li className="as-muted as-small">nothing</li>
+                ) : null}
+                {(preview.compatible ?? []).map((field, index) => (
+                  <li key={field.field ?? index}>
+                    {field.field ?? String(field)}
+                    {field.value !== undefined ? (
+                      <span className="as-muted as-small">
+                        {" "}
+                        = {String(field.value).slice(0, 60)}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h6>Not supported by the target</h6>
+              <ul>
+                {(preview.unsupported ?? []).length === 0 ? (
+                  <li className="as-muted as-small">nothing</li>
+                ) : null}
+                {(preview.unsupported ?? []).map((field, index) => (
+                  <li key={field.field ?? index}>
+                    <span className="as-tag as-tag-warn">
+                      {field.field ?? String(field)}
+                    </span>{" "}
+                    {field.reason ?? ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            {preview.notes?.length ? (
+              <div>
+                <h6>Notes</h6>
+                <ul>
+                  {preview.notes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
 export default function ConnectionsPanel({
   presentation = false,
   workspace,
@@ -110,6 +346,10 @@ export default function ConnectionsPanel({
   const [busy, setBusy] = useState("");
   const [feedback, setFeedback] = useState("");
   const [wizard, setWizard] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+  const [aliasDraft, setAliasDraft] = useState(null);
+  const compatibility = useApi("/connections/compatibility");
+  const health = useApi("/ops/health", { interval: 30000 });
   useEffect(() => {
     if (revision === 0) return; // useApi already fetched on mount
     connections.reload();
@@ -130,6 +370,28 @@ export default function ConnectionsPanel({
     ? doctor.data
     : (doctor.data?.items ?? []);
   const hookStatus = hooks.data ?? null;
+  const compatNotes = useMemo(() => {
+    const data = compatibility.data;
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    return data.notes ?? data.compatibility ?? data.items ?? [];
+  }, [compatibility.data]);
+  // An "outage" here is only what this machine can see: an enabled runtime
+  // whose last probe failed, or one the ops health check flagged as down.
+  const outage = useMemo(() => {
+    const unhealthy = new Set(
+      (health.data?.providers?.unhealthy ?? [])
+        .map((entry) => entry.provider ?? entry)
+        .filter(Boolean),
+    );
+    return list.filter(
+      (connection) =>
+        connection.enabled !== false &&
+        (connection.status === "error" ||
+          connection.status === "missing" ||
+          unhealthy.has(connection.provider)),
+    );
+  }, [list, health.data]);
 
   const act = async (key, fn, message) => {
     setBusy(key);
@@ -198,15 +460,151 @@ export default function ConnectionsPanel({
         </p>
       ) : null}
       {connections.error ? (
-        <div className="form-error" role="alert">
-          {connections.error.message}
+        <EmptyState
+          title="Connections are unavailable"
+          error={connections.error}
+          missingRoutes={["GET /api/connections"]}
+        />
+      ) : null}
+
+      {outage.length ? (
+        <div className="as-outage" role="alert">
+          <TriangleAlert size={14} aria-hidden="true" />
+          <div>
+            <strong>
+              {outage.length === 1
+                ? `${providerLabel(outage[0].provider)} is not usable right now.`
+                : `${outage.length} runtimes are not usable right now.`}
+            </strong>
+            <ul>
+              {outage.map((connection) => (
+                <li key={connection.id ?? connection.provider}>
+                  {providerLabel(connection.provider)}
+                  {connection.alias && connection.alias !== "default"
+                    ? ` (${connection.alias})`
+                    : ""}
+                  : {connection.error ?? connection.status}
+                  {connection.remediation ? ` — ${connection.remediation}` : ""}
+                </li>
+              ))}
+            </ul>
+            <span className="as-muted as-small">
+              This banner reflects the last detection and probe on this machine.
+              It is not a vendor status feed: Agent Space never contacts a
+              provider status service.
+            </span>
+          </div>
         </div>
       ) : null}
+
+      <div className="as-row as-wrap as-alias-bar">
+        {aliasDraft ? (
+          <form
+            className="as-row as-wrap"
+            aria-label="Add a connection alias"
+            onSubmit={(event) => {
+              event.preventDefault();
+              act(
+                "alias",
+                () =>
+                  apiFetch("/connections", {
+                    method: "POST",
+                    body: {
+                      provider: aliasDraft.provider,
+                      alias: aliasDraft.alias.trim(),
+                      owner: aliasDraft.owner.trim() || null,
+                      host: aliasDraft.host.trim() || null,
+                    },
+                  }),
+                "Alias added. It is a separate account label on the same runtime; Agent Space still holds no credential.",
+              ).then(() => setAliasDraft(null));
+            }}
+          >
+            <label className="as-inline-label">
+              Runtime
+              <select
+                value={aliasDraft.provider}
+                onChange={(event) =>
+                  setAliasDraft({ ...aliasDraft, provider: event.target.value })
+                }
+              >
+                {[...new Set(list.map((row) => row.provider))].map((id) => (
+                  <option key={id} value={id}>
+                    {providerLabel(id)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="as-inline-label">
+              Alias
+              <input
+                value={aliasDraft.alias}
+                onChange={(event) =>
+                  setAliasDraft({ ...aliasDraft, alias: event.target.value })
+                }
+                placeholder="work-account"
+              />
+            </label>
+            <label className="as-inline-label">
+              Owner
+              <input
+                value={aliasDraft.owner}
+                onChange={(event) =>
+                  setAliasDraft({ ...aliasDraft, owner: event.target.value })
+                }
+                placeholder="who this login belongs to"
+              />
+            </label>
+            <label className="as-inline-label">
+              Host
+              <input
+                value={aliasDraft.host}
+                onChange={(event) =>
+                  setAliasDraft({ ...aliasDraft, host: event.target.value })
+                }
+                placeholder="local"
+              />
+            </label>
+            <button
+              type="submit"
+              className="button primary"
+              disabled={busy === "alias" || !aliasDraft.alias.trim()}
+            >
+              Add alias
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setAliasDraft(null)}
+            >
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="button"
+            onClick={() =>
+              setAliasDraft({
+                provider: list[0]?.provider ?? "claude-code",
+                alias: "",
+                owner: "",
+                host: "",
+              })
+            }
+          >
+            Add another account alias
+          </button>
+        )}
+      </div>
+
       <div className="as-table-wrap">
         <table className="as-table as-conn-table">
           <thead>
             <tr>
               <th scope="col">Provider</th>
+              <th scope="col">Kind</th>
+              <th scope="col">Alias</th>
               <th scope="col">Status</th>
               <th scope="col">Version</th>
               <th scope="col">Binary</th>
@@ -220,106 +618,199 @@ export default function ConnectionsPanel({
           <tbody>
             {list.length === 0 ? (
               <tr>
-                <td colSpan={9} className="as-muted">
+                <td colSpan={11} className="as-muted">
                   No connections yet. Press Refresh to detect installed CLIs.
                 </td>
               </tr>
             ) : null}
             {list.map((connection) => (
-              <tr key={connection.id ?? connection.provider}>
-                <th scope="row">
-                  <ProviderBadge provider={connection.provider} />
-                  {connection.alias && connection.alias !== "default" ? (
-                    <span className="as-muted"> {connection.alias}</span>
-                  ) : null}
-                </th>
-                <td>
-                  <span
-                    className={`status as-conn-${connection.status ?? "unknown"}`}
-                  >
-                    <i className="dot" aria-hidden="true" />
-                    {connection.status ?? "unknown"}
-                  </span>
-                  {connection.error ? (
-                    <div className="as-error-text as-small">
-                      {connection.error}
-                    </div>
-                  ) : null}
-                </td>
-                <td>{connection.version ?? "—"}</td>
-                <td className="as-mono as-small">
-                  {maskPath(
-                    connection.binaryPath ?? connection.binary_path,
-                    presentation,
-                  ) || "—"}
-                </td>
-                <td className="as-mono as-small">
-                  {maskPath(
-                    connection.homePath ?? connection.home_path,
-                    presentation,
-                  ) || "—"}
-                </td>
-                <td>
-                  <Toggle
-                    label={`Observe ${providerLabel(connection.provider)} sessions`}
-                    checked={connection.observe}
-                    disabled={busy === connection.id}
-                    onChange={(observe) => patch(connection, { observe })}
-                  />
-                </td>
-                <td>
-                  <Toggle
-                    label={`Enable ${providerLabel(connection.provider)}`}
-                    checked={connection.enabled}
-                    disabled={busy === connection.id}
-                    onChange={(enabled) => patch(connection, { enabled })}
-                  />
-                </td>
-                <td>
-                  <Caps
-                    caps={
-                      caps[connection.provider] ??
-                      connection.details?.capabilities ??
-                      {}
-                    }
-                  />
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={busy === connection.id}
-                    onClick={() =>
-                      act(
-                        connection.id,
-                        () =>
-                          apiFetch(
-                            `/connections/${encodeURIComponent(connection.id)}/probe`,
-                            { method: "POST" },
-                          ),
-                        `Probed ${providerLabel(connection.provider)}.`,
-                      )
-                    }
-                    aria-label={`Probe ${providerLabel(connection.provider)}`}
-                  >
-                    <Activity size={12} /> Probe
-                  </button>
-                  {(connection.lastProbeAt ?? connection.last_probe_at) ? (
-                    <div className="as-muted as-small">
-                      probed{" "}
-                      {formatTime(
-                        connection.lastProbeAt ?? connection.last_probe_at,
-                      )}
-                    </div>
-                  ) : null}
-                </td>
-              </tr>
+              <React.Fragment key={connection.id ?? connection.provider}>
+                <tr>
+                  <th scope="row">
+                    <ProviderBadge provider={connection.provider} />
+                  </th>
+                  <td>
+                    <span className="as-tag">
+                      {connection.kind ?? "coding-runtime"}
+                    </span>
+                  </td>
+                  <td>
+                    {connection.alias ?? "default"}
+                    {connection.owner ? (
+                      <div className="as-muted as-small">
+                        owner: {connection.owner}
+                      </div>
+                    ) : null}
+                    {connection.host && connection.host !== "local" ? (
+                      <div className="as-muted as-small">
+                        host: {connection.host}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td>
+                    <span
+                      className={`status as-conn-${connection.status ?? "unknown"}`}
+                    >
+                      <i className="dot" aria-hidden="true" />
+                      {connection.status ?? "unknown"}
+                    </span>
+                    {connection.errorCategory ? (
+                      <div className="as-small">
+                        <span className="as-tag as-tag-warn">
+                          {String(connection.errorCategory).replace(/-/g, " ")}
+                        </span>
+                      </div>
+                    ) : null}
+                    {connection.error ? (
+                      <div className="as-error-text as-small">
+                        {connection.error}
+                      </div>
+                    ) : null}
+                    {connection.remediation ? (
+                      <div className="as-muted as-small">
+                        Fix: {connection.remediation}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td>{connection.version ?? "—"}</td>
+                  <td className="as-mono as-small">
+                    {maskPath(
+                      connection.binaryPath ?? connection.binary_path,
+                      presentation,
+                    ) || "—"}
+                  </td>
+                  <td className="as-mono as-small">
+                    {maskPath(
+                      connection.homePath ?? connection.home_path,
+                      presentation,
+                    ) || "—"}
+                  </td>
+                  <td>
+                    <Toggle
+                      label={`Observe ${providerLabel(connection.provider)} sessions`}
+                      checked={connection.observe}
+                      disabled={busy === connection.id}
+                      onChange={(observe) => patch(connection, { observe })}
+                    />
+                  </td>
+                  <td>
+                    <Toggle
+                      label={`Enable ${providerLabel(connection.provider)}`}
+                      checked={connection.enabled}
+                      disabled={busy === connection.id}
+                      onChange={(enabled) => patch(connection, { enabled })}
+                    />
+                  </td>
+                  <td>
+                    <Caps
+                      caps={
+                        caps[connection.provider] ??
+                        connection.details?.capabilities ??
+                        {}
+                      }
+                    />
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={busy === connection.id}
+                      onClick={() =>
+                        act(
+                          connection.id,
+                          () =>
+                            apiFetch(
+                              `/connections/${encodeURIComponent(connection.id)}/probe`,
+                              { method: "POST" },
+                            ),
+                          `Probed ${providerLabel(connection.provider)}.`,
+                        )
+                      }
+                      aria-label={`Probe ${providerLabel(connection.provider)}`}
+                    >
+                      <Activity size={12} /> Probe
+                    </button>
+                    {(connection.lastProbeAt ?? connection.last_probe_at) ? (
+                      <div className="as-muted as-small">
+                        probed{" "}
+                        {formatTime(
+                          connection.lastProbeAt ?? connection.last_probe_at,
+                        )}
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="text-button"
+                      aria-expanded={expanded === connection.id}
+                      onClick={() =>
+                        setExpanded((current) =>
+                          current === connection.id ? null : connection.id,
+                        )
+                      }
+                    >
+                      {expanded === connection.id ? "Hide details" : "Details"}
+                    </button>
+                  </td>
+                </tr>
+                {expanded === connection.id ? (
+                  <tr className="as-conn-detail-row">
+                    <td colSpan={11}>
+                      <ConnectionDetail
+                        connection={connection}
+                        agents={agents}
+                        workspace={workspace}
+                      />
+                    </td>
+                  </tr>
+                ) : null}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
       </div>
 
       <div className="as-conn-grid">
+        <article className="as-card">
+          <h4>Compatibility notes</h4>
+          {compatibility.error ? (
+            <EmptyState
+              compact
+              title="Compatibility notes unavailable"
+              error={compatibility.error}
+              missingRoutes={["GET /api/connections/compatibility"]}
+            />
+          ) : null}
+          {compatNotes.length === 0 && !compatibility.error ? (
+            <p className="as-muted as-small">
+              No compatibility note is recorded for the runtimes on this
+              machine.
+            </p>
+          ) : null}
+          <ul className="as-compat-list" role="list">
+            {compatNotes.map((note, index) => (
+              <li key={note.provider ? `${note.provider}-${index}` : index}>
+                <span className="as-row as-wrap">
+                  <strong>{providerLabel(note.provider)}</strong>
+                  {note.version ? (
+                    <span className="as-tag">{note.version}</span>
+                  ) : null}
+                  <span
+                    className={`as-tag ${note.verified ? "" : "as-tag-warn"}`}
+                  >
+                    {note.verified ? "verified here" : "not verified here"}
+                  </span>
+                </span>
+                <span className="as-muted as-small">
+                  {note.note ?? note.detail ?? note.message ?? ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="as-muted as-small">
+            Verified means a run or a read-only probe actually succeeded on this
+            machine and OS. Everything else stays experimental or unknown.
+          </p>
+        </article>
         <article className="as-card">
           <h4>
             <Shield size={13} aria-hidden="true" /> Claude Code hooks

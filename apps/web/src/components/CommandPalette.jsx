@@ -1,6 +1,53 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, CornerDownLeft } from "lucide-react";
 import { fuzzyFilter } from "../hooks/useApi.js";
+import { readLocal } from "../hooks/useLocalStorage.js";
+import { RECENT_WORKSPACES_KEY } from "./WorkspaceSwitcher.jsx";
+
+/**
+ * Builds the commands the palette always offers on top of the host's own:
+ * global search, and the recently visited workspaces (newest first).
+ * Pure, so node:test can cover the ordering without a DOM.
+ *
+ * @param {{ workspaces?: any[], onOpenSearch?: () => void, onSelectWorkspace?: (id:string)=>void, currentWorkspaceId?: string|null, storageKey?: string }} options
+ */
+export function buildStandardCommands({
+  workspaces = [],
+  onOpenSearch,
+  onSelectWorkspace,
+  currentWorkspaceId = null,
+  storageKey = RECENT_WORKSPACES_KEY,
+} = {}) {
+  const commands = [];
+  if (onOpenSearch)
+    commands.push({
+      id: "search",
+      group: "Search",
+      label: "Search tasks, runs, events, artifacts and sessions",
+      hint: "Ctrl+Shift+F",
+      keywords: "find grep global search",
+      run: onOpenSearch,
+    });
+  const recent = readLocal(storageKey, []);
+  const known = new Map(
+    workspaces.map((workspace) => [workspace.id, workspace]),
+  );
+  const ids = (Array.isArray(recent) ? recent : []).filter(
+    (id) => id !== currentWorkspaceId && known.has(id),
+  );
+  for (const [index, id] of ids.slice(0, 5).entries()) {
+    const workspace = known.get(id);
+    commands.push({
+      id: `recent-${id}`,
+      group: "Recent workspaces",
+      label: workspace.name,
+      hint: index === 0 ? "most recent" : `${index + 1} back`,
+      keywords: `workspace recent ${workspace.rootPath ?? ""}`,
+      run: () => onSelectWorkspace?.(id),
+    });
+  }
+  return commands;
+}
 
 /**
  * Ctrl/Cmd+K command palette with fuzzy filtering and keyboard navigation.
@@ -12,7 +59,8 @@ import { fuzzyFilter } from "../hooks/useApi.js";
  *   onClose: () => void,
  *   onOpen?: () => void,
  *   commands: Array<{ id: string, label: string, hint?: string, group?: string, keywords?: string, run: () => void }>,
- *   bindShortcut?: boolean
+ *   bindShortcut?: boolean,
+ *   extraCommands?: Array<object>   // appended after `commands`; use buildStandardCommands()
  * }} props
  */
 export default function CommandPalette({
@@ -21,6 +69,7 @@ export default function CommandPalette({
   onOpen,
   commands = [],
   bindShortcut = true,
+  extraCommands = [],
 }) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -49,15 +98,19 @@ export default function CommandPalette({
     }
   }, [open]);
 
+  const all = useMemo(
+    () => [...commands, ...extraCommands],
+    [commands, extraCommands],
+  );
   const results = useMemo(
     () =>
       fuzzyFilter(
         query,
-        commands,
+        all,
         (c) =>
           `${c.group ?? ""} ${c.label} ${c.hint ?? ""} ${c.keywords ?? ""}`,
       ).slice(0, 40),
-    [query, commands],
+    [query, all],
   );
   useEffect(() => setIndex(0), [results.length, query]);
   useEffect(() => {

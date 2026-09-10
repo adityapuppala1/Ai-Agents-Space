@@ -1,12 +1,26 @@
-import React, { useMemo, useState } from "react";
-import { ChartBar, Download, Table2 } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ChartBar,
+  Download,
+  Table2,
+  Bookmark,
+  Trash2,
+  TrendingUp,
+  Activity,
+  Gauge,
+} from "lucide-react";
+import {
+  apiFetch,
   useApi,
   formatElapsed,
   formatNumber,
+  formatTime,
   providerLabel,
   readToken,
+  RUN_STATUS_LABELS,
 } from "../hooks/useApi.js";
+import EmptyState from "../components/EmptyState.jsx";
+import { normalizeHeatmap } from "../hooks/viewLogic.js";
 
 /* One-hue sequential ramp (reference palette, blue 100→700). Light: more is
    darker. Dark theme: same steps, near-zero recedes toward the dark surface. */
@@ -31,18 +45,25 @@ const FUNNEL_STAGES = [
   "accepted",
 ];
 const TIME_BUCKETS = [
-  ["queued", "Queued"],
-  ["executing", "Executing"],
-  ["waiting_approval", "Waiting for approval"],
-  ["waiting_provider", "Waiting for provider"],
-  ["blocked", "Blocked"],
-  ["reviewing", "Reviewing"],
+  ["queuedMs", "Queued"],
+  ["executingMs", "Executing"],
+  ["waitingApprovalMs", "Waiting for a human"],
+  ["waitingForHumanMs", "Waiting for a human"],
+  ["waitingForProviderMs", "Waiting for the provider"],
+  ["blockedMs", "Blocked"],
+  ["staleMs", "Stale"],
+  ["reviewingMs", "Reviewing"],
 ];
 const RANGES = [
   ["24h", "Last 24 hours", 24 * 3600 * 1000],
   ["7d", "Last 7 days", 7 * 24 * 3600 * 1000],
   ["30d", "Last 30 days", 30 * 24 * 3600 * 1000],
   ["all", "All time", 0],
+];
+const FORECAST_METRICS = [
+  ["durationMs", "Run duration"],
+  ["costUsd", "Cost per run"],
+  ["totalTokens", "Tokens per run"],
 ];
 
 function isDark() {
@@ -66,6 +87,9 @@ function toPairs(value, labelKey = "stage", countKey = "count") {
     entry,
   ]);
 }
+
+/* `normalizeHeatmap` is in ../hooks/viewLogic.js (covered by node:test). */
+export { normalizeHeatmap };
 
 function Tile({ label, value, basis, hint }) {
   return (
@@ -93,180 +117,311 @@ function BarCell({ value, max }) {
   );
 }
 
+function Heatmap({
+  title,
+  data,
+  ramp,
+  unitLabel,
+  onDrill,
+  asTable,
+  onToggleTable,
+}) {
+  if (!data) return null;
+  return (
+    <article className="as-card as-span2">
+      <div className="as-row as-wrap">
+        <h4>
+          {title} <span className="as-tag">measured</span>
+        </h4>
+        <button
+          type="button"
+          className="text-button"
+          aria-pressed={asTable}
+          onClick={onToggleTable}
+        >
+          <Table2 size={12} /> {asTable ? "Show heatmap" : "Show as table"}
+        </button>
+      </div>
+      {data.rows.length === 0 ? (
+        <p className="as-muted">Nothing recorded in this range.</p>
+      ) : (
+        <div className="as-table-wrap">
+          <table className={`as-table as-numeric ${asTable ? "" : "as-heat"}`}>
+            <thead>
+              <tr>
+                <th scope="col">Row</th>
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <th key={hour} scope="col" abbr={`${hour}:00`}>
+                    {hour}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row) => (
+                <tr key={row.id}>
+                  <th scope="row">{String(row.title).slice(0, 32)}</th>
+                  {Array.from({ length: 24 }, (_, hour) => {
+                    const value = Number(row.hours[hour]) || 0;
+                    const step =
+                      data.max > 0 && value > 0
+                        ? Math.min(
+                            ramp.length - 1,
+                            Math.floor((value / data.max) * (ramp.length - 1)),
+                          )
+                        : -1;
+                    const fill = step >= 0 ? ramp[step] : "transparent";
+                    let ink;
+                    if (step >= 0)
+                      ink = DARK_INK.has(fill) ? "#27394a" : "#ffffff";
+                    const text =
+                      data.unit === "ms"
+                        ? formatElapsed(value)
+                        : formatNumber(value);
+                    const label = `${row.title}, ${hour}:00 — ${text}`;
+                    const drillable =
+                      value > 0 &&
+                      (row.runIds[hour].length || row.taskIds[hour].length);
+                    const cellText = value
+                      ? data.unit === "ms"
+                        ? Math.round(value / 60000)
+                        : value
+                      : "";
+                    return (
+                      <td
+                        key={hour}
+                        style={
+                          asTable ? undefined : { background: fill, color: ink }
+                        }
+                        title={
+                          drillable
+                            ? `${label} — open the runs behind this cell`
+                            : label
+                        }
+                      >
+                        {drillable ? (
+                          <button
+                            type="button"
+                            className="as-heat-cell"
+                            aria-label={`${label}. Open the ${row.runIds[hour].length} run(s) behind this cell.`}
+                            onClick={() =>
+                              onDrill({
+                                label,
+                                runIds: row.runIds[hour],
+                                taskIds: row.taskIds[hour],
+                              })
+                            }
+                          >
+                            {asTable ? text : cellText}
+                          </button>
+                        ) : (
+                          <span aria-label={label}>
+                            {asTable ? (value ? text : "") : cellText}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="as-muted as-small">
+        Cell values are {unitLabel}; darker means more (single-hue scale). A
+        cell with recorded runs is a button: it opens the actual runs behind it.
+      </p>
+    </article>
+  );
+}
+
 /**
  * Analytics for one workspace (or all when `workspaceId` is null) from
  * GET /api/analytics?workspace=&since=. Every number carries a basis label:
  * counted (from stored records), reported (provider-supplied), measured (from
- * recorded timestamps) or estimated. Export links point at
- * GET /api/analytics/export?format=csv|json.
- * @param {{ workspaceId?: string|null }} props
+ * recorded timestamps) or estimated.
+ *
+ * Added in wave 2: saved views (GET/POST/DELETE /api/analytics/views), filter
+ * chips that actually send the range as an epoch `since`, heatmap cells that
+ * drill down through POST /api/analytics/drill-down, a forecast with its
+ * assumptions and confidence (GET /api/analytics/forecast), availability
+ * (GET /api/analytics/availability) and saturation
+ * (GET /api/analytics/saturation), and CSV/JSON export.
+ *
+ * @param {{ workspaceId?: string|null, onOpenRun?: (runId:string)=>void, onOpenTask?: (taskId:string)=>void }} props
  */
-export default function AnalyticsView({ workspaceId = null }) {
+export default function AnalyticsView({
+  workspaceId = null,
+  onOpenRun,
+  onOpenTask,
+}) {
   const [range, setRange] = useState("7d");
+  const [provider, setProvider] = useState("");
   const [heatTable, setHeatTable] = useState(false);
+  const [workloadTable, setWorkloadTable] = useState(false);
+  const [drill, setDrill] = useState(null);
+  const [drillError, setDrillError] = useState("");
+  const [viewName, setViewName] = useState("");
+  const [viewMessage, setViewMessage] = useState("");
+  const [metric, setMetric] = useState("durationMs");
+
   const since = useMemo(() => {
-    const sinceMs = RANGES.find((r) => r[0] === range)?.[2] ?? 0;
-    return sinceMs ? new Date(Date.now() - sinceMs).toISOString() : "";
+    const window = RANGES.find((entry) => entry[0] === range)?.[2] ?? 0;
+    return window ? Date.now() - window : 0;
   }, [range]);
-  const query = new URLSearchParams();
-  if (workspaceId) query.set("workspace", workspaceId);
-  if (since) query.set("since", since);
+
+  const query = useMemo(() => {
+    const params = new URLSearchParams();
+    if (workspaceId) params.set("workspace", workspaceId);
+    if (since) params.set("since", String(since));
+    return params;
+  }, [workspaceId, since]);
+
   const analytics = useApi(`/analytics?${query.toString()}`, {
     interval: 30000,
   });
+  const forecast = useApi(
+    `/analytics/forecast?${new URLSearchParams({
+      ...Object.fromEntries(query),
+      metric,
+      ...(provider ? { provider } : {}),
+    }).toString()}`,
+  );
+  const views = useApi(
+    `/analytics/views${workspaceId ? `?workspace=${encodeURIComponent(workspaceId)}` : ""}`,
+  );
+
   const data = analytics.data?.summary ?? analytics.data ?? null;
   const ramp = isDark() ? RAMP_DARK : RAMP_LIGHT;
   const exportHref = (format) => {
     const params = new URLSearchParams(query);
     params.set("format", format);
-    if (readToken()) params.set("token", readToken());
+    const token = readToken();
+    if (token) params.set("token", token);
     return `/api/analytics/export?${params.toString()}`;
   };
+
+  const drillDown = useCallback(async ({ label, runIds, taskIds }) => {
+    setDrillError("");
+    try {
+      const result = await apiFetch("/analytics/drill-down", {
+        method: "POST",
+        body: { runIds, taskIds },
+      });
+      setDrill({ label, ...result });
+    } catch (error) {
+      setDrill(null);
+      setDrillError(error.message);
+    }
+  }, []);
 
   const funnel = useMemo(() => {
     const pairs = toPairs(data?.funnel);
     const byKey = new Map(
-      pairs.map(([k, v]) => [String(k).toLowerCase(), Number(v) || 0]),
+      pairs.map(([key, value]) => [
+        String(key).toLowerCase(),
+        Number(value) || 0,
+      ]),
     );
-    const ordered = FUNNEL_STAGES.filter((s) => byKey.has(s)).map((s) => [
-      s,
-      byKey.get(s),
-    ]);
-    for (const [k, v] of byKey)
-      if (!FUNNEL_STAGES.includes(k)) ordered.push([k, v]);
+    const ordered = FUNNEL_STAGES.filter((stage) => byKey.has(stage)).map(
+      (stage) => [stage, byKey.get(stage)],
+    );
+    for (const [key, value] of byKey)
+      if (!FUNNEL_STAGES.includes(key)) ordered.push([key, value]);
     return ordered;
   }, [data]);
+
   const time = useMemo(() => {
-    const pairs = toPairs(
-      data?.time ?? data?.timeBreakdown ?? data?.durations,
-      "bucket",
-      "ms",
-    );
-    const byKey = new Map(pairs.map(([k, v]) => [String(k), Number(v) || 0]));
-    const ordered = TIME_BUCKETS.filter(([k]) => byKey.has(k)).map(
-      ([k, label]) => [label, byKey.get(k)],
-    );
-    for (const [k, v] of byKey)
-      if (!TIME_BUCKETS.some(([key]) => key === k)) ordered.push([k, v]);
+    const source = data?.time ?? data?.timeBreakdown ?? data?.durations ?? {};
+    const seen = new Set();
+    const ordered = [];
+    for (const [key, label] of TIME_BUCKETS) {
+      const value = Number(source[key]);
+      if (!Number.isFinite(value) || seen.has(label)) continue;
+      seen.add(label);
+      ordered.push([label, value]);
+    }
     return ordered;
   }, [data]);
+
   const providers = useMemo(() => {
-    const raw = data?.providers ?? data?.byProvider ?? data?.usage ?? [];
+    const raw = data?.byProvider ?? data?.providers ?? data?.usage ?? [];
     const rows = Array.isArray(raw)
       ? raw
-      : Object.entries(raw).map(([provider, entry]) => ({
-          provider,
+      : Object.entries(raw).map(([key, entry]) => ({
+          provider: key,
           ...(entry ?? {}),
         }));
     return rows.map((row) => ({
-      provider: row.provider ?? "unknown",
+      provider: row.provider ?? row.key ?? "unknown",
       model: row.model ?? "model not reported",
       runs: row.runs ?? row.count ?? 0,
-      input:
-        row.inputTokens ?? row.input_tokens ?? row.usage?.input_tokens ?? null,
-      output:
-        row.outputTokens ??
-        row.output_tokens ??
-        row.usage?.output_tokens ??
-        null,
-      cost: row.cost ?? row.costUsd ?? row.total_cost_usd ?? null,
-      estimated: Boolean(row.estimated),
+      input: row.inputTokens?.value ?? row.inputTokens ?? null,
+      output: row.outputTokens?.value ?? row.outputTokens ?? null,
+      cost: row.costUsd?.value ?? row.cost ?? null,
+      estimated: Boolean(row.costUsd?.estimated ?? row.estimated),
+      reported: row.costUsd?.reported ?? null,
     }));
   }, [data]);
-  const heat = useMemo(() => {
-    const raw = data?.heatmap ?? data?.blockedHeatmap ?? null;
-    if (!raw) return null;
-    let rows = [];
-    if (Array.isArray(raw))
-      rows = raw.map((row) => ({
-        id: row.taskId ?? row.id,
-        title: row.title ?? row.taskId ?? row.id,
-        hours: row.hours ?? row.values ?? [],
-      }));
-    else if (Array.isArray(raw.rows))
-      rows = raw.rows.map((row) => ({
-        id: row.taskId ?? row.id,
-        title: row.title ?? row.id,
-        hours: row.hours ?? row.values ?? [],
-      }));
-    else if (Array.isArray(raw.cells)) {
-      const map = new Map();
-      for (const cell of raw.cells) {
-        const key = cell.taskId ?? cell.task;
-        if (!map.has(key))
-          map.set(key, {
-            id: key,
-            title: cell.title ?? key,
-            hours: Array(24).fill(0),
-          });
-        map.get(key).hours[cell.hour] =
-          (map.get(key).hours[cell.hour] ?? 0) +
-          (cell.value ?? cell.ms ?? cell.count ?? 0);
-      }
-      rows = [...map.values()];
-    }
-    const max = Math.max(
-      0,
-      ...rows.flatMap((row) => row.hours.map((v) => Number(v) || 0)),
-    );
-    return {
-      rows,
-      max,
-      unit:
-        raw.unit ??
-        (rows.some((r) => r.hours.some((v) => v > 1000)) ? "ms" : "count"),
-    };
-  }, [data]);
+
+  const blocked = useMemo(
+    () => normalizeHeatmap(data?.blockedHeatmap ?? data?.heatmap ?? null),
+    [data],
+  );
+  const workload = useMemo(
+    () => normalizeHeatmap(data?.workloadHeatmap ?? null),
+    [data],
+  );
+  const availability = data?.reliability?.availability ?? null;
+  const saturation = data?.reliability?.saturation ?? null;
 
   const counts = {
-    completed:
-      data?.runs?.completed ?? data?.completed ?? data?.counts?.completed,
-    failed: data?.runs?.failed ?? data?.failed ?? data?.counts?.failed,
-    cancelled:
-      data?.runs?.cancelled ?? data?.cancellations ?? data?.counts?.cancelled,
-    retries: data?.retries ?? data?.counts?.retries,
-    disconnects:
-      data?.disconnects ?? data?.disconnections ?? data?.counts?.disconnects,
-    approvals:
-      data?.approvals?.waiting ??
-      data?.approvalsWaiting ??
-      data?.counts?.approvals,
+    completed: data?.funnel?.accepted ?? data?.counts?.completed,
+    failed: data?.reliability?.failures ?? data?.counts?.failed,
+    cancelled: data?.reliability?.cancellations ?? data?.counts?.cancelled,
+    retries: data?.reliability?.retries ?? data?.counts?.retries,
+    disconnects: data?.reliability?.disconnects ?? data?.counts?.disconnects,
+    stale: data?.reliability?.staleEvents ?? data?.counts?.stale,
   };
-  const maxFunnel = Math.max(0, ...funnel.map(([, v]) => v));
-  const maxTime = Math.max(0, ...time.map(([, v]) => v));
-  const known = new Set([
-    "funnel",
-    "time",
-    "timeBreakdown",
-    "durations",
-    "providers",
-    "byProvider",
-    "usage",
-    "heatmap",
-    "blockedHeatmap",
-    "runs",
-    "completed",
-    "failed",
-    "cancellations",
-    "cancelled",
-    "retries",
-    "disconnects",
-    "disconnections",
-    "approvals",
-    "approvalsWaiting",
-    "counts",
-    "since",
-    "workspaceId",
-    "workspace",
-    "generatedAt",
-  ]);
-  const extras = data
-    ? Object.entries(data).filter(
-        ([key, value]) =>
-          !known.has(key) &&
-          (typeof value === "number" || typeof value === "string"),
-      )
-    : [];
+  const maxFunnel = Math.max(0, ...funnel.map(([, value]) => value));
+  const maxTime = Math.max(0, ...time.map(([, value]) => value));
+
+  const savedViews = views.data?.views ?? [];
+  const applyView = (view) => {
+    const filters = view.filters ?? {};
+    if (filters.range) setRange(filters.range);
+    if (filters.provider !== undefined) setProvider(filters.provider ?? "");
+    if (filters.metric) setMetric(filters.metric);
+    setViewMessage(`Applied saved view "${view.name}".`);
+  };
+  const saveView = async () => {
+    if (!viewName.trim()) return;
+    try {
+      await apiFetch("/analytics/views", {
+        method: "POST",
+        body: {
+          name: viewName.trim(),
+          workspaceId,
+          filters: { range, provider: provider || null, metric },
+        },
+      });
+      setViewName("");
+      setViewMessage("Saved. This view stores the filters, never the numbers.");
+      views.reload();
+    } catch (error) {
+      setViewMessage(error.message);
+    }
+  };
+
+  const providerOptions = useMemo(
+    () => [...new Set(providers.map((row) => row.provider))].filter(Boolean),
+    [providers],
+  );
+
+  useEffect(() => {
+    setDrill(null);
+  }, [range, workspaceId]);
 
   return (
     <section className="as-analytics" aria-label="Analytics">
@@ -286,6 +441,20 @@ export default function AnalyticsView({ workspaceId = null }) {
               {label}
             </button>
           ))}
+          <label className="as-inline-label">
+            Provider
+            <select
+              value={provider}
+              onChange={(event) => setProvider(event.target.value)}
+            >
+              <option value="">All</option>
+              {providerOptions.map((id) => (
+                <option key={id} value={id}>
+                  {providerLabel(id)}
+                </option>
+              ))}
+            </select>
+          </label>
           <a
             className="button"
             href={exportHref("csv")}
@@ -304,26 +473,95 @@ export default function AnalyticsView({ workspaceId = null }) {
           </a>
         </div>
       </header>
+
       <p className="as-muted as-small">
         Basis labels: <span className="as-tag">counted</span> from stored
         records · <span className="as-tag">reported</span> by the provider ·{" "}
         <span className="as-tag">measured</span> from recorded timestamps ·{" "}
         <span className="as-tag as-tag-warn">estimated</span> computed with
         stated assumptions. Missing data is shown as missing, never guessed.
+        {since ? ` Range starts ${formatTime(since)}.` : " Range: all time."}
       </p>
+
+      {/* ------------------------------------------------------ saved views */}
+      <div className="as-savedviews">
+        <span className="as-row as-wrap">
+          <Bookmark size={12} aria-hidden="true" />
+          <strong>Saved views</strong>
+          {views.error ? (
+            <span className="as-muted as-small">
+              Saved views need{" "}
+              <code className="as-mono">GET /api/analytics/views</code>.
+            </span>
+          ) : null}
+          {savedViews.map((view) => (
+            <span key={view.id} className="as-savedview">
+              <button
+                type="button"
+                className="as-chip"
+                onClick={() => applyView(view)}
+              >
+                {view.name}
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={`Delete saved view ${view.name}`}
+                onClick={async () => {
+                  await apiFetch(
+                    `/analytics/views/${encodeURIComponent(view.id)}`,
+                    { method: "DELETE" },
+                  );
+                  views.reload();
+                }}
+              >
+                <Trash2 size={11} />
+              </button>
+            </span>
+          ))}
+        </span>
+        <span className="as-row">
+          <label className="as-inline-label">
+            <span className="sr-only">Name for this view</span>
+            <input
+              value={viewName}
+              onChange={(event) => setViewName(event.target.value)}
+              placeholder="Name the current filters"
+            />
+          </label>
+          <button
+            type="button"
+            className="button"
+            onClick={saveView}
+            disabled={!viewName.trim()}
+          >
+            Save view
+          </button>
+        </span>
+        {viewMessage ? (
+          <p className="as-feedback" role="status">
+            {viewMessage}
+          </p>
+        ) : null}
+      </div>
+
       {analytics.error ? (
-        <div className="form-error" role="alert">
-          {analytics.error.message}
-        </div>
+        <EmptyState
+          title="Analytics are unavailable"
+          error={analytics.error}
+          missingRoutes={["GET /api/analytics"]}
+        />
       ) : null}
       {!data && !analytics.error ? <p className="as-muted">Loading…</p> : null}
+
       {data ? (
         <div className={analytics.loading ? "as-stale" : ""}>
           <div className="as-tiles">
             <Tile
-              label="Completed runs"
+              label="Accepted results"
               value={formatNumber(counts.completed)}
               basis="counted"
+              hint="a reviewer accepted the result"
             />
             <Tile
               label="Failed runs"
@@ -346,8 +584,8 @@ export default function AnalyticsView({ workspaceId = null }) {
               basis="counted"
             />
             <Tile
-              label="Awaiting approval"
-              value={formatNumber(counts.approvals)}
+              label="Stale events"
+              value={formatNumber(counts.stale)}
               basis="counted"
             />
           </div>
@@ -364,7 +602,7 @@ export default function AnalyticsView({ workspaceId = null }) {
                   <thead>
                     <tr>
                       <th scope="col">Stage</th>
-                      <th scope="col">Tasks</th>
+                      <th scope="col">Count</th>
                       <th scope="col">
                         <span className="sr-only">Share of created</span>
                       </th>
@@ -420,8 +658,8 @@ export default function AnalyticsView({ workspaceId = null }) {
                 </table>
               )}
               <p className="as-muted as-small">
-                Parallel runs overlap; totals are per-run time, not wall-clock
-                project time.
+                {data?.time?.note ??
+                  "Parallel runs overlap; totals are per-run time, not wall-clock project time."}
               </p>
             </article>
 
@@ -446,34 +684,317 @@ export default function AnalyticsView({ workspaceId = null }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {providers.map((row, i) => (
-                        <tr key={`${row.provider}-${row.model}-${i}`}>
+                      {providers
+                        .filter((row) => !provider || row.provider === provider)
+                        .map((row, index) => (
+                          <tr key={`${row.provider}-${row.model}-${index}`}>
+                            <th scope="row">{providerLabel(row.provider)}</th>
+                            <td>{row.model}</td>
+                            <td>{formatNumber(row.runs)}</td>
+                            <td>
+                              {row.input === null || row.input === undefined
+                                ? "not reported"
+                                : formatNumber(row.input)}
+                            </td>
+                            <td>
+                              {row.output === null || row.output === undefined
+                                ? "not reported"
+                                : formatNumber(row.output)}
+                            </td>
+                            <td>
+                              {row.cost === null || row.cost === undefined
+                                ? "not reported"
+                                : typeof row.cost === "number"
+                                  ? `$${row.cost.toFixed(4)}`
+                                  : String(row.cost)}
+                            </td>
+                            <td>
+                              <span
+                                className={`as-tag ${row.estimated ? "as-tag-warn" : ""}`}
+                              >
+                                {row.estimated
+                                  ? "estimated"
+                                  : row.reported === false
+                                    ? "not reported"
+                                    : "reported"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </article>
+
+            {/* ------------------------------------------------ heatmaps */}
+            <Heatmap
+              title="Blocked time by task and hour"
+              data={blocked}
+              ramp={ramp}
+              unitLabel={
+                blocked?.unit === "ms" ? "minutes blocked" : "blocked events"
+              }
+              asTable={heatTable}
+              onToggleTable={() => setHeatTable((value) => !value)}
+              onDrill={drillDown}
+            />
+            <Heatmap
+              title="Workload by provider and hour"
+              data={workload}
+              ramp={ramp}
+              unitLabel={workload?.unit === "ms" ? "minutes executing" : "runs"}
+              asTable={workloadTable}
+              onToggleTable={() => setWorkloadTable((value) => !value)}
+              onDrill={drillDown}
+            />
+
+            {drillError ? (
+              <article className="as-card as-span2">
+                <div className="form-error" role="alert">
+                  {drillError}
+                </div>
+              </article>
+            ) : null}
+            {drill ? (
+              <article className="as-card as-span2" aria-live="polite">
+                <div className="as-row as-wrap">
+                  <h4>Runs behind “{drill.label}”</h4>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => setDrill(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+                {(drill.runs ?? []).length === 0 &&
+                (drill.tasks ?? []).length === 0 ? (
+                  <p className="as-muted">
+                    The records behind this cell are no longer stored.
+                  </p>
+                ) : null}
+                {(drill.runs ?? []).length ? (
+                  <div className="as-table-wrap">
+                    <table className="as-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Run</th>
+                          <th scope="col">Provider</th>
+                          <th scope="col">Status</th>
+                          <th scope="col">Started</th>
+                          <th scope="col">Model</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {drill.runs.map((run) => (
+                          <tr key={run.runId}>
+                            <th scope="row">
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={() => onOpenRun?.(run.runId)}
+                              >
+                                {run.runId.slice(0, 8)}
+                              </button>
+                            </th>
+                            <td>{providerLabel(run.provider)}</td>
+                            <td>
+                              {RUN_STATUS_LABELS[run.status] ?? run.status}
+                            </td>
+                            <td>{formatTime(run.startedAt)}</td>
+                            <td>{run.model ?? "model not reported"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+                {(drill.tasks ?? []).length ? (
+                  <ul className="as-drill-tasks" role="list">
+                    {drill.tasks.map((task) => (
+                      <li key={task.taskId}>
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => onOpenTask?.(task.taskId)}
+                        >
+                          {task.title}
+                        </button>
+                        <span className="as-tag">{task.status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </article>
+            ) : null}
+
+            {/* ---------------------------------------------- forecast */}
+            <article className="as-card">
+              <div className="as-row as-wrap">
+                <h4>
+                  <TrendingUp size={13} aria-hidden="true" /> Forecast{" "}
+                  <span className="as-tag as-tag-warn">estimated</span>
+                </h4>
+                <label className="as-inline-label">
+                  Metric
+                  <select
+                    value={metric}
+                    onChange={(event) => setMetric(event.target.value)}
+                  >
+                    {FORECAST_METRICS.map(([id, label]) => (
+                      <option key={id} value={id}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {forecast.error ? (
+                <EmptyState
+                  compact
+                  title="Forecast unavailable"
+                  error={forecast.error}
+                  missingRoutes={["GET /api/analytics/forecast"]}
+                />
+              ) : forecast.data?.available === false ? (
+                <p className="as-muted">No forecast: {forecast.data.reason}</p>
+              ) : forecast.data ? (
+                <>
+                  <p className="as-forecast-range">
+                    <strong>
+                      {metric === "durationMs"
+                        ? formatElapsed(forecast.data.estimate)
+                        : formatNumber(forecast.data.estimate)}
+                    </strong>{" "}
+                    typical ·{" "}
+                    {metric === "durationMs"
+                      ? `${formatElapsed(forecast.data.low)} – ${formatElapsed(forecast.data.high)}`
+                      : `${formatNumber(forecast.data.low)} – ${formatNumber(forecast.data.high)}`}{" "}
+                    range
+                  </p>
+                  <p className="as-muted as-small">
+                    {forecast.data.confidence?.interval} ·{" "}
+                    {forecast.data.confidence?.method} · confidence{" "}
+                    {forecast.data.confidence?.level} ·{" "}
+                    {forecast.data.confidence?.note}
+                  </p>
+                  <h5>Assumptions</h5>
+                  <ul className="as-assumptions">
+                    {(forecast.data.assumptions ?? []).map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                  {forecast.data.capacity?.available ? (
+                    <>
+                      <h5>Capacity</h5>
+                      <ul className="as-assumptions">
+                        {forecast.data.capacity.suggestions.map((line) => (
+                          <li key={line}>{line}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                <p className="as-muted">Loading forecast…</p>
+              )}
+            </article>
+
+            {/* ------------------------------------------ availability */}
+            <article className="as-card">
+              <h4>
+                <Activity size={13} aria-hidden="true" /> Provider availability{" "}
+                <span className="as-tag">measured</span>
+              </h4>
+              {!availability ? (
+                <p className="as-muted">
+                  No availability recorded in this range.
+                </p>
+              ) : (
+                <>
+                  <table className="as-table as-numeric">
+                    <thead>
+                      <tr>
+                        <th scope="col">Provider</th>
+                        <th scope="col">Attempts</th>
+                        <th scope="col">Success</th>
+                        <th scope="col">Disconnects / run</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(availability.byProvider ?? []).map((row) => (
+                        <tr key={row.provider}>
                           <th scope="row">{providerLabel(row.provider)}</th>
-                          <td>{row.model}</td>
-                          <td>{formatNumber(row.runs)}</td>
+                          <td>{formatNumber(row.attempts)}</td>
                           <td>
-                            {row.input === null
-                              ? "not reported"
-                              : formatNumber(row.input)}
+                            {row.availability === null
+                              ? "no attempts"
+                              : `${Math.round(row.availability * 100)}%`}
                           </td>
                           <td>
-                            {row.output === null
-                              ? "not reported"
-                              : formatNumber(row.output)}
+                            {row.disconnectFrequency === null
+                              ? "—"
+                              : row.disconnectFrequency.toFixed(2)}
                           </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="as-muted as-small">{availability.basis}</p>
+                </>
+              )}
+            </article>
+
+            {/* -------------------------------------------- saturation */}
+            <article className="as-card as-span2">
+              <h4>
+                <Gauge size={13} aria-hidden="true" /> Runner saturation{" "}
+                <span className="as-tag">measured</span>
+              </h4>
+              {!saturation?.byWorkspace?.length ? (
+                <p className="as-muted">
+                  No run overlapped a concurrency limit in this range.
+                </p>
+              ) : (
+                <div className="as-table-wrap">
+                  <table className="as-table as-numeric">
+                    <thead>
+                      <tr>
+                        <th scope="col">Workspace</th>
+                        <th scope="col">Limit</th>
+                        <th scope="col">Peak concurrent</th>
+                        <th scope="col">Time at the limit</th>
+                        <th scope="col">Windows</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {saturation.byWorkspace.map((row) => (
+                        <tr key={row.workspaceId}>
+                          <th scope="row">{row.workspaceId}</th>
+                          <td>{formatNumber(row.limit)}</td>
+                          <td>{formatNumber(row.maxConcurrent)}</td>
+                          <td>{formatElapsed(row.saturatedMs ?? 0)}</td>
                           <td>
-                            {row.cost === null
-                              ? "not reported"
-                              : typeof row.cost === "number"
-                                ? `$${row.cost.toFixed(4)}`
-                                : String(row.cost)}
-                          </td>
-                          <td>
-                            <span
-                              className={`as-tag ${row.estimated ? "as-tag-warn" : ""}`}
-                            >
-                              {row.estimated ? "estimated" : "reported"}
-                            </span>
+                            {(row.windows ?? []).length ? (
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={() =>
+                                  drillDown({
+                                    label: `saturation in ${row.workspaceId}`,
+                                    runIds: row.windows.flatMap(
+                                      (window) => window.runIds ?? [],
+                                    ),
+                                    taskIds: [],
+                                  })
+                                }
+                              >
+                                {row.windows.length} window(s)
+                              </button>
+                            ) : (
+                              "—"
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -481,130 +1002,12 @@ export default function AnalyticsView({ workspaceId = null }) {
                   </table>
                 </div>
               )}
+              <p className="as-muted as-small">
+                Saturation counts the recorded overlap of runs against the
+                workspace's own concurrency limit. Provider rate limits and
+                machine resources are not measured.
+              </p>
             </article>
-
-            {heat ? (
-              <article className="as-card as-span2">
-                <div className="as-row as-wrap">
-                  <h4>
-                    Blocked time by task and hour{" "}
-                    <span className="as-tag">measured</span>
-                  </h4>
-                  <button
-                    type="button"
-                    className="text-button"
-                    aria-pressed={heatTable}
-                    onClick={() => setHeatTable((v) => !v)}
-                  >
-                    <Table2 size={12} />{" "}
-                    {heatTable ? "Show heatmap" : "Show as table"}
-                  </button>
-                </div>
-                {heat.rows.length === 0 ? (
-                  <p className="as-muted">No blocked time recorded.</p>
-                ) : (
-                  <div className="as-table-wrap">
-                    <table
-                      className={`as-table as-numeric ${heatTable ? "" : "as-heat"}`}
-                    >
-                      <thead>
-                        <tr>
-                          <th scope="col">Task</th>
-                          {Array.from({ length: 24 }, (_, h) => (
-                            <th key={h} scope="col" abbr={`${h}:00`}>
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {heat.rows.map((row) => (
-                          <tr key={row.id}>
-                            <th scope="row">
-                              {String(row.title).slice(0, 32)}
-                            </th>
-                            {Array.from({ length: 24 }, (_, h) => {
-                              const value = Number(row.hours[h]) || 0;
-                              const step =
-                                heat.max > 0 && value > 0
-                                  ? Math.min(
-                                      ramp.length - 1,
-                                      Math.floor(
-                                        (value / heat.max) * (ramp.length - 1),
-                                      ),
-                                    )
-                                  : -1;
-                              const fill =
-                                step >= 0 ? ramp[step] : "transparent";
-                              const ink =
-                                step < 0
-                                  ? undefined
-                                  : DARK_INK.has(fill)
-                                    ? "#27394a"
-                                    : "#ffffff";
-                              const text =
-                                heat.unit === "ms"
-                                  ? formatElapsed(value)
-                                  : formatNumber(value);
-                              return (
-                                <td
-                                  key={h}
-                                  style={
-                                    heatTable
-                                      ? undefined
-                                      : { background: fill, color: ink }
-                                  }
-                                  title={`${row.title}, ${h}:00 — ${text}`}
-                                  aria-label={`${h}:00, ${text}`}
-                                >
-                                  {heatTable
-                                    ? value
-                                      ? text
-                                      : ""
-                                    : value
-                                      ? heat.unit === "ms"
-                                        ? Math.round(value / 60000)
-                                        : value
-                                      : ""}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                <p className="as-muted as-small">
-                  {heatTable ? "Values" : "Cell values"} are{" "}
-                  {heat.unit === "ms" ? "minutes blocked" : "blocked events"};
-                  darker means more (single-hue scale). Hover a cell for the
-                  exact value.
-                </p>
-              </article>
-            ) : null}
-
-            {extras.length ? (
-              <article className="as-card as-span2">
-                <h4>
-                  Other measures <span className="as-tag">counted</span>
-                </h4>
-                <table className="as-table as-numeric">
-                  <tbody>
-                    {extras.map(([key, value]) => (
-                      <tr key={key}>
-                        <th scope="row">{key}</th>
-                        <td>
-                          {typeof value === "number"
-                            ? formatNumber(value)
-                            : value}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </article>
-            ) : null}
           </div>
         </div>
       ) : null}

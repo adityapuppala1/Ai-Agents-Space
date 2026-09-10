@@ -2,7 +2,7 @@
 // nearest agent, hover reports it.
 const PAD = 6;
 
-export function createMinimap(canvas, { onSelect, onHover }) {
+export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
   let layout = null;
   let dots = [];
   let hovered = null;
@@ -33,9 +33,28 @@ export function createMinimap(canvas, { onSelect, onHover }) {
     return best;
   }
 
+  /** Zone under the pointer, for selectable rooms. */
+  function zoneAt(event) {
+    if (!layout) return null;
+    const r = canvas.getBoundingClientRect();
+    const sx = ((event.clientX - r.left) / r.width) * canvas.width;
+    const sy = ((event.clientY - r.top) / r.height) * canvas.height;
+    for (const zone of Object.values(layout.zones)) {
+      const [x, y] = toMap(zone.x - zone.w / 2, zone.z - zone.d / 2);
+      const [x2, y2] = toMap(zone.x + zone.w / 2, zone.z + zone.d / 2);
+      if (sx >= x && sx <= x2 && sy >= y && sy <= y2) return zone.id;
+    }
+    return null;
+  }
+
   const click = (event) => {
     const id = nearest(event);
-    if (id != null) onSelect?.(id);
+    if (id != null) {
+      onSelect?.(id);
+      return;
+    }
+    const zone = zoneAt(event);
+    if (zone) onSelectRoom?.(zone);
   };
   const move = (event) => {
     const id = nearest(event);
@@ -59,7 +78,14 @@ export function createMinimap(canvas, { onSelect, onHover }) {
     setLayout(next) {
       layout = next;
     },
-    draw({ figures, selected, theme, clusterCount, clusterZone }) {
+    draw({
+      figures,
+      selected,
+      theme,
+      clusterCount,
+      clusterZone,
+      selectedRoom,
+    }) {
       if (!ctx || !layout) return;
       const p = theme.palette;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -79,6 +105,11 @@ export function createMinimap(canvas, { onSelect, onHover }) {
         const [x2, y2] = toMap(zone.x + zone.w / 2, zone.z + zone.d / 2);
         ctx.fillStyle = p.minimapZone;
         ctx.fillRect(x, y, x2 - x, y2 - y);
+        if (selectedRoom && zone.id === selectedRoom) {
+          ctx.strokeStyle = p.minimapText;
+          ctx.lineWidth = 1.4;
+          ctx.strokeRect(x + 0.5, y + 0.5, x2 - x - 1, y2 - y - 1);
+        }
         ctx.fillStyle = p.minimapText;
         ctx.fillText(
           String(theme.rooms[zone.id] ?? zone.id).slice(0, 10),

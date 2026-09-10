@@ -410,3 +410,47 @@ export function toCsv(rows, columns) {
   );
   return [header, ...lines].join("\r\n");
 }
+
+/* ------------------------------------------------------------------ */
+/* Presentation (creator/presenter) mode                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Presentation mode hides private material before a screen recording. It is a
+ * display filter, not redaction: the records are untouched and anyone with
+ * access to the machine still sees everything. Say so wherever it is offered.
+ *
+ * `maskPath` above already hides private absolute paths. These helpers extend
+ * the same treatment to task text, account labels and artifact titles.
+ */
+
+/** Keeps the first `keep` words of a title and replaces the rest with a count. */
+export function maskText(text, masked = true, keep = 2) {
+  if (!text) return "";
+  if (!masked) return String(text);
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  if (words.length <= keep) return words.join(" ");
+  return `${words.slice(0, keep).join(" ")} … (${words.length - keep} words hidden)`;
+}
+
+/** Replaces an account or owner label with its shape, never its value. */
+export function maskAccount(label, masked = true) {
+  if (!label) return "";
+  if (!masked) return String(label);
+  const text = String(label);
+  return `${text.slice(0, 1)}${"•".repeat(Math.max(2, Math.min(8, text.length - 1)))}`;
+}
+
+/**
+ * An artifact's title and path are both private material: the title often
+ * carries a branch or file name. In presentation mode we keep only the kind.
+ */
+export function maskArtifact(artifact, masked = true) {
+  if (!artifact) return { title: "", kind: null };
+  const kind = artifact.kind ?? null;
+  if (!masked) return { title: artifact.title ?? kind ?? artifact.id, kind };
+  return {
+    title: kind ? `${kind} artifact (title hidden)` : "artifact (title hidden)",
+    kind,
+  };
+}

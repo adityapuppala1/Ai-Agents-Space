@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Shield, Search } from "lucide-react";
+import EmptyState from "./EmptyState.jsx";
 import { apiFetch, useApi } from "../hooks/useApi.js";
 
 const FALLBACK_PRESETS = [
@@ -55,6 +56,13 @@ export default function PolicyEditor({ workspaceId, onSaved }) {
     url: "",
   });
   const [verdict, setVerdict] = useState(null);
+  const retention = useApi("/ops/retention");
+  const opsStatus = useApi("/ops/status", { interval: 20000 });
+  const [opsBusy, setOpsBusy] = useState(false);
+  const [opsMessage, setOpsMessage] = useState("");
+  const [confirmStop, setConfirmStop] = useState(false);
+  const retentionPolicy = retention.data?.retention ?? retention.data ?? null;
+  const dispatchStopped = opsStatus.data?.dispatchStopped ?? false;
 
   useEffect(() => {
     const data = policy.data?.policy ?? policy.data;
@@ -65,6 +73,9 @@ export default function PolicyEditor({ workspaceId, onSaved }) {
         allowedFolders: (data.allowedFolders ?? []).join("\n"),
         deniedCommands: (data.deniedCommands ?? []).join("\n"),
         timeoutMinutes: Math.round((data.timeoutMs ?? 30 * 60 * 1000) / 60000),
+        maxRepairAttempts: data.maxRepairAttempts ?? "",
+        maxTokensPerRun: data.budget?.maxTokensPerRun ?? "",
+        maxRunsPerDay: data.budget?.maxRunsPerDay ?? "",
       });
   }, [policy.data]);
 
@@ -86,7 +97,15 @@ export default function PolicyEditor({ workspaceId, onSaved }) {
           .map((s) => s.trim())
           .filter(Boolean),
         timeoutMs: Math.max(1, Number(form.timeoutMinutes) || 30) * 60000,
+        budget: {
+          maxTokensPerRun: form.maxTokensPerRun
+            ? Number(form.maxTokensPerRun)
+            : null,
+          maxRunsPerDay: form.maxRunsPerDay ? Number(form.maxRunsPerDay) : null,
+        },
       };
+      if (form.maxRepairAttempts !== "")
+        body.maxRepairAttempts = Number(form.maxRepairAttempts);
       const result = await apiFetch(base, { method: "PUT", body });
       onSaved?.(result);
       setSaved(
@@ -212,6 +231,157 @@ export default function PolicyEditor({ workspaceId, onSaved }) {
           </button>
         </div>
       </form>
+      <section
+        className="as-card as-policy-limits"
+        aria-label="Limits and budgets"
+      >
+        <h4>Limits and budgets</h4>
+        <div className="form-columns">
+          <label>
+            Bounded repair attempts
+            <input
+              type="number"
+              min="0"
+              max="10"
+              value={form.maxRepairAttempts}
+              onChange={(event) => set("maxRepairAttempts", event.target.value)}
+              placeholder="server default"
+            />
+            <span className="as-muted as-small">
+              How many times a rejected task may open a repair task before the
+              workflow gives up and asks a human. The value shown is what the
+              server reports; a build whose policy validator does not accept
+              this key will keep its own default.
+            </span>
+          </label>
+          <label>
+            Token budget per run
+            <input
+              type="number"
+              min="1"
+              value={form.maxTokensPerRun}
+              onChange={(event) => set("maxTokensPerRun", event.target.value)}
+              placeholder="no limit"
+            />
+            <span className="as-muted as-small">
+              Recorded, and shown against reported usage. Token totals arrive
+              after a turn finishes, so this cannot stop a run mid-turn — it is
+              a budget you are told about, not a hard cap.
+            </span>
+          </label>
+          <label>
+            Runs per day
+            <input
+              type="number"
+              min="1"
+              value={form.maxRunsPerDay}
+              onChange={(event) => set("maxRunsPerDay", event.target.value)}
+              placeholder="no limit"
+            />
+            <span className="as-muted as-small">
+              Enforced before launch: the server refuses a new run once the day
+              total is reached.
+            </span>
+          </label>
+        </div>
+      </section>
+
+      <section className="as-card as-policy-ops" aria-label="Operations">
+        <h4>Retention and the incident stop switch</h4>
+        <p className="as-muted as-small">
+          These are operations actions, not policy rules. They apply to the
+          whole installation, not just this workspace, and they are recorded in
+          the audit log.
+        </p>
+        {opsMessage ? (
+          <p className="as-feedback" role="status">
+            {opsMessage}
+          </p>
+        ) : null}
+        {retention.error ? (
+          <EmptyState
+            compact
+            title="Retention settings unavailable"
+            error={retention.error}
+            missingRoutes={["GET /api/ops/retention"]}
+          />
+        ) : retentionPolicy ? (
+          <p className="as-small">
+            Retention is{" "}
+            <strong>{retentionPolicy.enabled ? "on" : "off"}</strong>
+            {retentionPolicy.enabled
+              ? `: events kept ${retentionPolicy.eventsDays ?? "?"} day(s).`
+              : ": nothing is deleted automatically."}{" "}
+            Deleting events removes the evidence behind past runs; a day in
+            review or a lineage view then says the events are gone rather than
+            reconstructing them. Change it in Operations.
+          </p>
+        ) : null}
+
+        {dispatchStopped ? (
+          <div className="as-verdict as-verdict-deny" role="status">
+            <strong>DISPATCH STOPPED</strong>
+            <span>
+              No new run will start anywhere until an operator resumes dispatch
+              in Operations.
+            </span>
+          </div>
+        ) : confirmStop ? (
+          <div className="as-row as-wrap">
+            <strong>Stop every run on this installation?</strong>
+            <button
+              type="button"
+              className="button danger"
+              disabled={opsBusy}
+              onClick={async () => {
+                setOpsBusy(true);
+                setConfirmStop(false);
+                try {
+                  const result = await apiFetch("/ops/stop-all", {
+                    method: "POST",
+                    body: {
+                      confirm: true,
+                      reason: "stopped from the policy editor",
+                    },
+                  });
+                  setOpsMessage(
+                    `Dispatch stopped; ${result?.stopped?.length ?? 0} run(s) were interrupted. Side effects already applied are not undone.`,
+                  );
+                  opsStatus.reload();
+                } catch (err) {
+                  setOpsMessage(err.message);
+                } finally {
+                  setOpsBusy(false);
+                }
+              }}
+            >
+              Yes, stop everything
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setConfirmStop(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="button"
+            disabled={opsBusy || opsStatus.error}
+            onClick={() => setConfirmStop(true)}
+            title={
+              opsStatus.error
+                ? "This server has no /api/ops/status route"
+                : undefined
+            }
+          >
+            Stop all runs…
+          </button>
+        )}
+      </section>
+
       <form
         className="as-preview"
         onSubmit={runPreview}

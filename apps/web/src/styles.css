@@ -2497,3 +2497,81 @@ pre {
 .last-run .run-summary {
   margin-top: 8px;
 }
+
+/* ------------------------------------------------------------------ */
+/* Wave 2 integration: setup panel, pinned runs, knowledge stack       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The rich workspace switcher is the visible control; the native select keeps
+ * the "Switch workspace" label as an equivalent keyboard/assistive path. It
+ * must stay in the accessibility tree (and focusable) at every width, so this
+ * rule overrides the mobile rule that hides the plain switcher.
+ */
+.brand-name .workspace-name.sr-only {
+  display: block;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.brand-name {
+  min-width: 0;
+}
+.brand-name .as-wsswitch,
+.brand-name .as-wsswitch-trigger {
+  max-width: 240px;
+  min-width: 0;
+}
+.brand-name .as-wsswitch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .brand-name .as-wsswitch,
+  .brand-name .as-wsswitch-trigger {
+    max-width: 132px;
+  }
+  .brand-name .as-wsswitch .as-tag {
+    display: none;
+  }
+}
+
+/* Setup checklist: a panel above the workspace, never a blocking modal. */
+.setup-slot {
+  margin-bottom: 20px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.run-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.run-summary-actions .button.wide {
+  flex: 1;
+}
+
+.pinned-panel {
+  padding: 16px 18px;
+}
+
+.knowledge-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* Long lists windowed by VirtualList still scroll inside their own box. */
+.task-list .as-virtual,
+.activity-list .as-virtual {
+  max-width: 100%;
+}
