@@ -263,7 +263,10 @@ export function classifyTool(tool, args = {}) {
     )
   ) {
     if (
-      /\b(test|jest|vitest|pytest|mocha|playwright|npm run test|node --test|go test|cargo test|phpunit)\b/.test(
+      // A test RUNNER being invoked, not merely the word "test" somewhere in
+      // the command. `sed -n '1,20p' tests/office.test.js` reads a file; calling
+      // that "Testing" would state an activity the evidence does not support.
+      /(^|[\s"'`;&|(])(jest|vitest|pytest|mocha|phpunit|rspec|ctest|tox|nose2|karma|ava)\b|\b(npm|pnpm|yarn|bun|deno)\s+(run\s+)?tests?\b|\bnode\s+(--test|--experimental-test-runner)\b|\b(go|cargo|dotnet|mvn|gradle|swift|flutter|rails|bundle\s+exec\s+rspec)\s+tests?\b|\bplaywright\s+test\b|\bpytest\b|\bmake\s+(test|check)\b/.test(
         text,
       )
     )

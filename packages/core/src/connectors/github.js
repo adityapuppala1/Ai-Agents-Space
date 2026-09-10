@@ -35,6 +35,33 @@ export const GITHUB_READ_OPS = Object.freeze([
 ]);
 export const GITHUB_WRITE_OPS = Object.freeze(["createDraftPr"]);
 
+/**
+ * `gh api` takes its first argument as an endpoint PATH, so anything
+ * interpolated into one has to be shaped like the segment it replaces.
+ * `safeArgument` alone is not enough: it allows "/" and "..", which would let
+ * a caller steer the request to a different endpoint on the authenticated
+ * account.
+ */
+function apiRepo(value) {
+  const text = safeArgument(value, "repo");
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(text) || text.includes(".."))
+    throw new InputError(
+      'repo must be "owner/name" using letters, digits, ".", "_" and "-"',
+      400,
+    );
+  return text;
+}
+
+function apiPathSegment(value, label) {
+  const text = safeArgument(value, label);
+  if (!/^[A-Za-z0-9._/-]+$/.test(text) || /(^|\/)\.\.(\/|$)/.test(text))
+    throw new InputError(
+      `${label} may only contain letters, digits, ".", "_", "-" and "/", and no ".." segment`,
+      400,
+    );
+  return text;
+}
+
 /** Fields asked of `gh` so the shape is stable across versions. */
 export const ISSUE_FIELDS =
   "number,title,state,url,updatedAt,author,labels,assignees";
@@ -266,10 +293,12 @@ export function createGithubConnector(
           return { cwd, count: checks.length, checks };
         }
         case "checkRuns": {
-          const ref = safeArgument(params.ref ?? "HEAD", "ref");
-          const repo = params.repo
-            ? safeArgument(params.repo, "repo")
-            : "{owner}/{repo}";
+          // Both values are interpolated into a gh api endpoint path, so they
+          // are constrained to the shapes GitHub actually uses. Without this
+          // the caller — not the connector — would choose which endpoint the
+          // operator's stored credential queries.
+          const ref = apiPathSegment(params.ref ?? "HEAD", "ref");
+          const repo = params.repo ? apiRepo(params.repo) : "{owner}/{repo}";
           const result = await gh(
             ["api", `repos/${repo}/commits/${ref}/check-runs`],
             cwd,

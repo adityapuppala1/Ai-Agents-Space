@@ -125,6 +125,11 @@ export function validateSchemaDocument(schema, path = "outputSchema") {
   for (const [key, value] of Object.entries(schema)) {
     if (key === "type") {
       const types = Array.isArray(value) ? value : [value];
+      // An empty array is unsatisfiable: checkSchema evaluates
+      // `types.some(...)`, which is always false, so every valid result would
+      // fail the contract with the truncated message "$ should be ".
+      if (types.length === 0)
+        throw new InputError(`${path}.type must name at least one type`);
       for (const type of types)
         if (!SCHEMA_TYPES.includes(type))
           throw new InputError(

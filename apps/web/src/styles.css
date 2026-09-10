@@ -11,6 +11,22 @@
   --blue: #4876cd;
   --soft: #f6f8fb;
   --shadow: 0 3px 15px #253a581f;
+  /* Design tokens added in the navigation restructure. The rail is a labelled
+     sidebar on wide screens and collapses to icons below 1180px. */
+  --rail-w: 208px;
+  --accent: #4c78cc;
+  --accent-soft: #eaf1fe;
+  --accent-ink: #2f5aa8;
+  --radius-sm: 7px;
+  --radius: 11px;
+  --radius-lg: 16px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 14px;
+  --space-4: 22px;
+  --space-5: 34px;
+  --shadow-sm: 0 1px 3px #24384f14;
+  --shadow-lg: 0 12px 34px #1e35521f;
   font-size: 13px;
   font-weight: 400;
 }
@@ -80,15 +96,24 @@ svg {
 .rail {
   position: fixed;
   inset: 0 auto 0 0;
-  width: 76px;
+  width: var(--rail-w);
   z-index: 20;
   background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex;
-  align-items: center;
+  align-items: stretch;
   flex-direction: column;
-  padding: 22px 12px;
-  gap: 43px;
+  padding: 20px 12px 16px;
+  gap: 22px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.rail::-webkit-scrollbar {
+  width: 6px;
+}
+.rail::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
 }
 .brand-mark {
   display: grid;
@@ -101,39 +126,78 @@ svg {
   box-shadow: 0 4px 8px #4974bd29;
   text-decoration: none;
 }
-.rail nav,
+.rail nav {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
 .rail-bottom {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
+}
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* Group heading: the whole point of the restructure. Hidden when the rail
+   collapses to icons, where the tooltip carries the name instead. */
+.rail-group-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.75;
+  padding: 0 10px 4px;
+  margin: 0;
 }
 .rail nav button,
 .rail-bottom button {
-  width: 44px;
-  height: 44px;
-  border-radius: 11px;
-  display: grid;
-  place-items: center;
+  min-height: 38px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 10px;
   position: relative;
-  color: #93a0ae;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  width: 100%;
+  transition:
+    background 0.13s ease,
+    color 0.13s ease;
+}
+.rail nav button svg,
+.rail-bottom button svg {
+  flex: none;
+}
+.rail-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .rail nav button:hover,
 .rail-bottom button:hover {
   background: var(--soft);
-  color: var(--blue);
+  color: var(--text);
 }
 .rail nav button.active {
-  background: #eaf1fe;
-  color: #4c78cc;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 .rail nav button.active:before {
   content: "";
   position: absolute;
-  left: -15px;
+  left: -12px;
   width: 3px;
-  height: 22px;
-  border-radius: 3px;
-  background: #4c78cc;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
 }
 .rail-tooltip {
   display: none;
@@ -151,7 +215,8 @@ svg {
 }
 .rail-bottom {
   margin-top: auto;
-  align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
 }
 .user-avatar {
   width: 34px;
@@ -168,7 +233,7 @@ svg {
   margin-top: 12px;
 }
 .app-main {
-  margin-left: 76px;
+  margin-left: var(--rail-w);
 }
 .topbar {
   height: 80px;
@@ -458,7 +523,12 @@ h1 {
   font-weight: 600;
 }
 .office-wrap {
-  background: radial-gradient(ellipse at 50% 38%, #f5f8fa 0, #eaf0f6 100%);
+  background: radial-gradient(
+    ellipse at 50% 30%,
+    #fdfefe 0,
+    #eef3f8 55%,
+    #e4ebf3 100%
+  );
   position: relative;
   overflow: hidden;
   isolation: isolate;
@@ -488,7 +558,10 @@ h1 {
   letter-spacing: 1px;
 }
 .office-canvas {
-  height: 470px;
+  /* The office is the signature view, so it scales with the window instead of
+     sitting at a fixed height. Clamped so it stays usable on a laptop and does
+     not push the agent roster off a tall screen. */
+  height: clamp(430px, 58vh, 720px);
   position: relative;
   width: 100%;
   overflow: hidden;
@@ -2166,18 +2239,17 @@ pre {
   scrollbar-width: none;
 }
 .rail nav {
-  gap: 6px;
+  gap: 18px;
 }
 .rail nav button,
 .rail-bottom button {
-  width: 42px;
-  height: 40px;
-  border-radius: 10px;
+  min-height: 38px;
+  border-radius: 9px;
 }
 .rail-badge {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  top: 6px;
+  right: 8px;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
@@ -2574,4 +2646,42 @@ pre {
 .task-list .as-virtual,
 .activity-list .as-virtual {
   max-width: 100%;
+}
+
+/* ---------------------------------------------------------------- rail
+   Below 1180px the labelled sidebar collapses back to an icon rail; the
+   tooltip (already present) carries the name, so nothing becomes unreachable. */
+@media (max-width: 1180px) {
+  :root {
+    --rail-w: 68px;
+  }
+  .rail {
+    align-items: center;
+    padding: 20px 10px 14px;
+  }
+  .rail-text,
+  .rail-group-label {
+    display: none;
+  }
+  .rail nav button,
+  .rail-bottom button {
+    width: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+  .rail-group {
+    gap: 4px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .rail-group:last-child {
+    border-bottom: 0;
+  }
+}
+[data-theme="dark"] {
+  --accent: #7ea6f0;
+  --accent-soft: #2b3c56;
+  --accent-ink: #a9c6f3;
+  --shadow-sm: 0 1px 3px #0006;
+  --shadow-lg: 0 12px 34px #0007;
 }

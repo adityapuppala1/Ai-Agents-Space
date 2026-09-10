@@ -105,10 +105,19 @@ export default function VirtualList({
       role={role}
       aria-label={`${label} (${items.length} items, scrollable)`}
     >
-      <div className="as-virtual-spacer" style={{ height: `${totalHeight}px` }}>
+      {/* Both wrappers are presentational: ARIA requires a listitem to be an
+          owned child of its list, and two generic divs in between make some
+          screen readers drop the list role or the item count that
+          aria-setsize/aria-posinset are here to provide. */}
+      <div
+        className="as-virtual-spacer"
+        style={{ height: `${totalHeight}px` }}
+        role="presentation"
+      >
         <div
           className="as-virtual-window"
           style={{ transform: `translateY(${offsetY}px)` }}
+          role="presentation"
         >
           {slice.map((item, offset) => {
             const index = start + offset;

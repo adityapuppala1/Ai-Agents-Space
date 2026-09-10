@@ -441,9 +441,16 @@ test("the diagnostics bundle is redacted and lists what it removed", async () =>
     details: { authToken: "sk-live-abcdef1234567890" },
   });
 
-  const diagnostics = new DiagnosticsService(services);
+  const diagnostics = new DiagnosticsService(services, { outputRoot: dir });
   const out = join(dir, "bundle");
   const bundle = diagnostics.bundle({ outPath: out, actor: "ops" });
+
+  // The destination is constrained to the diagnostics output root: without
+  // that, a caller picks any directory the server can write to.
+  assert.throws(
+    () => diagnostics.bundle({ outPath: join(tmpdir(), "as-escape") }),
+    (error) => error.status === 400,
+  );
   assert.equal(bundle.path, out);
   assert.equal(bundle.files.length, 2);
   assert.ok(bundle.redaction.length >= 5, "the report lists its redactions");
@@ -613,6 +620,52 @@ test("a sweep never removes an active run or an unfinished task", async () => {
   await services.close();
 });
 
+test("a manual sweep deletes nothing while retention is disabled", async () => {
+  const { services, workspace, agent } = setup();
+  const now = Date.now();
+  const run = makeRun(services, workspace, agent);
+  services.recorder.setStatus(run.id, "completed", { summary: "done" });
+  services.db
+    .prepare("UPDATE tasks SET status = 'COMPLETED' WHERE id = ?")
+    .run(run.taskId);
+  // Age everything well past every default cutoff (90/180/365/730 days).
+  const old = now - 900 * DAY_MS;
+  services.db
+    .prepare("UPDATE runs SET started_at = ?, ended_at = ?")
+    .run(old, old);
+  services.db.prepare("UPDATE events SET timestamp = ?").run(old);
+  services.db.prepare("UPDATE audit_log SET timestamp = ?").run(old);
+  const eventsBefore = services.db
+    .prepare("SELECT COUNT(*) AS n FROM events")
+    .get().n;
+  assert.ok(eventsBefore > 0);
+
+  const retention = new RetentionService(services);
+  assert.equal(retention.policy().enabled, false);
+  // The default policy carries real day values (90/180/365/730), so a sweep
+  // that ignores `enabled` deletes against them on a server that never turned
+  // retention on.
+  const result = retention.sweep({ now, actor: "ops" });
+  assert.equal(result.deleted, false);
+  assert.equal(result.reason, "retention is disabled");
+  assert.deepEqual(result.counts, {
+    events: 0,
+    artifacts: 0,
+    runs: 0,
+    audit: 0,
+  });
+  assert.equal(
+    services.db.prepare("SELECT COUNT(*) AS n FROM events").get().n,
+    eventsBefore,
+    "no event was deleted",
+  );
+  assert.equal(
+    services.db.prepare("SELECT COUNT(*) AS n FROM runs").get().n,
+    1,
+  );
+  await services.close();
+});
+
 test("the scheduled sweep timer starts only when retention is enabled", async () => {
   const { services } = setup();
   const retention = new RetentionService(services, { intervalMs: 60000 });
@@ -743,16 +796,27 @@ test("routes: retention, quarantine, backup, drill, and diagnostics", async () =
   assert.equal(await opsRoutes(drill.ctx), true);
   assert.equal(drill.state.data.ok, true);
 
-  const diagnostics = routeCall(
-    services,
-    "GET",
-    "/api/ops/diagnostics",
-    null,
-    `outPath=${encodeURIComponent(join(dir, "diag"))}&events=0`,
-  );
+  services.diagnostics = new DiagnosticsService(services, {
+    outputRoot: join(dir, "diagnostics"),
+  });
+  // A GET would be reachable from any page the user visits; the bundle write
+  // goes through the same confirm() gate as every other ops mutation.
+  const diagnostics = routeCall(services, "POST", "/api/ops/diagnostics", {
+    confirm: true,
+    outPath: "diag",
+    events: false,
+  });
   assert.equal(await opsRoutes(diagnostics.ctx), true);
   assert.equal(diagnostics.state.data.summary.events.length, 0);
   assert.ok(diagnostics.state.data.redaction.length > 0);
+
+  const unconfirmed = routeCall(services, "POST", "/api/ops/diagnostics", {
+    outPath: "diag-2",
+  });
+  await assert.rejects(
+    () => opsRoutes(unconfirmed.ctx),
+    (error) => error.status === 400,
+  );
 
   const actions = services.audit.list({ limit: 50 }).map((e) => e.action);
   for (const action of [

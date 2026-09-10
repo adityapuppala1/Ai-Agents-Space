@@ -499,6 +499,11 @@ test("branch conditions run or skip a step, and dependents still evaluate", asyn
   assert.equal(skippedNode.status, "COMPLETED");
   assert.equal(skippedNode.review.note, "skipped by condition");
   assert.equal(skippedNode.review.skipped, true);
+  assert.equal(
+    skippedNode.review.status,
+    "skipped",
+    "a step nobody reviewed is not 'accepted'",
+  );
   // The dependent of the skipped step was evaluated in the same pass.
   assert.ok(results.some((r) => r.taskId === after.id && r.dispatched));
   assert.ok(
@@ -508,6 +513,82 @@ test("branch conditions run or skip a step, and dependents still evaluate", asyn
         /was skipped by its branch condition/.test(e.message),
       ),
   );
+});
+
+test("a step skipped by a branch condition does not satisfy a previous.review=accepted gate", async () => {
+  const { services, graph, workspace } = setup();
+  const calls = [];
+  services.runWorker = {
+    start(input) {
+      calls.push(input.taskId);
+      return { id: `run-${calls.length}` };
+    },
+  };
+  // A -> B -> C. B is skipped when A completes; C runs only on an accepted
+  // review of B. Nobody reviewed B and nothing ran, so C must not dispatch.
+  const a = workspace.create({ title: "A" });
+  const b = workspace.create({ title: "B" });
+  const c = workspace.create({ title: "C" });
+  graph.setDependencies(workspace.id, b.id, [a.id]);
+  graph.setDependencies(workspace.id, c.id, [b.id]);
+  setProvider(services, b.id, "claude-code");
+  setProvider(services, c.id, "claude-code");
+  graph.setBranchCondition(workspace.id, b.id, {
+    when: "previous.status",
+    equals: "COMPLETED",
+    then: "skip",
+  });
+  graph.setBranchCondition(workspace.id, c.id, {
+    when: "previous.review",
+    equals: "accepted",
+    then: "run",
+  });
+
+  complete(workspace, a.id);
+  const results = await graph.onTaskCompleted(a.id);
+  assert.equal(graph.node(b.id).review.status, "skipped");
+  assert.ok(
+    !calls.includes(c.id),
+    "C is not dispatched on a review that never happened",
+  );
+  const forC = results.find((r) => r.taskId === c.id);
+  assert.ok(forC, "C was evaluated when B finished");
+  assert.equal(forC.dispatched ?? false, false);
+  assert.match(
+    forC.reason,
+    /"skipped"/,
+    "the reason names the review status that was actually observed",
+  );
+
+  // A gate written against the skip is the way to run on this path.
+  const { graph: g2, services: s2, workspace: w2 } = setup();
+  const dispatched = [];
+  s2.runWorker = {
+    start(input) {
+      dispatched.push(input.taskId);
+      return { id: "run-x" };
+    },
+  };
+  const a2 = w2.create({ title: "A" });
+  const b2 = w2.create({ title: "B" });
+  const c2 = w2.create({ title: "C" });
+  g2.setDependencies(w2.id, b2.id, [a2.id]);
+  g2.setDependencies(w2.id, c2.id, [b2.id]);
+  setProvider(s2, b2.id, "claude-code");
+  setProvider(s2, c2.id, "claude-code");
+  g2.setBranchCondition(w2.id, b2.id, {
+    when: "previous.status",
+    equals: "COMPLETED",
+    then: "skip",
+  });
+  g2.setBranchCondition(w2.id, c2.id, {
+    when: "previous.review",
+    equals: "skipped",
+    then: "run",
+  });
+  complete(w2, a2.id);
+  await g2.onTaskCompleted(a2.id);
+  assert.deepEqual(dispatched, [c2.id]);
 });
 
 test("task contracts validate an output schema and objective criteria", () => {

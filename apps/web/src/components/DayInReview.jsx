@@ -84,13 +84,26 @@ export default function DayInReview({
   const reducedMotion = useRef(false);
 
   useEffect(() => {
+    let query = null;
     try {
-      reducedMotion.current =
-        globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ??
-        false;
+      query =
+        globalThis.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
     } catch {
-      reducedMotion.current = false;
+      query = null;
     }
+    if (!query) {
+      reducedMotion.current = false;
+      return undefined;
+    }
+    // Subscribed, not read once: every other surface reacts when the OS
+    // setting changes, and a review that keeps auto-advancing until a reload
+    // is exactly what the person just asked it to stop doing.
+    const apply = () => {
+      reducedMotion.current = query.matches;
+    };
+    apply();
+    query.addEventListener?.("change", apply);
+    return () => query.removeEventListener?.("change", apply);
   }, []);
 
   const fetched = useApi(

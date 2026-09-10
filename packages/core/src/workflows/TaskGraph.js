@@ -37,7 +37,13 @@ function rowToNode(row) {
   };
 }
 
-/** Conditions a step may be gated on. Evaluated when dependencies complete. */
+/**
+ * Conditions a step may be gated on. Evaluated when dependencies complete.
+ *
+ * For `previous.review`, `equals` is a review status: "pending",
+ * "accepted", "rejected", "request-change", or "skipped" (the step was gated
+ * out by its own condition, so nothing ran and nobody reviewed it).
+ */
 export const BRANCH_WHEN = [
   "previous.status",
   "previous.review",
@@ -546,7 +552,11 @@ export class TaskGraph {
         now,
         now,
         JSON.stringify({
-          status: "accepted",
+          // NOT "accepted": nobody reviewed anything and nothing ran. A
+          // downstream gate on previous.review = "accepted" must not fire on a
+          // step that was skipped, and the lineage graph must not show an
+          // accepted result with no run, no artifacts and no reviewer.
+          status: "skipped",
           skipped: true,
           note: "skipped by condition",
           detail: reason,

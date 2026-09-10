@@ -12,10 +12,10 @@
  *            at most 5 attempts, every attempt written to
  *            `webhook_deliveries`.
  *
- * Secrets: `secret_ref` NAMES where the shared secret lives (an environment
- * variable, or a settings key for local development). The secret itself is
- * never stored by this module, never returned by any API, never logged, and
- * never included in an event.
+ * Secrets: `secret_ref` NAMES the ENVIRONMENT VARIABLE the shared secret
+ * lives in. It is deliberately not resolvable from the settings table: those
+ * are readable over HTTP. The secret itself is never stored by this module,
+ * never returned by any API, never logged, and never included in an event.
  *
  * Payloads: ids, statuses, titles and timestamps only. Prompts, file
  * contents, tokens and credentials are never sent.
@@ -142,6 +142,17 @@ function defaultSend({ url, headers, body, timeoutMs = 10000 }) {
       },
       (res) => {
         res.resume();
+        // Without this, an error emitted on the RESPONSE stream after headers
+        // arrive (a peer reset mid-body, a TLS failure during transfer) has no
+        // listener, and Node rethrows it as an uncaught exception that takes
+        // the whole server down.
+        res.on("error", (error) =>
+          resolve({
+            ok: false,
+            status: res.statusCode ?? 0,
+            error: error.message,
+          }),
+        );
         res.on("end", () =>
           resolve({
             ok: res.statusCode >= 200 && res.statusCode < 300,
@@ -184,19 +195,16 @@ export class WebhookService {
   }
 
   /**
-   * Secret lookup order: environment variable, then a settings key. Nothing
-   * here writes a secret anywhere, and the value never leaves this method.
+   * A shared secret is read from the environment only. It deliberately does
+   * NOT fall back to the settings table: settings are reachable over HTTP and
+   * through the MCP bridge, so a secret stored there would be readable by
+   * anyone who can call the API (ARCHITECTURE.md §0 rule 4). Nothing here
+   * writes a secret anywhere, and the value never leaves this method.
    */
   #defaultResolveSecret(ref) {
     if (!ref) return null;
     const env = this.services.env ?? process.env;
-    if (env[ref]) return String(env[ref]);
-    try {
-      const value = this.services.settings?.get?.(ref, null);
-      return value ? String(value) : null;
-    } catch {
-      return null;
-    }
+    return env[ref] ? String(env[ref]) : null;
   }
 
   /* ---------------------------- endpoints ---------------------------- */
@@ -570,8 +578,25 @@ export class WebhookService {
       .map(rowToDelivery);
   }
 
-  /** Attempts every due delivery once. Bounded at MAX_ATTEMPTS. */
-  async deliverDue({ now = null, limit = 25 } = {}) {
+  /**
+   * Attempts every due delivery once. Bounded at MAX_ATTEMPTS.
+   *
+   * Re-entrant callers share ONE pass. The caller is a fixed 30 s interval
+   * while a single slow endpoint can hold a pass open for minutes: without
+   * this guard the next tick re-selects the same pending rows (attempt() only
+   * writes status/attempts after the send resolves), so the receiver gets
+   * every event several times and `attempts` never climbs to MAX_ATTEMPTS,
+   * leaving a dead endpoint retried forever. Mirrors ObservationService.poll().
+   */
+  deliverDue(options = {}) {
+    if (this._draining) return this._draining;
+    this._draining = this.#deliverDue(options).finally(() => {
+      this._draining = null;
+    });
+    return this._draining;
+  }
+
+  async #deliverDue({ now = null, limit = 25 } = {}) {
     const results = [];
     for (const delivery of this.due({ now, limit }))
       results.push(await this.attempt(delivery.id));

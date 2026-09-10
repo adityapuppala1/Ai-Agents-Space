@@ -204,6 +204,17 @@ export class RetentionService {
   sweep({ now, actor = "system", dryRun = false } = {}) {
     if (dryRun) return { ...this.preview({ now }), deleted: false };
     const cut = this.#cutoffs(now);
+    // Nothing is deleted until an operator turns retention on. The default
+    // policy carries real day values, so without this guard a manual sweep on
+    // a server that never enabled retention would delete against them.
+    if (!cut.policy.enabled)
+      return {
+        policy: cut.policy,
+        now: cut.now,
+        counts: { events: 0, artifacts: 0, runs: 0, audit: 0 },
+        deleted: false,
+        reason: "retention is disabled",
+      };
     const counts = { events: 0, artifacts: 0, runs: 0, audit: 0 };
     transaction(this.db, () => {
       if (cut.events !== null)

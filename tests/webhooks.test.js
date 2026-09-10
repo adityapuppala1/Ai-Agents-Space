@@ -294,6 +294,56 @@ test("due deliveries respect the injected clock and unsigned sends are refused",
   assert.equal(webhooks.getEndpoint(endpoint.id).direction, "outbound");
 });
 
+test("a second drain while one is in flight shares the pass instead of resending", async () => {
+  const { services, clock } = setup();
+  let release;
+  const inFlight = new Promise((resolve) => {
+    release = resolve;
+  });
+  const sent = [];
+  const webhooks = new WebhookService(services, {
+    now: () => clock.now,
+    resolveSecret: () => SECRET,
+    send: async (request) => {
+      sent.push(request);
+      await inFlight;
+      return { ok: false, status: 0, error: "timeout" };
+    },
+  });
+  webhooks.createEndpoint({
+    name: "Blackhole",
+    direction: "outbound",
+    url: "http://example.invalid/hook",
+    secretRef: "AGENT_SPACE_TEST_SECRET",
+    events: ["workflow.completed"],
+  });
+  const { deliveries } = webhooks.emit("workflow.completed", {
+    workflowId: "wf-1",
+    status: "completed",
+  });
+  assert.equal(deliveries.length, 1);
+
+  // The caller is a fixed interval: a second tick arrives while the first send
+  // is still open. attempt() only writes status/attempts after the send
+  // resolves, so an unguarded due() would hand back the same pending row.
+  const first = webhooks.deliverDue({});
+  const second = webhooks.deliverDue({});
+  assert.equal(second, first, "the second drain joins the pass in flight");
+  release();
+  await first;
+  await second;
+  assert.equal(sent.length, 1, "the endpoint was posted to exactly once");
+  assert.equal(webhooks.delivery(deliveries[0]).attempts, 1);
+
+  // Once the pass is over, a later drain runs normally.
+  clock.now = webhooks.delivery(deliveries[0]).nextAttemptAt;
+  const third = webhooks.deliverDue({});
+  assert.notEqual(third, first);
+  await third;
+  assert.equal(sent.length, 2);
+  assert.equal(webhooks.delivery(deliveries[0]).attempts, 2);
+});
+
 test("payload sanitization keeps ids, statuses and titles only", () => {
   const safe = sanitizePayload({
     runId: "r",

@@ -83,7 +83,11 @@ export const geminiAdapter = defineAdapter({
     approve: "unknown",
     reportModel: "unknown",
     reportUsage: "unknown",
-    artifacts: "verified", // git diff after the run does not depend on the provider
+    // "unknown", not "verified": no Gemini run has ever completed on this
+    // machine, so no artifact has been produced by one. providers/registry.js
+    // is the single source capabilityMatrix() uses and it keeps every Gemini
+    // capability unknown apart from launch/observe.
+    artifacts: "unknown",
     attach: "unsupported",
     fork: "unknown",
     delegate: "unknown",

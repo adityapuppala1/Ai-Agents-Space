@@ -53,6 +53,27 @@ export class Resources {
     this.materials = new Map();
     this.loose = new Set();
     this.textures = new Set();
+    // Keyed caches for the per-figure resources that used to be created fresh
+    // for every agent: loose and textures are Sets with no per-item
+    // release, so one entry per figure accumulated for the life of the scene.
+    this.shared = new Map();
+  }
+  /**
+   * Cache-by-key for a material or texture whose content depends only on the
+   * key. Returned objects are owned by this Resources and disposed with it.
+   */
+  cached(key, make) {
+    let value = this.shared.get(key);
+    if (value === undefined) {
+      value = make();
+      this.shared.set(key, value);
+      if (value?.isTexture) this.textures.add(value);
+      else if (value) {
+        this.loose.add(value);
+        if (value.map) this.textures.add(value.map);
+      }
+    }
+    return value;
   }
   geometry(key, make) {
     let g = this.geometries.get(key);
@@ -134,6 +155,7 @@ export class Resources {
     this.materials.clear();
     this.loose.clear();
     this.textures.clear();
+    this.shared.clear();
   }
 }
 

@@ -148,7 +148,10 @@ export default function TimelineView({
             viewBox={`0 0 ${width} ${height}`}
             width="100%"
             height={height}
-            role="img"
+            // role="group", not "img": an img is a leaf, so browsers prune its
+            // whole subtree — which hid every focusable run bar and its
+            // aria-label from the accessibility tree.
+            role="group"
             aria-label="Runs over time"
           >
             {Array.from({ length: ticks + 1 }, (_, i) => {

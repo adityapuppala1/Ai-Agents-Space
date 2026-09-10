@@ -40,6 +40,9 @@ export const SUPPORTED_PROTOCOL_VERSIONS = Object.freeze([
   "2024-11-05",
 ]);
 
+/** Largest single newline-delimited frame the server will buffer. */
+export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
+
 export const JSONRPC_ERRORS = Object.freeze({
   parse: -32700,
   invalidRequest: -32600,
@@ -222,21 +225,47 @@ export function createMcpServer({
   function serve({ input, output }) {
     return new Promise((resolve, reject) => {
       let buffer = "";
-      let chain = Promise.resolve();
+      let ended = false;
+      // Frames are handled CONCURRENTLY and only the writes are serialized.
+      // JSON-RPC ids correlate responses, so ordering is not required, and a
+      // single chain meant a client's protocol-level ping sat unanswered
+      // behind a slow tools/call until the client declared the server dead.
+      const inFlight = new Set();
       const write = (response) => {
         if (response) output.write(`${JSON.stringify(response)}\n`);
       };
+      const settle = () => {
+        if (ended && inFlight.size === 0) resolve();
+      };
       const pump = (line) => {
-        chain = chain
+        const task = Promise.resolve()
           .then(() => handleLine(line))
           .then(write)
           .catch((error) => {
             log.error?.(`[mcp] frame failed: ${error?.stack ?? error}`);
+          })
+          .finally(() => {
+            inFlight.delete(task);
+            settle();
           });
+        inFlight.add(task);
       };
       input.setEncoding?.("utf8");
       input.on("data", (chunk) => {
         buffer += chunk;
+        // A peer that never sends a newline would otherwise grow this buffer
+        // until the process dies. Refuse the oversized frame and carry on.
+        if (buffer.length > MAX_FRAME_BYTES && !buffer.includes("\n")) {
+          buffer = "";
+          write(
+            failure(
+              null,
+              JSONRPC_ERRORS.parse,
+              `Frame exceeds ${Math.floor(MAX_FRAME_BYTES / (1024 * 1024))} MB`,
+            ),
+          );
+          return;
+        }
         let index = buffer.indexOf("\n");
         while (index >= 0) {
           const line = buffer.slice(0, index);
@@ -248,7 +277,8 @@ export function createMcpServer({
       input.on("error", reject);
       input.on("end", () => {
         if (buffer.trim()) pump(buffer);
-        chain.then(() => resolve()).catch(reject);
+        ended = true;
+        settle();
       });
     });
   }

@@ -196,7 +196,9 @@ export default function RunLineage({
                 ))}
               </ol>
               <p className="as-muted as-small">
-                {edges.filter((edge) => edge.kind === "retried-as").length}{" "}
+                {/* Lineage edges are { from, to, relation } — there is no
+                    `kind` field, so filtering on one always counted 0. */}
+                {edges.filter((edge) => edge.relation === "retried-as").length}{" "}
                 retry link(s) recorded.
               </p>
             </div>

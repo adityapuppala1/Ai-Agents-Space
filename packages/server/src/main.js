@@ -67,8 +67,16 @@ function withTimeout(promise, ms) {
 }
 
 async function startup() {
+  // startup() runs detached from the listen callback and can take well over
+  // 10 s, so the process may already be shutting down between any two steps.
+  // Every await point is followed by this check: without it, reconciliation,
+  // settings writes and the observation loop all run against a closed
+  // database and fill the shutdown log with failures that are not real.
+  const stopped = () => services.closed === true;
+
   // 1. Detect provider CLIs (never blocks startup for more than 10 s).
   const detection = await withTimeout(services.connections.refresh(), 10_000);
+  if (stopped()) return;
   if (detection.timedOut)
     console.warn(
       "Provider detection is still running after 10 s; results will appear on the Connections page when it finishes.",
@@ -108,10 +116,12 @@ async function startup() {
   if (observe) {
     services.observation.start();
     await services.observation.poll().catch(() => {});
+    if (stopped()) return;
   }
 
   // 6. Optional modules that this build may or may not contain.
   const optional = await (services.ready ?? Promise.resolve([]));
+  if (stopped()) return;
 
   // 7. Retention sweeps. The timer starts only when the policy is enabled;
   // a disabled policy keeps everything and says so in the startup line.

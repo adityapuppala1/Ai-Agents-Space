@@ -143,13 +143,17 @@ export function runCommand(
       killTree(child, platform);
       finish({ timedOut: true, error: `timed out after ${timeoutMs} ms` });
     }, timeoutMs);
+    // Unref`d like every other timer here: a probe deadline must never hold
+    // the event loop open while the process is shutting down.
+    timer.unref?.();
     if (signal?.aborted) return onAbort();
     signal?.addEventListener?.("abort", onAbort, { once: true });
     try {
       // With a shell (Windows .cmd shims) pass one pre-quoted command line so
       // Node does not concatenate unescaped args (DEP0190).
+      if (shell) assertShellSafe(args);
       const spawnCommand = shell
-        ? [command, ...args.map(quoteIfNeeded)].join(" ")
+        ? [quoteForShell(command), ...args.map(quoteForShell)].join(" ")
         : command;
       child = spawn(spawnCommand, shell ? [] : args, {
         cwd,
@@ -172,10 +176,35 @@ export function runCommand(
   });
 }
 
-function quoteIfNeeded(value) {
-  return /[\s"]/.test(value) && !/^".*"$/.test(value)
-    ? `"${value.replace(/"/g, '\\"')}"`
-    : value;
+/**
+ * Characters cmd.exe interprets even inside double quotes. There is no escape
+ * for them, so an argument carrying one is refused rather than quoted.
+ * Mirrors `CMD_UNSAFE` in runs/process.js (which cannot be imported here:
+ * process.js already imports from this module).
+ */
+const CMD_UNSAFE = /["%!\r\n]/;
+
+/** Refuses arguments cmd.exe would rewrite or split. */
+export function assertShellSafe(args) {
+  for (const value of args) {
+    if (CMD_UNSAFE.test(String(value ?? "")))
+      throw new Error(
+        'Cannot pass this text through a .cmd/.bat shim: it contains a character cmd.exe interprets (", %, !, or a line break).',
+      );
+  }
+}
+
+/**
+ * Quotes one argument for a cmd.exe command line. Every argument carrying
+ * whitespace OR a shell metacharacter is wrapped, so `&`, `|`, `^`, `>` and
+ * friends can never reach the shell as syntax. Combined with
+ * `assertShellSafe`, the quoted form is unambiguous.
+ */
+function quoteForShell(value) {
+  const text = String(value ?? "");
+  if (/^".*"$/.test(text)) return text; // already quoted by the caller
+  if (text !== "" && !/[\s&|<>^()]/.test(text)) return text;
+  return `"${text}"`;
 }
 
 /** True when a resolved binary must run through the shell (Windows shims). */
@@ -456,10 +485,8 @@ export async function detectProvider(
       args = parts.slice(1);
       if (!isAbsolute(command) && /[\\/]/.test(command))
         command = resolvePath(cwd, command);
-      if (needsShell(command, platform)) {
-        shell = true;
-        command = quoteIfNeeded(command);
-      }
+      // runCommand quotes the command itself when it builds a shell line.
+      if (needsShell(command, platform)) shell = true;
     }
   } else {
     for (const name of definition.binaries) {
@@ -476,10 +503,8 @@ export async function detectProvider(
         entry.binaryPath = resolved;
         entry.binaryName = name;
         command = resolved;
-        if (needsShell(resolved, platform)) {
-          shell = true;
-          command = quoteIfNeeded(resolved);
-        }
+        // runCommand quotes the command itself when it builds a shell line.
+        if (needsShell(resolved, platform)) shell = true;
         entry.error = null;
         break;
       }

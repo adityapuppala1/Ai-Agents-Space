@@ -79,9 +79,10 @@ Fixtures with real (sanitized) samples live in `tests/fixtures/providers/`. Code
 
 - Headless would be `cursor-agent -p "<prompt>" --output-format stream-json` (per Cursor docs; unverified). Storage: `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (sqlite `ItemTable`/`cursorDiskKV`) and `~/.cursor/ai-tracking/ai-code-tracking.db` (`conversation_summaries`, `ai_code_hashes`). Treat as **experimental**: detect installation, report "install cursor-agent for managed runs", best-effort read of conversation summaries if present, never write.
 
-### Gemini CLI (NOT installed; `~/.gemini` holds only Antigravity IDE data)
+### Gemini CLI (installed: `gemini` 0.59.0 on PATH; flags verified from `--help`, no authenticated run observed)
 
-- Headless per docs: `gemini -p "<prompt>" --output-format json|stream-json` (unverified). Storage per docs: `~/.gemini/tmp/<project_hash>/chats/*.json`, `~/.gemini/tmp/<hash>/logs.json`. Implement detection + adapter + tolerant parser; mark capabilities `unknown` until verified. Antigravity (`~/.gemini/antigravity`) = detect only, unsupported.
+- The binary is present and its launch flags were read from its own `--help` on 2026-09-09. Nothing beyond that is verified: the CLI is not signed in on this machine (it exits 41), so **no run, no session and no artifact has ever been observed from it**. `providers/registry.js` is the single source `capabilityMatrix()` reads; it keeps every Gemini capability `unknown` apart from `launch`/`observe` = `experimental`, and `adapters/gemini.js` must not claim more than that.
+- Headless per docs: `gemini -p "<prompt>" --output-format json|stream-json` (unverified). Storage: `~/.gemini/projects.json` maps a lower-cased absolute cwd to a short project alias; per-project data lives in `~/.gemini/history/<alias>/` and `~/.gemini/tmp/<alias>/` (chats/logs JSON, formats unverified). `~/.gemini/settings.json` exists only once an auth method is chosen. Implement detection + adapter + tolerant parser; every parsed session and event carries `unverified: true`, and usage parsed from these files is labelled `reportedBy: "unverified"` rather than provider-reported. Antigravity (`~/.gemini/antigravity`) = detect only, unsupported.
 
 ### Common launch notes
 

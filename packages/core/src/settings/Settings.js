@@ -32,6 +32,24 @@ export const PUBLIC_SETTING_KEYS = Object.freeze([
   "budget.dailyRunLimit",
 ]);
 
+/**
+ * Key prefixes that are safe to ship to the browser. Modules register their
+ * own settings keys freely, and some of them are not for the UI at all:
+ * `webhook.*` may hold the settings-key ref an inbound endpoint signs with,
+ * `extensions.item.*` holds installed extension records, `ops.*` holds
+ * incident state. Everything outside this allow-list stays server-side.
+ */
+export const PUBLIC_SETTING_PREFIXES = Object.freeze([
+  "ui.",
+  "observation.",
+  "hooks.claudeCode.",
+  "codex.",
+  "budget.",
+  "mcp.",
+  "memory.",
+  "context.",
+]);
+
 const VALIDATORS = {
   "observation.enabled": bool,
   "observation.autoCreateWorkspaces": bool,
@@ -132,7 +150,8 @@ export class Settings {
       if (validate) validate(value, key);
     }
     for (const [key, value] of entries) this.set(key, value);
-    return this.all();
+    // The HTTP layer echoes this back, so it must not be a bare all().
+    return this.publicSubset();
   }
 
   delete(key) {
@@ -154,11 +173,20 @@ export class Settings {
     return result;
   }
 
-  /** The subset the browser may see. */
+  /**
+   * The subset the browser (and the MCP bridge) may see: the documented
+   * public keys plus anything under a public prefix. Never a bare `all()` —
+   * the table also holds operator-registered keys that are not for display.
+   */
   publicSubset() {
     const all = this.all();
     const out = {};
     for (const key of PUBLIC_SETTING_KEYS) out[key] = all[key];
+    for (const [key, value] of Object.entries(all)) {
+      if (SECRET_KEY.test(key)) continue;
+      if (PUBLIC_SETTING_PREFIXES.some((prefix) => key.startsWith(prefix)))
+        out[key] = value;
+    }
     return out;
   }
 }

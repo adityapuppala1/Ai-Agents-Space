@@ -400,6 +400,28 @@ export class ExtensionRegistry {
       throw new InputError("dependencies must be an array");
 
     const existing = this.#read(checked.id);
+    // Installing into a second workspace REPLACES the stored manifest for every
+    // workspace already opted in, so each of them has to allow the new
+    // permissions too. Without this, a caller widens an extension's
+    // permissions for workspace A by installing it into a permissive
+    // workspace B — bypassing the update()/acceptUpdate() path, which does
+    // check every workspace and demands an explicit human acceptance.
+    for (const opted of existing?.workspaces ?? []) {
+      if (opted === workspaceId) continue;
+      const problems = permissionsExceeding(
+        checked.permissions,
+        this.#workspaceCeiling(opted),
+      );
+      if (problems.length)
+        throw new InputError(
+          `Refused: ${checked.id} is already installed in workspace ${opted}, which does not allow what this manifest asks for. ${problems
+            .map((problem) => problem.detail)
+            .join(
+              " ",
+            )} Stage the change with update() so the new permissions are accepted explicitly.`,
+          403,
+        );
+    }
     const record = {
       id: checked.id,
       kind: checked.kind,

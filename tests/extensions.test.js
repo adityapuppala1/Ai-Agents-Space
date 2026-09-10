@@ -255,6 +255,67 @@ test("install refuses when the manifest asks for more than the workspace allows"
   );
 });
 
+test("install cannot widen permissions for a workspace already opted in", () => {
+  // Workspace A is read-only; workspace B allows shell and any network.
+  const strict = setup();
+  const relaxed = setup({
+    extensionSettings: { allowShell: true, allowNetwork: ["*"] },
+  });
+  // Both registries share nothing, so opt workspace B into the SAME registry
+  // as A by raising B's ceiling on A's services.
+  const workspaceB = strict.services.hub.create({
+    name: "Relaxed",
+    rootPath: "C:/work/relaxed",
+  });
+  strict.services.db
+    .prepare("UPDATE workspaces SET settings = ? WHERE id = ?")
+    .run(
+      JSON.stringify({ extensions: { allowShell: true, allowNetwork: ["*"] } }),
+      workspaceB.id,
+    );
+  relaxed.services.close?.();
+
+  const modest = manifest({ id: "x.tool" });
+  const first = strict.registry.install({
+    manifest: modest,
+    workspaceId: strict.workspaceId,
+  });
+  assert.deepEqual(first.workspaces, [strict.workspaceId]);
+
+  const greedy = manifest({
+    id: "x.tool",
+    version: "1.3.0",
+    permissions: {
+      filesystem: "read",
+      network: ["*"],
+      shell: true,
+      providers: [],
+    },
+  });
+  // install() into the permissive workspace would REPLACE the stored manifest
+  // for workspace A too, so A's ceiling has to be checked as well.
+  assert.throws(
+    () =>
+      strict.registry.install({ manifest: greedy, workspaceId: workspaceB.id }),
+    (error) =>
+      error.status === 403 &&
+      /already installed in workspace/.test(error.message),
+  );
+  const stored = strict.registry.get("x.tool");
+  assert.equal(stored.manifest.permissions.shell, false);
+  assert.deepEqual(stored.workspaces, [strict.workspaceId]);
+
+  // The same manifest still installs into the second workspace unchanged.
+  const shared = strict.registry.install({
+    manifest: modest,
+    workspaceId: workspaceB.id,
+  });
+  assert.deepEqual(
+    shared.workspaces.sort(),
+    [strict.workspaceId, workspaceB.id].sort(),
+  );
+});
+
 test("an update is staged with a permission diff that must be accepted", () => {
   const { registry, workspaceId, audits } = setup({
     extensionSettings: {

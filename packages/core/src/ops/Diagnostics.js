@@ -1,12 +1,12 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { homedir, tmpdir, platform, arch, release, type } from "node:os";
+import { homedir, platform, arch, release, type } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { InputError } from "../TaskStore.js";
 import { schemaVersion } from "../db.js";
 import { redactSecrets } from "../audit/Audit.js";
 import { assertOutsideProviderHomes } from "./Backup.js";
-import { basenameOf } from "../util/paths.js";
+import { basenameOf, isWithin } from "../util/paths.js";
 
 const EVENT_LIMIT = 200;
 const AUDIT_LIMIT = 200;
@@ -86,13 +86,41 @@ function readPackageVersions(root) {
 export class DiagnosticsService {
   constructor(
     services,
-    { now = Date.now, home = homedir(), env = process.env } = {},
+    { now = Date.now, home = homedir(), env = process.env, outputRoot } = {},
   ) {
     this.services = services;
     this.db = services.db;
     this.now = now;
     this.home = home;
     this.env = env;
+    this.outputRoot = resolve(
+      outputRoot ??
+        env.AGENT_SPACE_OUTPUT_DIR ??
+        join(
+          services.options?.dataDir ?? env.AGENT_SPACE_DATA_DIR ?? "data",
+          "diagnostics",
+        ),
+    );
+  }
+
+  /**
+   * Resolves a caller-supplied destination inside the diagnostics output root.
+   * A relative path is taken as a folder name under the root; an absolute path
+   * outside it is refused. Excluding the provider homes is not enough on its
+   * own: without a root, a caller chooses any directory the server can write
+   * to, including one a local web server serves.
+   */
+  #resolveOut(outPath) {
+    const root = this.outputRoot;
+    const target = outPath
+      ? resolve(root, String(outPath))
+      : join(root, `agent-space-diagnostics-${this.now()}`);
+    if (!isWithin(target, root) && target !== root)
+      throw new InputError(
+        `Diagnostics bundles are written under ${root}. Set AGENT_SPACE_OUTPUT_DIR to change that root.`,
+        400,
+      );
+    return assertOutsideProviderHomes(target, this.env);
   }
 
   #migrations() {
@@ -264,12 +292,7 @@ export class DiagnosticsService {
    * deliverable.
    */
   bundle({ outPath, includeEvents = true, actor = "local-user" } = {}) {
-    const dir = assertOutsideProviderHomes(
-      resolve(
-        outPath ?? join(tmpdir(), `agent-space-diagnostics-${this.now()}`),
-      ),
-      this.env,
-    );
+    const dir = this.#resolveOut(outPath);
     if (existsSync(join(dir, "summary.json")))
       throw new InputError(
         "A diagnostics bundle already exists at that path; choose a new folder",

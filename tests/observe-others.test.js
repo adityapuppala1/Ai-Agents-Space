@@ -815,7 +815,14 @@ test("gemini: parses a minimal chats json defensively and maps parts to events",
   assert.equal(events[2].tool, "read_file");
   assert.equal(events[2].file, path.normalize("C:/proj/README.md"));
   assert.equal(events[2].activity, "RESEARCHING");
-  assert.deepEqual(events[4].usage, { input: 120, output: 30, total: 150 });
+  // The gemini chat format is unverified, and the label says so all the way
+  // into run.usage rather than being merged as provider-reported.
+  assert.deepEqual(events[4].usage, {
+    input: 120,
+    output: 30,
+    total: 150,
+    reportedBy: "unverified",
+  });
   assert.equal(events[6].summary, "It says hi.");
   assert.equal(events[7].data.toolCallId, "call-9");
   assert.equal(events[8].activity, "TESTING");

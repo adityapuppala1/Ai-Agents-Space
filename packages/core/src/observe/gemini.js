@@ -613,8 +613,11 @@ export function createObserver({
       events.push(
         ev("usage", {
           kind: "usage",
-          usage: tokens,
-          summary: `Usage reported: ${tokens.total ?? tokens.totalTokenCount ?? "?"} tokens`,
+          // This file format is not verified (see the module header), so the
+          // numbers carry that label all the way into run.usage instead of
+          // being merged as provider-reported.
+          usage: { ...tokens, reportedBy: "unverified" },
+          summary: `Usage read from an unverified file: ${tokens.total ?? tokens.totalTokenCount ?? "?"} tokens`,
         }),
       );
     }

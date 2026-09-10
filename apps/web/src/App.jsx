@@ -175,6 +175,7 @@ const OFFICE_SETTINGS = {
 const VIEWS = [
   {
     id: "office",
+    group: "Work",
     label: "Workspace",
     icon: LayoutDashboard,
     key: "w",
@@ -183,6 +184,7 @@ const VIEWS = [
   },
   {
     id: "tasks",
+    group: "Work",
     label: "Task board",
     icon: ListTodo,
     key: "t",
@@ -191,6 +193,7 @@ const VIEWS = [
   },
   {
     id: "board",
+    group: "Work",
     label: "Board",
     icon: Columns3,
     key: "b",
@@ -200,6 +203,7 @@ const VIEWS = [
   },
   {
     id: "agents",
+    group: "Set up",
     label: "Your agents",
     icon: Users,
     key: "y",
@@ -208,6 +212,7 @@ const VIEWS = [
   },
   {
     id: "activity",
+    group: "Watch",
     label: "Activity",
     icon: Activity,
     key: "v",
@@ -217,6 +222,7 @@ const VIEWS = [
   },
   {
     id: "timeline",
+    group: "Watch",
     label: "Timeline",
     icon: Clock3,
     key: "m",
@@ -226,6 +232,7 @@ const VIEWS = [
   },
   {
     id: "deps",
+    group: "Work",
     label: "Dependencies",
     icon: GitBranch,
     key: "d",
@@ -234,6 +241,7 @@ const VIEWS = [
   },
   {
     id: "analytics",
+    group: "Decide",
     label: "Analytics",
     icon: ChartBar,
     key: "a",
@@ -243,6 +251,7 @@ const VIEWS = [
   },
   {
     id: "inbox",
+    group: "Decide",
     label: "Inbox",
     icon: Inbox,
     key: "i",
@@ -253,6 +262,7 @@ const VIEWS = [
   },
   {
     id: "sessions",
+    group: "Watch",
     label: "Live sessions",
     icon: Antenna,
     key: "l",
@@ -263,6 +273,7 @@ const VIEWS = [
   },
   {
     id: "connections",
+    group: "Set up",
     label: "Connections",
     icon: Cable,
     key: "c",
@@ -272,6 +283,7 @@ const VIEWS = [
   },
   {
     id: "ops",
+    group: "Set up",
     label: "Operations",
     icon: HeartPulse,
     key: "o",
@@ -282,6 +294,7 @@ const VIEWS = [
   },
   {
     id: "knowledge",
+    group: "Set up",
     label: "Knowledge",
     icon: BookOpen,
     key: "k",
@@ -292,6 +305,7 @@ const VIEWS = [
   },
   {
     id: "review",
+    group: "Watch",
     label: "Day in review",
     icon: Film,
     key: "r",
@@ -301,6 +315,13 @@ const VIEWS = [
       "Each beat cites the event it came from. Nothing here is narrated or summarised by a model.",
   },
 ];
+/** Rail order: four labelled groups instead of fourteen flat icons. */
+const RAIL_GROUP_ORDER = ["Work", "Watch", "Decide", "Set up"];
+export const RAIL_GROUPS = RAIL_GROUP_ORDER.map((name) => [
+  name,
+  VIEWS.filter((v) => v.group === name),
+]).filter(([, items]) => items.length);
+
 const VIEW_IDS = new Set(VIEWS.map((v) => v.id));
 
 function readJson(key, fallback) {
@@ -465,6 +486,10 @@ function testResultsFrom(runs = []) {
       passed: tests.passed,
       failed: tests.failed,
       total: tests.reported ? tests.commands : undefined,
+      // Forwarded so the QA screen can tell "no failures" apart from "not every
+      // command reported an outcome"; without them a partial result reads green.
+      reported: tests.reported === true,
+      unknown: tests.unknown,
       updatedAt: run.lastEventAt ?? run.endedAt ?? run.startedAt ?? null,
       artifactId: tests.artifactId ?? null,
     };
@@ -2015,32 +2040,40 @@ export default function App() {
             <Box size={25} strokeWidth={1.7} />
           </a>
           <nav aria-label="Main navigation">
-            {VIEWS.map(({ icon: Icon, id, label }) => (
-              <button
-                key={id}
-                title={label}
-                aria-label={label}
-                aria-current={view === id ? "page" : undefined}
-                className={view === id ? "active" : ""}
-                onClick={() => setView(id)}
-              >
-                <Icon size={20} />
-                {id === "inbox" && needsDecision > 0 ? (
-                  <span
-                    className="rail-badge"
-                    aria-label={`${needsDecision} decisions waiting`}
-                    data-testid="inbox-badge"
+            {RAIL_GROUPS.map(([groupName, items]) => (
+              <div className="rail-group" key={groupName}>
+                <h2 className="rail-group-label" aria-hidden="true">
+                  {groupName}
+                </h2>
+                {items.map(({ icon: Icon, id, label }) => (
+                  <button
+                    key={id}
+                    title={label}
+                    aria-label={label}
+                    aria-current={view === id ? "page" : undefined}
+                    className={view === id ? "active" : ""}
+                    onClick={() => setView(id)}
                   >
-                    {needsDecision > 99 ? "99+" : needsDecision}
-                  </span>
-                ) : null}
-                {id === "sessions" && liveSessions.length > 0 ? (
-                  <span className="rail-badge live" aria-hidden="true">
-                    {liveSessions.length}
-                  </span>
-                ) : null}
-                <span className="rail-tooltip">{label}</span>
-              </button>
+                    <Icon size={19} />
+                    <span className="rail-text">{label}</span>
+                    {id === "inbox" && needsDecision > 0 ? (
+                      <span
+                        className="rail-badge"
+                        aria-label={`${needsDecision} decisions waiting`}
+                        data-testid="inbox-badge"
+                      >
+                        {needsDecision > 99 ? "99+" : needsDecision}
+                      </span>
+                    ) : null}
+                    {id === "sessions" && liveSessions.length > 0 ? (
+                      <span className="rail-badge live" aria-hidden="true">
+                        {liveSessions.length}
+                      </span>
+                    ) : null}
+                    <span className="rail-tooltip">{label}</span>
+                  </button>
+                ))}
+              </div>
             ))}
           </nav>
           <div className="rail-bottom">

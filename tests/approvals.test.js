@@ -361,6 +361,65 @@ test("routes: list, get, decide, inbox through the ctx contract", async () => {
   );
 });
 
+test("routes: a declared non-human actor needs mcp.allowDecisions", async () => {
+  const { services, run } = setup();
+  const call = async (approvalId, input) => {
+    let out;
+    const ctx = {
+      method: "POST",
+      path: `/api/approvals/${approvalId}/decide`,
+      query: new URLSearchParams(""),
+      send: (status, data) => (out = { status, data }),
+      body: async () => input,
+      services,
+      hub: services.hub,
+      db: services.db,
+      bus: services.bus,
+      actor: "local-user",
+    };
+    await approvalRoutes(ctx);
+    return out;
+  };
+  const make = () =>
+    services.approvals.request({
+      runId: run.id,
+      kind: "command",
+      payload: { command: "git push" },
+    });
+
+  // The MCP tool refuses this in the client process; the server has to refuse
+  // it too, or plain curl decides the approval the gate was meant to protect.
+  const gated = make();
+  await assert.rejects(
+    () => call(gated.id, { decision: "approve", actor: "mcp" }),
+    (error) =>
+      error.status === 403 && /mcp\.allowDecisions/.test(error.message),
+  );
+  assert.equal(services.approvals.get(gated.id).status, "pending");
+
+  // A person deciding is untouched by the gate.
+  const human = make();
+  assert.equal(
+    (await call(human.id, { decision: "approve" })).data.status,
+    "approved",
+  );
+
+  services.settings.set("mcp.allowDecisions", true);
+  const allowed = make();
+  const decided = await call(allowed.id, { decision: "approve", actor: "mcp" });
+  assert.equal(decided.data.status, "approved");
+  assert.equal(decided.data.decidedBy, "local-user:mcp");
+
+  // Control characters in the actor never reach the audit log, whose hash
+  // chain and CSV export both treat the field as plain text.
+  const clean = make();
+  const messy = await call(clean.id, {
+    decision: "approve",
+    actor: "mcp\napproval.decide",
+  });
+  assert.ok(!messy.data.decidedBy.includes("\n"));
+});
+
 test("urgency ranks blocking, risky, old, high-priority approvals first", () => {
   const { services, workspace, run, advance } = setup();
   // A low-urgency question on a run that is not blocked.

@@ -147,14 +147,26 @@ export function suggestTeam(
     agents.map((agent) => agent.id),
   );
   const connections = services.connections?.list?.() ?? [];
+  const scoped = (connection) =>
+    connection.enabled !== false &&
+    (!(connection.allowedWorkspaces ?? []).length ||
+      connection.allowedWorkspaces.includes(workspaceId));
+  // "ready" only. ConnectionService.statusFor returns "ready" solely when a
+  // credential file was found; "detected" means the binary is on PATH and
+  // nothing more, and a detected-but-signed-out provider fails every run.
   const readyProviders = new Set(
     connections
       .filter(
-        (connection) =>
-          connection.enabled !== false &&
-          ["ready", "detected"].includes(connection.status) &&
-          (!(connection.allowedWorkspaces ?? []).length ||
-            connection.allowedWorkspaces.includes(workspaceId)),
+        (connection) => scoped(connection) && connection.status === "ready",
+      )
+      .map((connection) => connection.provider),
+  );
+  // Installed but not reported signed in. Tracked separately so the proposal
+  // can say which of the two it is.
+  const detectedProviders = new Set(
+    connections
+      .filter(
+        (connection) => scoped(connection) && connection.status === "detected",
       )
       .map((connection) => connection.provider),
   );
@@ -238,7 +250,9 @@ export function suggestTeam(
     );
     if (provider && !readyProviders.has(provider))
       reasons.push(
-        `its provider is not reported ready; connect it before starting`,
+        detectedProviders.has(provider)
+          ? `its provider's CLI is installed but no sign-in was found; sign in with it before starting`
+          : `its provider is not reported ready; connect it before starting`,
       );
     assignments.push({
       stepKey: step.key,
@@ -249,6 +263,9 @@ export function suggestTeam(
       provider,
       providerName: provider ? (PROVIDERS[provider]?.name ?? provider) : null,
       providerReady: provider ? readyProviders.has(provider) : false,
+      binaryDetected: provider
+        ? readyProviders.has(provider) || detectedProviders.has(provider)
+        : false,
       capability: provider ? capabilityOf(provider) : "unknown",
       dependsOn: step.dependsOn ?? [],
       reason: reasons.join("; "),

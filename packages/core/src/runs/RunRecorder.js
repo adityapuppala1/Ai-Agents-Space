@@ -635,7 +635,14 @@ export function mergeUsage(current = {}, incoming = {}) {
       merged[key] = value;
     else if (typeof value !== "object") merged[key] = value;
   }
-  merged.reportedBy = incoming.reportedBy ?? current.reportedBy ?? "provider";
+  // Never default to "provider". The source states its own provenance:
+  // adapters that read a documented usage field say "provider"; an observer
+  // parsing an unverified file format says "unverified". Stamping every usage
+  // object as provider-reported made budget headroom and the Usage tab claim a
+  // reliability the parse never had.
+  const reportedBy = incoming.reportedBy ?? current.reportedBy ?? null;
+  if (reportedBy === null) delete merged.reportedBy;
+  else merged.reportedBy = reportedBy;
   return merged;
 }
 

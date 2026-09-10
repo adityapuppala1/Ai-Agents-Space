@@ -1950,6 +1950,11 @@ export class RunWorker {
     this.starting.clear();
     const entries = [...this.children.values()];
     this.children.clear();
+    // Bookkeeping for every run first, then the kills together. On win32 a
+    // kill shells out to `taskkill /t /f` with a 10 s timeout, and main.js
+    // arms an 8 s force-exit: killing sequentially meant one wedged process
+    // tree used the whole budget and runs 2..N never had taskkill issued at
+    // all, so their provider trees survived the exit.
     for (const entry of entries) {
       entry.exiting = true;
       entry.finalized = true;
@@ -1963,13 +1968,15 @@ export class RunWorker {
       } catch {
         /* database already closed */
       }
-      try {
-        await this.kill(entry.child?.pid);
-      } catch {
-        /* ignore */
-      }
-      this.settle(entry.runId);
     }
+    await Promise.all(
+      entries.map((entry) =>
+        Promise.resolve()
+          .then(() => this.kill(entry.child?.pid))
+          .catch(() => {}),
+      ),
+    );
+    for (const entry of entries) this.settle(entry.runId);
   }
 }
 

@@ -101,6 +101,7 @@ import {
   showLabel,
   orderByTeam,
   teamGroups,
+  spreadLabels,
   avoidCollisions,
   previewLines,
   hoverPreview,
@@ -109,6 +110,7 @@ import {
   sameCamera,
   validCamera,
   clean,
+  maskPrivate,
 } from "./office/data.js";
 import "./styles/office.css";
 
@@ -449,7 +451,7 @@ export default function Office({
       );
       zones?.updateReview(
         reviewers.map((a) => clean(a.name, 20)),
-        reviewChips(reviewers, artifactsByAgent, 3),
+        reviewChips(reviewers, artifactsByAgent, 3, { mask }),
       );
       zones?.updateHandoff(handoffCard(handoffs, agents, { mask }));
       zones?.updateCluster(clustered);
@@ -533,6 +535,8 @@ export default function Office({
     intersection?.observe(container);
 
     const anchor = new THREE.Vector3();
+    // Reused each frame so label de-collision allocates nothing in the loop.
+    const pending = [];
     let frame = 0;
     let last = 0;
     let caretAt = 0;
@@ -580,8 +584,31 @@ export default function Office({
           selected: selected === fig.id,
         });
         const label = labels.current[fig.id];
-        if (label) place(label, fig.pos.x, 2.4, fig.pos.z);
+        if (label) {
+          place(label, fig.pos.x, 2.4, fig.pos.z);
+          if (label.style.visibility !== "hidden")
+            pending.push({
+              id: fig.id,
+              el: label,
+              x: parseFloat(label.style.left) || 0,
+              y: parseFloat(label.style.top) || 0,
+              w: label.offsetWidth || 120,
+              h: label.offsetHeight || 22,
+            });
+        }
       }
+      // An isometric room puts several figures at nearly the same screen
+      // point, so the raw projection stacks their labels into an unreadable
+      // pile. Push the collisions apart before the browser paints.
+      if (pending.length > 1) {
+        const spread = spreadLabels(pending);
+        for (const item of pending) {
+          const y = spread.get(item.id);
+          if (y != null && Math.abs(y - item.y) > 0.5)
+            item.el.style.top = `${y}px`;
+        }
+      }
+      pending.length = 0;
       for (const [id, label] of Object.entries(labels.current)) {
         if (label && figures.get(id)?.clustered)
           label.style.visibility = "hidden";
@@ -789,7 +816,7 @@ export default function Office({
   const hoveredAgent = agents.find((a) => a.id === hovered) ?? null;
   const preview = hoverPreview(hoveredAgent, { mask });
   const reviewers = ordered.filter((a) => activityOf(a) === "REVIEWING");
-  const chips = reviewChips(reviewers, artifactsByAgent, 3);
+  const chips = reviewChips(reviewers, artifactsByAgent, 3, { mask });
   const buildStrip = Array.isArray(buildEvents)
     ? pipelinePanels(buildEvents, 4, { mask }).filter((p) => p.id != null)
     : [];
@@ -882,7 +909,12 @@ export default function Office({
                 aria-label={`Inspect ${agent.name}`}
                 title={
                   agent.taskTitle
-                    ? `${activityLabel(agent)} · ${agent.taskTitle}`
+                    ? `${activityLabel(agent)} · ${
+                        // The 3D monitor masks this same field; a browser
+                        // tooltip that does not would show the full private
+                        // path while the footer claims paths are masked.
+                        mask ? maskPrivate(agent.taskTitle) : agent.taskTitle
+                      }`
                     : activityLabel(agent)
                 }
                 style={{ "--agent-color": agent.color }}

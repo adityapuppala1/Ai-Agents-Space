@@ -141,18 +141,27 @@ export function qaScreen({
   const passed = finite(result.passed) ? result.passed : null;
   const failed = finite(result.failed) ? result.failed : null;
   const total = finite(result.total) ? result.total : null;
+  const unknown = finite(result.unknown) ? result.unknown : null;
   const counts = [];
   if (passed != null) counts.push(`${passed} passed`);
   if (failed != null) counts.push(`${failed} failed`);
   const who = clean(mask ? maskPrivate(tester?.name) : tester?.name, 22);
+  // "pass" is a claim about evidence, not the absence of a failure. Green is
+  // only shown when every recognised test command reported an exit code
+  // (result.reported). Incomplete evidence — or nothing usable parsed at all —
+  // is "none", the same neutral tone as no output.
+  let tone = "none";
+  if (failed) tone = "fail";
+  else if (result.reported === true && failed === 0) tone = "pass";
   return {
     lines: [
       counts.length ? counts.join(" · ") : "test output recorded",
       total != null ? `${total} tests reported` : "total not reported",
+      unknown ? `${unknown} reported no exit code` : null,
       who ? `from ${who}'s test output` : "from the run's test output",
-    ],
+    ].filter(Boolean),
     hasResults: true,
-    tone: failed ? "fail" : "pass",
+    tone,
     runId: tester?.runId ?? null,
   };
 }
@@ -259,18 +268,29 @@ export function serviceMap(agents = []) {
 }
 
 /** Up to `limit` artifact chips for an agent. */
-export function artifactChips(artifactsByAgent, agentId, limit = 3) {
+export function artifactChips(
+  artifactsByAgent,
+  agentId,
+  limit = 3,
+  { mask = false } = {},
+) {
   const list = artifactsByAgent?.[agentId];
   if (!Array.isArray(list)) return [];
   return list
     .filter((a) => a && a.id != null)
     .slice(0, limit)
-    .map((a) => ({
-      id: a.id,
-      title: clean(a.title ?? a.kind ?? "artifact", 26),
-      kind: clean(a.kind ?? "artifact", 14),
-      agentId,
-    }));
+    .map((a) => {
+      const title = a.title ?? a.kind ?? "artifact";
+      return {
+        id: a.id,
+        // An artifact title is usually a path, so presentation mode has to
+        // mask it here too: these chips are rendered as visible text AND as a
+        // DOM title, both outside the 3D scene's own masking.
+        title: clean(mask ? maskPrivate(title) : title, 26),
+        kind: clean(a.kind ?? "artifact", 14),
+        agentId,
+      };
+    });
 }
 
 /** Artifact chips for whoever is at the review table (max `limit` in total). */
@@ -278,12 +298,18 @@ export function reviewChips(
   reviewers = [],
   artifactsByAgent = null,
   limit = 3,
+  { mask = false } = {},
 ) {
   const chips = [];
   for (const agent of reviewers) {
-    for (const chip of artifactChips(artifactsByAgent, agent?.id, limit)) {
+    for (const chip of artifactChips(artifactsByAgent, agent?.id, limit, {
+      mask,
+    })) {
       if (chips.length >= limit) return chips;
-      chips.push({ ...chip, agentName: clean(agent?.name, 20) });
+      chips.push({
+        ...chip,
+        agentName: clean(mask ? maskPrivate(agent?.name) : agent?.name, 20),
+      });
     }
   }
   return chips;
@@ -624,4 +650,50 @@ export const AVATAR_DETAIL = {
 
 export function avatarDetailPreset(name) {
   return AVATAR_DETAIL[name] ?? AVATAR_DETAIL.medium;
+}
+
+/**
+ * Pushes overlapping scene labels apart vertically so an isometric cluster of
+ * agents stays readable. Deterministic: labels are resolved nearest-first
+ * (smallest y, then smallest x) and each one only ever moves DOWN, so the same
+ * frame always produces the same layout and a label never jumps above the
+ * figure it belongs to.
+ *
+ * @param {{id:string,x:number,y:number,w:number,h:number}[]} items screen-space boxes (centre x, top y)
+ * @param {{gap?:number, maxShift?:number}} options
+ * @returns {Map<string, number>} id -> adjusted y
+ */
+export function spreadLabels(items, { gap = 5, maxShift = 132 } = {}) {
+  const out = new Map();
+  if (!Array.isArray(items) || !items.length) return out;
+  const sorted = [...items]
+    .filter((i) => i && Number.isFinite(i.x) && Number.isFinite(i.y))
+    .sort(
+      (a, b) =>
+        a.y - b.y || a.x - b.x || String(a.id).localeCompare(String(b.id)),
+    );
+  const placed = [];
+  for (const item of sorted) {
+    const w = item.w || 120;
+    const h = item.h || 22;
+    let y = item.y;
+    // Repeat until this box clears every box already placed: moving down to
+    // clear one can push it into another.
+    for (let guard = 0; guard < 40; guard++) {
+      let moved = false;
+      for (const p of placed) {
+        const apart = Math.abs(p.x - item.x) >= (p.w + w) / 2;
+        if (apart) continue;
+        if (Math.abs(p.y - y) >= (p.h + h) / 2 + gap) continue;
+        const next = p.y + (p.h + h) / 2 + gap;
+        if (next - item.y > maxShift) continue;
+        y = next;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    placed.push({ x: item.x, y, w, h });
+    out.set(item.id, y);
+  }
+  return out;
 }

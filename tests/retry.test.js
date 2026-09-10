@@ -165,6 +165,31 @@ test("classification table: every failure class from real provider text", () => 
   );
   assert.equal(sideEffectsOf(session), "none");
   assert.deepEqual([...DEFAULT_RETRYABLE_CLASSES], ["transport", "rate-limit"]);
+
+  // 11. A run that applied a file edit demonstrably reached a model, so it is
+  // never "transport" — not even when no session id was ever reported.
+  const editedNoSession = classifyFailure({
+    exitCode: 1,
+    events: [
+      { kind: "file.edit", provenance: "provider", data: { applied: true } },
+    ],
+    sessionId: null,
+    adapter: { id: "copilot", name: "Copilot" },
+  });
+  assert.equal(editedNoSession.class, "side-effects-possible");
+  assert.equal(editedNoSession.sideEffects, "certain");
+  assert.equal(editedNoSession.retryable, false);
+  assert.doesNotMatch(editedNoSession.reason, /never reached a model/);
+
+  // The same holds for a run with no provider output at all but a recorded
+  // command: "nothing was executed" would be a false statement.
+  const ranCommand = classifyFailure({
+    exitCode: 1,
+    events: [{ kind: "command", summary: "npm i" }],
+    adapter,
+  });
+  assert.equal(ranCommand.class, "side-effects-possible");
+  assert.doesNotMatch(ranCommand.reason, /nothing was executed/);
 });
 
 test("retry backoff is bounded, jittered from an injected random, and never retries side effects", () => {

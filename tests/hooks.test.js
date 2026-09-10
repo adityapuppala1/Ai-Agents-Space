@@ -705,13 +705,38 @@ test("routes: hook POST, status/install/uninstall, settings, audit, policy throu
     assert.equal(services.settings.get("hooks.claudeCode.installed"), false);
     assert.equal((await call(hookRoutes, "GET", "/api/other")).handled, false);
 
+    // A webhook's shared secret may be NAMED by a settings key, an extension
+    // record lives under extensions.item.*, and incident state under ops.*.
+    // None of them belong in an HTTP response: GET /api/settings serves the
+    // public subset, never settings.all().
+    services.settings.set("webhook.github.hmac", "top-secret-hmac");
+    services.settings.set("extensions.item.x", {
+      permissions: { shell: true },
+    });
+    services.settings.set("ops.quarantinedHosts", ["runner-1"]);
+
     const all = await call(settingsRoutes, "GET", "/api/settings");
     assert.equal(all.data["ui.graphics"], "medium");
+    assert.equal(all.data["webhook.github.hmac"], undefined);
+    assert.equal(all.data["extensions.item.x"], undefined);
+    assert.equal(all.data["ops.quarantinedHosts"], undefined);
+    assert.ok(!JSON.stringify(all.data).includes("top-secret-hmac"));
+    // UI-owned keys under a public prefix still reach the browser.
+    services.settings.set("ui.office.lighting", "night");
+    services.settings.set("mcp.allowDecisions", true);
+    const again = await call(settingsRoutes, "GET", "/api/settings");
+    assert.equal(again.data["ui.office.lighting"], "night");
+    assert.equal(again.data["mcp.allowDecisions"], true);
     const put = await call(settingsRoutes, "PUT", "/api/settings", {
       "ui.graphics": "low",
       "ui.presentationMode": true,
     });
     assert.equal(put.data["ui.graphics"], "low");
+    assert.equal(
+      put.data["webhook.github.hmac"],
+      undefined,
+      "PUT echoes the public subset too",
+    );
     await assert.rejects(
       call(settingsRoutes, "PUT", "/api/settings", { "ui.graphics": "nope" }),
       (e) => e.status === 400,

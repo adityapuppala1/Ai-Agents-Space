@@ -20,6 +20,7 @@
 
 import { createHash } from "node:crypto";
 import { InputError } from "../TaskStore.js";
+import { parseRange } from "./Analytics.js";
 
 function parseJson(value, fallback) {
   try {
@@ -239,10 +240,13 @@ export class Lineage {
     if (!task) return;
     const review = parseJson(task.review, {});
     if (!review.status) return;
+    // A skipped step has a review row but no reviewer: it is a skip node, and
+    // it never produces an accepted result.
+    const skipped = review.skipped === true || review.status === "skipped";
     const reviewNode = graph.node({
       id: `review:${task.id}`,
-      type: "review",
-      label: `review ${review.status}`,
+      type: skipped ? "skip" : "review",
+      label: skipped ? "skipped by condition" : `review ${review.status}`,
       revision: null,
       timestamp: review.decidedAt ?? task.updated_at ?? null,
       taskId: task.id,
@@ -258,7 +262,7 @@ export class Lineage {
           graph.edge(artifactId, reviewNode, "reviewed-in");
       else graph.edge(reviewed.runNode, reviewNode, "reviewed-in");
     }
-    if (review.status === "accepted") {
+    if (review.status === "accepted" && !skipped) {
       const resultNode = graph.node({
         id: `result:${task.id}`,
         type: "result",
@@ -335,7 +339,9 @@ export class Lineage {
   lineage({ workspaceId = null, since = 0 } = {}) {
     if (workspaceId && !this.services.hub.has(workspaceId))
       throw new InputError("Workspace not found", 404);
-    const from = Number(since) || 0;
+    // parseRange, not Number(x) || 0: Number("2026-09-01") is NaN, which
+    // silently widened every ISO range to all time.
+    const from = parseRange(since);
     const runs = workspaceId
       ? this.db
           .prepare(
@@ -364,8 +370,12 @@ export class Lineage {
       if (!byTask.has(run.task_id)) byTask.set(run.task_id, new Map());
       byTask.get(run.task_id).set(run.id, added);
     }
+    // Only link to a parent that is actually in this graph. An earlier attempt
+    // can start before `since` (or live in another workspace), and an edge to a
+    // node the caller was never given is not lineage, it is a dangling pointer.
+    const present = new Set(runs.map((run) => run.id));
     for (const run of runs)
-      if (run.parent_run_id)
+      if (run.parent_run_id && present.has(run.parent_run_id))
         graph.edge(`run:${run.parent_run_id}`, `run:${run.id}`, "retried-as");
     for (const [taskId, runNodes] of byTask)
       this.#addReview(graph, tasks.get(taskId) ?? null, runNodes);

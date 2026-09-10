@@ -372,11 +372,17 @@ export class BudgetTracker {
         /* the run may already be closed */
       }
     }
+    // The sentence has to agree with detail.basis: when nothing marked the
+    // usage as provider-reported, saying "the provider reported" is a claim
+    // the same event's own data denies.
+    const source = reported
+      ? "the provider reported"
+      : "the recorded usage totals";
     this.event(
       runId,
       action === "cancelled"
-        ? `Token budget exceeded: the provider reported ${tokens} tokens against a limit of ${limit}, so the run was cancelled. Token totals arrive after the fact, so this enforcement is post-hoc: work already done is not undone.`
-        : `Token budget exceeded: the provider reported ${tokens} tokens against a limit of ${limit}. The run had already ended, so nothing could be stopped; this is recorded as an acknowledged overrun.`,
+        ? `Token budget exceeded: ${source} ${tokens} tokens against a limit of ${limit}, so the run was cancelled. Token totals arrive after the fact, so this enforcement is post-hoc: work already done is not undone.`
+        : `Token budget exceeded: ${source} ${tokens} tokens against a limit of ${limit}. The run had already ended, so nothing could be stopped; this is recorded as an acknowledged overrun.`,
       { ...detail, action },
     );
     try {

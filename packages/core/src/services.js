@@ -145,7 +145,23 @@ export function createServices(options = {}) {
     ownsDatabase: !options.db,
     closed: false,
     _closers: [],
+    /**
+     * Registers a shutdown step. When close() has ALREADY run, the step runs
+     * immediately instead of being queued: the closers array was drained with
+     * splice(0), so anything pushed afterwards is never called. That happens
+     * whenever a slow startup registers a timer after Ctrl+C.
+     */
     onClose(fn) {
+      if (services.closed) {
+        try {
+          const result = fn();
+          if (result && typeof result.then === "function")
+            result.then(undefined, () => {});
+        } catch {
+          /* best effort */
+        }
+        return;
+      }
       services._closers.push(fn);
     },
     /** Returns cross-workspace state for the global WebSocket channel. */

@@ -214,7 +214,9 @@ export class Decisions {
         .all(...reviewParams);
       for (const task of tasks) {
         const review = parseJson(task.review, {});
+        // A skipped step carries a review row that no person decided.
         if (!review.status || review.status === "pending") continue;
+        if (review.skipped === true || review.status === "skipped") continue;
         if (runId && review.runId !== runId) continue;
         entries.push({
           at: review.decidedAt ?? task.updated_at ?? 0,

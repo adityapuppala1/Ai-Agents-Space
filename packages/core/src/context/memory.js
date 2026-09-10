@@ -497,7 +497,11 @@ export class MemoryService {
         } else if (isSecretPath(abs)) {
           state = "unchecked";
           detail = "secret path; never read";
-        } else if (root && !isWithin(abs, root)) {
+        } else if (!root || !isWithin(abs, root)) {
+          // Containment is MANDATORY, including when the workspace has no
+          // rootPath. Without the !root case an absolute source was stat`d and
+          // read anywhere on the host, which made refresh() an existence and
+          // content oracle for files far outside any workspace.
           state = "unchecked";
           detail = "outside the workspace root; never read";
         } else if (!existsSync(abs)) {

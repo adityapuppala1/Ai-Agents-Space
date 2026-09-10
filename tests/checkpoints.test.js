@@ -294,3 +294,49 @@ test("team suggestions are deterministic, editable, and dispatch nothing", () =>
     /templateId or goal/,
   );
 });
+
+test("a detected-but-not-signed-in provider is never proposed as ready", () => {
+  const { services, workspace } = setup();
+  // "detected" means the binary is on PATH and no credential file was found;
+  // every run on it exits "not signed in".
+  services.connections = {
+    list: () => [
+      {
+        provider: "gemini",
+        status: "detected",
+        enabled: true,
+        allowedWorkspaces: [],
+        capabilities: { launch: "experimental" },
+      },
+      {
+        provider: "claude-code",
+        status: "ready",
+        enabled: true,
+        allowedWorkspaces: [],
+        capabilities: { launch: "verified" },
+      },
+    ],
+  };
+  const agents = workspace.snapshot().agents;
+  services.db
+    .prepare("UPDATE agent_profiles SET provider = ? WHERE id = ?")
+    .run("gemini", agents[0].id);
+
+  const proposal = suggestTeam(services, {
+    workspaceId: workspace.id,
+    templateId: "feature-delivery",
+  });
+  const onGemini = proposal.assignments.filter(
+    (row) => row.provider === "gemini",
+  );
+  assert.ok(onGemini.length > 0, "the gemini profile was proposed for a step");
+  for (const row of onGemini) {
+    assert.equal(row.providerReady, false, "detected is not ready");
+    assert.equal(row.binaryDetected, true, "the CLI is installed");
+    assert.match(row.reason, /installed but no sign-in was found/);
+  }
+  const onClaude = proposal.assignments.filter(
+    (row) => row.provider === "claude-code",
+  );
+  for (const row of onClaude) assert.equal(row.providerReady, true);
+});

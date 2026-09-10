@@ -12,6 +12,11 @@ import {
   workspaceRoots,
 } from "../packages/core/src/connectors/Connectors.js";
 import connectorRoutes from "../packages/server/src/routes/connectors.js";
+import { safeArgument } from "../packages/core/src/connectors/git.js";
+import {
+  assertShellSafe,
+  runCommand,
+} from "../packages/core/src/providers/detect.js";
 
 /** `which` stub: resolves only the names given, like PATH would. */
 function fakeWhich(found = {}) {
@@ -688,4 +693,40 @@ test("routes expose capabilities, scoped reads, gated writes and workspace check
     await services.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("connector arguments can never become cmd.exe syntax", async () => {
+  // safeArgument used to allow every shell metacharacter, and runCommand
+  // quoted only arguments containing whitespace. On a host where git/gh
+  // resolves to a .cmd shim (scoop, npm, chocolatey) that combination let a
+  // ref such as "main&calc.exe" run a second command through cmd.exe.
+  for (const bad of [
+    "main&whoami",
+    "main|whoami",
+    "a>b",
+    "%USERPROFILE%",
+    'a"b',
+    "a^b",
+    "a;b",
+    "a`b",
+    "a$b",
+  ])
+    assert.throws(
+      () => safeArgument(bad, "ref"),
+      (error) => error.status === 400,
+      `${bad} must be refused`,
+    );
+  assert.equal(safeArgument("feature/login-fix", "ref"), "feature/login-fix");
+  assert.equal(safeArgument("src/app (copy).js", "file"), "src/app (copy).js");
+
+  // Second line of defence: even an argument that reached runCommand with a
+  // metacharacter is quoted rather than concatenated raw.
+  assert.throws(() => assertShellSafe(['a"b']), /cmd\.exe interprets/);
+  const result = await runCommand(
+    process.execPath,
+    ["-e", "console.log(process.argv[1])", "main&whoami"],
+    { shell: true, timeoutMs: 15000 },
+  );
+  assert.equal(result.code, 0, result.error ?? result.stderr);
+  assert.equal(result.stdout.trim(), "main&whoami");
 });

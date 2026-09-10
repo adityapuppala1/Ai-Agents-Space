@@ -1,4 +1,5 @@
 import { InputError } from "../../../core/src/TaskStore.js";
+import { parseRange } from "../../../core/src/analytics/Analytics.js";
 import {
   Evaluation,
   DIMENSIONS,
@@ -59,7 +60,7 @@ export default async function evaluationRoutes(ctx) {
       200,
       evaluation.byDimension({
         workspaceId: query.get("workspace") || null,
-        since: Number(query.get("since")) || 0,
+        since: parseRange(query.get("since")),
       }),
     );
     return true;

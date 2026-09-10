@@ -222,3 +222,70 @@ test("a run without a context manifest has no inputs rather than invented ones",
   assert.equal(graph.nodes[0].type, "run");
   assert.equal(graph.nodes[0].provider, "codex");
 });
+
+test("lineage() never emits an edge to a run outside the requested range", () => {
+  const context = setup();
+  const { first, second } = seedRetryChain(context);
+  // Attempt 1 started at T0, attempt 2 at T0 + 2000.
+  context.services.db
+    .prepare("UPDATE runs SET started_at = ? WHERE id = ?")
+    .run(T0 + 4_000_000, second.id);
+  const lineage = new Lineage(context.services, { now: () => T0 + 9_000_000 });
+  const graph = lineage.lineage({
+    workspaceId: context.workspace.id,
+    since: T0 + 3_000_000,
+  });
+  const ids = new Set(graph.nodes.map((node) => node.id));
+  assert.ok(!ids.has(`run:${first.id}`), "attempt 1 is outside the range");
+  for (const edge of graph.edges) {
+    assert.ok(ids.has(edge.from), `edge.from ${edge.from} is in the graph`);
+    assert.ok(ids.has(edge.to), `edge.to ${edge.to} is in the graph`);
+  }
+});
+
+test("lineage() understands an ISO since instead of widening to all time", () => {
+  const context = setup();
+  seedRetryChain(context);
+  const lineage = new Lineage(context.services, { now: () => T0 + 9000 });
+  const iso = new Date(T0 + 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const graph = lineage.lineage({
+    workspaceId: context.workspace.id,
+    since: iso,
+  });
+  assert.equal(
+    graph.scope.since,
+    Date.parse(iso),
+    "an ISO date is parsed, not turned into 0",
+  );
+  assert.equal(graph.runIds.length, 0, "nothing started after that date");
+});
+
+test("a step skipped by its branch condition is not an accepted result", () => {
+  const { services, workspace } = setup();
+  const task = workspace.create({ title: "Gated step" });
+  services.db
+    .prepare(
+      "UPDATE tasks SET status = 'COMPLETED', review = ?, updated_at = ? WHERE id = ?",
+    )
+    .run(
+      JSON.stringify({
+        status: "skipped",
+        skipped: true,
+        note: "skipped by condition",
+        runId: null,
+      }),
+      T0 + 1000,
+      task.id,
+    );
+  const graph = new Lineage(services, { now: () => T0 + 2000 }).forTask(
+    task.id,
+  );
+  assert.equal(
+    graph.nodes.filter((node) => node.type === "result").length,
+    0,
+    "no accepted result for a step that never ran",
+  );
+  const skip = graph.nodes.find((node) => node.type === "skip");
+  assert.ok(skip, "the skip is shown as a skip");
+  assert.match(skip.label, /skipped by condition/);
+});

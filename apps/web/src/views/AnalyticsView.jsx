@@ -44,15 +44,22 @@ const FUNNEL_STAGES = [
   "reviewed",
   "accepted",
 ];
+/**
+ * [key, label, contained] — `contained` marks a bucket that is a SUBSET of
+ * Executing, not a peer of it. waitingForProviderMs is derived from
+ * tool.start -> tool.end intervals, which lie inside the running spans that
+ * feed executingMs; rendering the two as rows of one list implied a partition
+ * and made a 60 s run look like 120 s of accounted time.
+ */
 const TIME_BUCKETS = [
-  ["queuedMs", "Queued"],
-  ["executingMs", "Executing"],
-  ["waitingApprovalMs", "Waiting for a human"],
-  ["waitingForHumanMs", "Waiting for a human"],
-  ["waitingForProviderMs", "Waiting for the provider"],
-  ["blockedMs", "Blocked"],
-  ["staleMs", "Stale"],
-  ["reviewingMs", "Reviewing"],
+  ["queuedMs", "Queued", false],
+  ["executingMs", "Executing", false],
+  ["waitingApprovalMs", "Waiting for a human", true],
+  ["waitingForHumanMs", "Waiting for a human", true],
+  ["waitingForProviderMs", "Waiting for the provider", true],
+  ["blockedMs", "Blocked", false],
+  ["staleMs", "Stale", false],
+  ["reviewingMs", "Reviewing", false],
 ];
 const RANGES = [
   ["24h", "Last 24 hours", 24 * 3600 * 1000],
@@ -90,6 +97,81 @@ function toPairs(value, labelKey = "stage", countKey = "count") {
 
 /* `normalizeHeatmap` is in ../hooks/viewLogic.js (covered by node:test). */
 export { normalizeHeatmap };
+
+/**
+ * One usage row from an Analytics group (byProvider / byModel). Both carry
+ * `{ runs, tokens: { input, output, reported }, costUsd: { value, reported,
+ * estimated } }` — the flat `inputTokens` / `outputTokens` keys this panel
+ * used to read do not exist, which is why every cell said "not reported".
+ * Tokens are shown only when the group says a provider actually reported them.
+ */
+function usageRow(row, label) {
+  const tokens = row.tokens ?? {};
+  const tokensReported =
+    tokens.reported !== false && tokens.reported !== undefined;
+  return {
+    label,
+    provider: row.provider ?? row.key ?? null,
+    runs: row.runs ?? row.count ?? 0,
+    input: tokensReported ? (tokens.input ?? null) : null,
+    output: tokensReported ? (tokens.output ?? null) : null,
+    cost: row.costUsd?.value ?? row.cost ?? null,
+    estimated: Boolean(row.costUsd?.estimated ?? row.estimated),
+    reported: row.costUsd?.reported ?? null,
+  };
+}
+
+/** Runs / tokens / cost for one usage grouping. Missing data says so. */
+function UsageTable({ caption, rows, labelOf }) {
+  const cell = (value) =>
+    value === null || value === undefined
+      ? "not reported"
+      : formatNumber(value);
+  return (
+    <div className="as-table-wrap">
+      <table className="as-table as-numeric">
+        <thead>
+          <tr>
+            <th scope="col">{caption}</th>
+            <th scope="col">Runs</th>
+            <th scope="col">Input tokens</th>
+            <th scope="col">Output tokens</th>
+            <th scope="col">Cost</th>
+            <th scope="col">Basis</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={`${row.label}-${index}`}>
+              <th scope="row">{labelOf(row)}</th>
+              <td>{formatNumber(row.runs)}</td>
+              <td>{cell(row.input)}</td>
+              <td>{cell(row.output)}</td>
+              <td>
+                {row.cost === null || row.cost === undefined
+                  ? "not reported"
+                  : typeof row.cost === "number"
+                    ? `$${row.cost.toFixed(4)}`
+                    : String(row.cost)}
+              </td>
+              <td>
+                <span
+                  className={`as-tag ${row.estimated ? "as-tag-warn" : ""}`}
+                >
+                  {row.estimated
+                    ? "estimated"
+                    : row.reported === false
+                      ? "not reported"
+                      : "reported"}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function Tile({ label, value, basis, hint }) {
   return (
@@ -336,11 +418,11 @@ export default function AnalyticsView({
     const source = data?.time ?? data?.timeBreakdown ?? data?.durations ?? {};
     const seen = new Set();
     const ordered = [];
-    for (const [key, label] of TIME_BUCKETS) {
+    for (const [key, label, contained] of TIME_BUCKETS) {
       const value = Number(source[key]);
       if (!Number.isFinite(value) || seen.has(label)) continue;
       seen.add(label);
-      ordered.push([label, value]);
+      ordered.push([label, value, contained === true]);
     }
     return ordered;
   }, [data]);
@@ -353,16 +435,30 @@ export default function AnalyticsView({
           provider: key,
           ...(entry ?? {}),
         }));
-    return rows.map((row) => ({
-      provider: row.provider ?? row.key ?? "unknown",
-      model: row.model ?? "model not reported",
-      runs: row.runs ?? row.count ?? 0,
-      input: row.inputTokens?.value ?? row.inputTokens ?? null,
-      output: row.outputTokens?.value ?? row.outputTokens ?? null,
-      cost: row.costUsd?.value ?? row.cost ?? null,
-      estimated: Boolean(row.costUsd?.estimated ?? row.estimated),
-      reported: row.costUsd?.reported ?? null,
-    }));
+    return rows.map((row) =>
+      usageRow(row, row.provider ?? row.key ?? "unknown"),
+    );
+  }, [data]);
+
+  // byModel is its own list of rows ({ model, reported, runs, tokens, costUsd }).
+  // It is NOT a column of byProvider: a provider row aggregates every model it
+  // ran, so there is no single model to put beside it.
+  const models = useMemo(() => {
+    const raw = data?.byModel ?? [];
+    const rows = Array.isArray(raw)
+      ? raw
+      : Object.entries(raw).map(([key, entry]) => ({
+          model: key,
+          ...(entry ?? {}),
+        }));
+    return rows.map((row) =>
+      usageRow(
+        row,
+        row.reported === false || !row.model || row.model === "unknown"
+          ? "model not reported"
+          : row.model,
+      ),
+    );
   }, [data]);
 
   const blocked = useMemo(
@@ -385,7 +481,12 @@ export default function AnalyticsView({
     stale: data?.reliability?.staleEvents ?? data?.counts?.stale,
   };
   const maxFunnel = Math.max(0, ...funnel.map(([, value]) => value));
-  const maxTime = Math.max(0, ...time.map(([, value]) => value));
+  // Contained rows are excluded from the scale: they are a subset of
+  // Executing, so letting one set the bar maximum would misread as a peer.
+  const maxTime = Math.max(
+    0,
+    ...time.filter(([, , contained]) => !contained).map(([, value]) => value),
+  );
 
   const savedViews = views.data?.views ?? [];
   const applyView = (view) => {
@@ -645,9 +746,13 @@ export default function AnalyticsView({
                     </tr>
                   </thead>
                   <tbody>
-                    {time.map(([label, ms]) => (
-                      <tr key={label}>
-                        <th scope="row">{label}</th>
+                    {time.map(([label, ms, contained]) => (
+                      <tr key={label} className={contained ? "as-sub-row" : ""}>
+                        <th scope="row">
+                          {contained
+                            ? `of which ${label.toLowerCase()}`
+                            : label}
+                        </th>
                         <td>{formatElapsed(ms)}</td>
                         <td>
                           <BarCell value={ms} max={maxTime} />
@@ -659,71 +764,41 @@ export default function AnalyticsView({
               )}
               <p className="as-muted as-small">
                 {data?.time?.note ??
-                  "Parallel runs overlap; totals are per-run time, not wall-clock project time."}
+                  "Parallel runs overlap; totals are per-run time, not wall-clock project time."}{" "}
+                The &ldquo;of which&rdquo; rows are contained in Executing, not
+                additional to it, so these rows do not sum to a total.
               </p>
             </article>
 
             <article className="as-card as-span2">
-              <h4>Usage by provider and model</h4>
+              <h4>Usage by provider</h4>
               {providers.length === 0 ? (
                 <p className="as-muted">
                   No usage reported by any provider in this range.
                 </p>
               ) : (
-                <div className="as-table-wrap">
-                  <table className="as-table as-numeric">
-                    <thead>
-                      <tr>
-                        <th scope="col">Provider</th>
-                        <th scope="col">Model</th>
-                        <th scope="col">Runs</th>
-                        <th scope="col">Input tokens</th>
-                        <th scope="col">Output tokens</th>
-                        <th scope="col">Cost</th>
-                        <th scope="col">Basis</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {providers
-                        .filter((row) => !provider || row.provider === provider)
-                        .map((row, index) => (
-                          <tr key={`${row.provider}-${row.model}-${index}`}>
-                            <th scope="row">{providerLabel(row.provider)}</th>
-                            <td>{row.model}</td>
-                            <td>{formatNumber(row.runs)}</td>
-                            <td>
-                              {row.input === null || row.input === undefined
-                                ? "not reported"
-                                : formatNumber(row.input)}
-                            </td>
-                            <td>
-                              {row.output === null || row.output === undefined
-                                ? "not reported"
-                                : formatNumber(row.output)}
-                            </td>
-                            <td>
-                              {row.cost === null || row.cost === undefined
-                                ? "not reported"
-                                : typeof row.cost === "number"
-                                  ? `$${row.cost.toFixed(4)}`
-                                  : String(row.cost)}
-                            </td>
-                            <td>
-                              <span
-                                className={`as-tag ${row.estimated ? "as-tag-warn" : ""}`}
-                              >
-                                {row.estimated
-                                  ? "estimated"
-                                  : row.reported === false
-                                    ? "not reported"
-                                    : "reported"}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
+                <UsageTable
+                  caption="Provider"
+                  rows={providers.filter(
+                    (row) => !provider || row.provider === provider,
+                  )}
+                  labelOf={(row) => providerLabel(row.provider)}
+                />
+              )}
+            </article>
+
+            <article className="as-card as-span2">
+              <h4>Usage by model</h4>
+              {models.length === 0 ? (
+                <p className="as-muted">
+                  No model was reported for any run in this range.
+                </p>
+              ) : (
+                <UsageTable
+                  caption="Model"
+                  rows={models}
+                  labelOf={(row) => row.label}
+                />
               )}
             </article>
 

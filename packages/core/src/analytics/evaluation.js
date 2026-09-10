@@ -20,6 +20,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { InputError } from "../TaskStore.js";
+import { parseRange } from "./Analytics.js";
 
 export const DIMENSIONS = Object.freeze([
   "completion",
@@ -344,7 +345,9 @@ export class Evaluation {
   byDimension({ workspaceId = null, since = 0 } = {}) {
     if (workspaceId && !this.services.hub.has(workspaceId))
       throw new InputError("Workspace not found", 404);
-    const from = Number(since) || 0;
+    // parseRange, not Number(x) || 0: an ISO date parsed to NaN and the
+    // caller silently got every record ever stored.
+    const from = parseRange(since);
     const clauses = ["e.created_at >= ?"];
     const params = [from];
     if (workspaceId) {

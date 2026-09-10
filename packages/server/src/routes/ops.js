@@ -19,7 +19,7 @@ import { RetentionService } from "../../../core/src/ops/Retention.js";
  *   POST /api/ops/quarantine            { confirm: true, host, reason?, release? }
  *   POST /api/ops/backup                { confirm: true, outPath }
  *   POST /api/ops/restore-drill         { confirm: true, tmpDir? }
- *   GET  /api/ops/diagnostics?outPath=&events=0
+ *   POST /api/ops/diagnostics          { confirm: true, outPath?, events? }
  *   GET  /api/ops/retention
  *   PUT  /api/ops/retention             { enabled, eventsDays, ... }
  *   POST /api/ops/retention/sweep       { confirm: true, dryRun? }
@@ -131,11 +131,17 @@ export default async function opsRoutes(ctx) {
     return true;
   }
 
-  if (method === "GET" && path === "/api/ops/diagnostics") {
-    const includeEvents = query.get("events") !== "0";
+  // POST, not GET: this route creates directories and writes files. A GET
+  // with the destination in the query string is reachable from any web page
+  // the user visits (a cross-site <img> sends no Origin header and needs no
+  // content type), so it goes through confirmed() like every other ops
+  // mutation — readBody requires application/json, which a cross-origin form
+  // cannot set.
+  if (method === "POST" && path === "/api/ops/diagnostics") {
+    const input = await confirmed();
     const result = diagnostics.bundle({
-      outPath: query.get("outPath") || undefined,
-      includeEvents,
+      outPath: input.outPath || undefined,
+      includeEvents: input.events !== false && input.includeEvents !== false,
       actor,
     });
     send(200, {

@@ -198,6 +198,16 @@ export function classifyFailure(input = {}) {
       "rate-limit",
       `${providerName} reported a rate or usage limit; waiting before another attempt.`,
     );
+  // Recorded side effects come FIRST. A run that applied a file edit or ran a
+  // command demonstrably reached a model, so it can never be "transport" —
+  // whose reason text says in so many words that the request never got there.
+  if (sideEffects !== "none")
+    return {
+      class: "side-effects-possible",
+      retryable: false,
+      reason: SIDE_EFFECT_REVIEW_REASON,
+      sideEffects,
+    };
   if (
     spawnError ||
     TRANSPORT_PATTERN.test(haystack) ||
@@ -214,13 +224,6 @@ export function classifyFailure(input = {}) {
             ? `${providerName} exited before it reported a session id, so the request never reached a model.`
             : `${providerName} failed with a transport error.`,
     );
-  if (sideEffects !== "none")
-    return {
-      class: "side-effects-possible",
-      retryable: false,
-      reason: SIDE_EFFECT_REVIEW_REASON,
-      sideEffects,
-    };
   if (exitCode !== null && exitCode !== 0)
     return decide(
       "provider-error",

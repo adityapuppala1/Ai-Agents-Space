@@ -587,11 +587,20 @@ const migrations = [
   },
 ];
 
+/** How long a writer waits for a competing writer before SQLITE_BUSY. */
+export const BUSY_TIMEOUT_MS = 5000;
+
 export function openDatabase(path = ":memory:") {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA foreign_keys = ON");
   if (path !== ":memory:") {
+    // WAL removes reader/writer contention but not writer/writer. Without a
+    // busy timeout (the constructor default is 0) a second process on the same
+    // file — a forgotten `npm start`, a test runner pointed at the file db —
+    // fails instantly with SQLITE_BUSY, including on the migration BEGIN
+    // below, so the server dies at construction instead of waiting its turn.
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     db.exec("PRAGMA journal_mode = WAL");
     // WAL is durable at checkpoint; NORMAL skips the per-commit fsync that
     // otherwise dominates the observation poll (one commit per event).

@@ -52,7 +52,7 @@ function Metric({ label, value, hint }) {
 
 /**
  * Operations panel: the health dashboard, queue visibility, the incident
- * stop switch, a backup and a restore drill, a diagnostics download, the
+ * stop switch, a backup and a restore drill, a diagnostics bundle, the
  * audit verification result, and retention settings.
  *
  * Every destructive action requires an explicit confirmation typed into the
@@ -61,7 +61,7 @@ function Metric({ label, value, hint }) {
  *
  * Routes used: GET /api/ops/health, GET /api/ops/status,
  * POST /api/ops/stop-all, POST /api/ops/resume, POST /api/ops/backup,
- * POST /api/ops/restore-drill, GET /api/ops/diagnostics,
+ * POST /api/ops/restore-drill, POST /api/ops/diagnostics,
  * GET|PUT /api/ops/retention, POST /api/ops/retention/sweep,
  * GET /api/audit?verify=1.
  *
@@ -406,14 +406,26 @@ export default function OpsPanel({ pollMs = 15000, onOpenAudit }) {
           >
             Run a restore drill
           </button>
-          <a
+          <button
+            type="button"
             className="text-button"
-            href="/api/ops/diagnostics"
-            download
-            aria-label="Download a diagnostics bundle"
+            disabled={busy === "diagnostics"}
+            aria-label="Write a diagnostics bundle"
+            onClick={() =>
+              call(
+                "diagnostics",
+                () =>
+                  apiFetch("/ops/diagnostics", {
+                    method: "POST",
+                    body: { confirm: true },
+                  }),
+                (result) =>
+                  `Diagnostics bundle written to ${result?.path ?? "the diagnostics folder"}.`,
+              )
+            }
           >
             <Download size={12} /> Diagnostics
-          </a>
+          </button>
         </div>
         <p className="as-muted as-small">
           The restore drill opens the backup in a temporary location and reads

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServices } from "../packages/core/src/services.js";
 import { RunRecorder } from "../packages/core/src/runs/RunRecorder.js";
+import { classifyTool } from "../packages/core/src/contracts.js";
 
 function setup() {
   const services = createServices({ demo: false });
@@ -170,4 +171,31 @@ test("managed run completion leaves the task for review and failures block it", 
     /already working/,
   );
   assert.equal(recorder.active().length, 0);
+});
+
+test("reading a file whose name contains test is not reported as testing", () => {
+  // Truthfulness: the activity shown in the office is inferred from the tool
+  // call, so it must not claim a test ran when a file was merely read.
+  assert.equal(
+    classifyTool("Bash", { command: "sed -n '1,40p' tests/office.test.js" }),
+    "COMMANDING",
+  );
+  assert.equal(
+    classifyTool("Bash", { command: "grep -n TESTING tests/run.test.js" }),
+    "RESEARCHING",
+  );
+  for (const command of [
+    "npm test",
+    "npm run test:ui",
+    "node --test tests/office.test.js",
+    "npx playwright test",
+    "pytest -q",
+    "go test ./...",
+    "cargo test",
+  ])
+    assert.equal(
+      classifyTool("Bash", { command }),
+      "TESTING",
+      `${command} is a test run`,
+    );
 });

@@ -3,9 +3,11 @@
  *
  * Honesty rules that shape this module:
  *  - Every command runs through `runCommand` with an ARGUMENT ARRAY and a
- *    timeout. No shell string is ever built, so a branch name or a path can
- *    never become part of a command line.
- *  - Arguments that could be read as options (a leading "-") are refused, and
+ *    timeout. A shell string is built only when the resolved binary is a
+ *    Windows `.cmd`/`.bat` shim, and then every argument is quoted and any
+ *    argument cmd.exe could still reinterpret is refused outright.
+ *  - Arguments that could be read as options (a leading "-") or as shell
+ *    syntax (`&`, `|`, `>`, `%`, …) are refused, and
  *    every path argument is scoped to the workspace root by the filesystem
  *    connector's `resolveScoped`.
  *  - Writes are refused: Agent Space never commits, pushes, or checks out on a
@@ -53,6 +55,15 @@ export function safeArgument(value, label) {
     );
   if (/[\r\n\0]/.test(text))
     throw new InputError(`${label} may not contain line breaks`, 400);
+  // On win32 a git/gh binary can resolve to a .cmd/.bat shim, which
+  // `runCommand` has to run through cmd.exe. Shell metacharacters are refused
+  // here so no connector argument can ever become command syntax, whichever
+  // way the binary is spawned.
+  if (/[&|<>^%"`$;!]/.test(text))
+    throw new InputError(
+      `${label} may not contain shell characters (& | < > ^ % " \` $ ; !)`,
+      400,
+    );
   return text;
 }
 

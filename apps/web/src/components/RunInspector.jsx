@@ -43,6 +43,9 @@ import Tabs from "./Tabs.jsx";
 import RunLineage from "./RunLineage.jsx";
 import { PinToggle } from "./PinnedRuns.jsx";
 
+/** How many events the inspector keeps in memory for one run. */
+const MAX_RETAINED_EVENTS = 5000;
+
 const TABS = [
   { id: "overview", label: "Overview", icon: <Info size={13} /> },
   { id: "activity", label: "Live activity", icon: <Activity size={13} /> },
@@ -138,12 +141,14 @@ export default function RunInspector({
   const active = isActiveRun(run);
   useTicker(active);
   const lastSequence = useRef(0);
+  const seenIds = useRef(new Set());
 
   useEffect(() => {
     const initial = Array.isArray(detail.data?.events)
       ? detail.data.events
       : [];
     setEvents(initial);
+    seenIds.current = new Set(initial.map((e) => e.id));
     lastSequence.current = initial.reduce(
       (max, e) => Math.max(max, e.sequence ?? 0),
       0,
@@ -153,6 +158,7 @@ export default function RunInspector({
   useEffect(() => {
     if (externalEvents || !runId || !active) return undefined;
     let stopped = false;
+    let timer = null;
     const poll = async () => {
       try {
         const result = await apiFetch(
@@ -160,15 +166,25 @@ export default function RunInspector({
         );
         const fresh = Array.isArray(result) ? result : (result?.events ?? []);
         if (stopped || fresh.length === 0) return;
-        setEvents((current) => {
-          const known = new Set(current.map((e) => e.id));
-          const merged = [...current, ...fresh.filter((e) => !known.has(e.id))];
-          lastSequence.current = merged.reduce(
-            (max, e) => Math.max(max, e.sequence ?? 0),
-            lastSequence.current,
-          );
-          return merged;
-        });
+        // The seen-id set lives in a ref: rebuilding it from the whole
+        // accumulated array on every tick is O(n) per poll on a list that can
+        // reach tens of thousands of events.
+        const added = fresh.filter((e) => !seenIds.current.has(e.id));
+        for (const event of added) seenIds.current.add(event.id);
+        lastSequence.current = fresh.reduce(
+          (max, e) => Math.max(max, e.sequence ?? 0),
+          lastSequence.current,
+        );
+        if (added.length)
+          setEvents((current) => {
+            const merged = [...current, ...added];
+            // Retention cap: each event carries up to 4 KB of data, and a long
+            // managed run would otherwise hold tens of megabytes in state. The
+            // list is virtualized, so trimming the oldest is invisible.
+            return merged.length > MAX_RETAINED_EVENTS
+              ? merged.slice(-MAX_RETAINED_EVENTS)
+              : merged;
+          });
         if (
           fresh.some((e) =>
             ["complete", "status", "error", "session.end"].includes(e.kind),
@@ -179,12 +195,18 @@ export default function RunInspector({
         /* polling errors are transient; the next tick retries */
       }
     };
-    const timer = setInterval(() => {
-      if (typeof document === "undefined" || !document.hidden) poll();
-    }, 2000);
+    // A self-rescheduling timeout, not setInterval: with an interval a slow
+    // response is overtaken by the next request, which asks for the SAME
+    // `after` sequence (it only advances in the response handler) and
+    // re-downloads the same rows several times over.
+    const tick = async () => {
+      if (typeof document === "undefined" || !document.hidden) await poll();
+      if (!stopped) timer = setTimeout(tick, 2000);
+    };
+    timer = setTimeout(tick, 2000);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
     };
   }, [runId, active, externalEvents, detail.reload]);
 

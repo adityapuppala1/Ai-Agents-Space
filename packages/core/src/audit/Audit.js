@@ -44,13 +44,62 @@ export function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+/** The hash algorithm this build writes. Bumped when the input changes. */
+export const AUDIT_CHAIN_VERSION = 2;
+
 /**
- * hash = sha256(sequence, timestamp, actor, action, target, policyDecision,
- *               canonical(details), prevHash) joined with "\n".
- * The separator is a character that cannot appear unescaped in the canonical
- * JSON, so no two different records can produce the same input string.
+ * hash = sha256(canonicalJson({sequence, timestamp, actor, action, target,
+ *               workspaceId, runId, policyDecision, details, prevHash})).
+ *
+ * Chain version 2. Two things changed from version 1:
+ *  - `workspaceId` and `runId` are covered. They are real columns that the UI
+ *    and the diagnostics export present as evidence; leaving them out let a
+ *    row be re-attributed to another workspace or run without breaking
+ *    verify().
+ *  - The fields are hashed as canonical JSON instead of being joined with
+ *    a newline. `actor`, `action` and `target` are stored raw and carry caller
+ *    text, so a newline inside one of them made the joined string ambiguous:
+ *    actor "a<LF>b" + action "c" produced the same digest as actor "a"
+ *    + action "b<LF>c". Canonical JSON quotes and escapes every field, so the
+ *    encoding is injective.
  */
 export function auditHash({
+  sequence,
+  timestamp,
+  actor,
+  action,
+  target,
+  workspaceId,
+  runId,
+  policyDecision,
+  details,
+  prevHash,
+}) {
+  return createHash("sha256")
+    .update(
+      canonicalJson({
+        version: AUDIT_CHAIN_VERSION,
+        sequence: sequence ?? null,
+        timestamp: timestamp ?? null,
+        actor: actor ?? null,
+        action: action ?? null,
+        target: target ?? null,
+        workspaceId: workspaceId ?? null,
+        runId: runId ?? null,
+        policyDecision: policyDecision ?? null,
+        details: details ?? {},
+        prevHash: prevHash ?? null,
+      }),
+    )
+    .digest("hex");
+}
+
+/**
+ * Chain version 1: the newline join this build no longer writes. Used only by
+ * verify(), so rows recorded before the upgrade are reported as belonging to
+ * the older chain version rather than as tampered with.
+ */
+export function legacyAuditHash({
   sequence,
   timestamp,
   actor,
@@ -76,6 +125,16 @@ export function auditHash({
       ].join("\n"),
     )
     .digest("hex");
+}
+
+/** Caller text with control characters removed, clipped to `max`. */
+function plainText(value, max) {
+  let out = "";
+  for (const ch of String(value)) {
+    const code = ch.codePointAt(0);
+    out += code < 32 || code === 127 ? " " : ch;
+  }
+  return out.slice(0, max);
 }
 
 function parseDetails(raw) {
@@ -119,10 +178,18 @@ const CSV_COLUMNS = [
   "hash",
 ];
 
-/** RFC 4180 escaping: quote when the value holds a comma, quote, or newline. */
+/**
+ * RFC 4180 escaping: quote when the value holds a comma, quote, or newline.
+ *
+ * A leading "=", "+", "-", "@", TAB or CR also gets a "'" prefix first.
+ * Excel and LibreOffice read those as the start of a FORMULA, and the actor
+ * and target columns carry text an API caller chose, so an exported audit log
+ * could otherwise run a DDE command on the reviewer's machine.
+ */
 export function csvCell(value) {
   if (value === null || value === undefined) return "";
-  const text = typeof value === "string" ? value : String(value);
+  let text = typeof value === "string" ? value : String(value);
+  if (/^[=+@\t\r-]/.test(text)) text = `'${text}`;
   if (/[",\r\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
   return text;
 }
@@ -200,12 +267,14 @@ export class Audit {
         preview: serialized.slice(0, 16000),
       });
     const ts = timestamp ?? this.now();
-    const safeActor = String(actor ?? "system").slice(0, 120);
-    const safeAction = action.slice(0, 120);
+    // actor/action/target are stored raw and carry caller-chosen text, so
+    // control characters are stripped before they are stored, hashed, or
+    // exported. Stripping (not rejecting): an audit failure must never block
+    // the action being audited.
+    const safeActor = plainText(actor ?? "system", 120);
+    const safeAction = plainText(action, 120);
     const safeTarget =
-      target === null || target === undefined
-        ? null
-        : String(target).slice(0, 500);
+      target === null || target === undefined ? null : plainText(target, 500);
     const storedDetails = parseDetails(serialized);
 
     if (!this.chained) {
@@ -250,6 +319,8 @@ export class Audit {
       actor: safeActor,
       action: safeAction,
       target: safeTarget,
+      workspaceId: workspaceId ?? null,
+      runId: runId ?? null,
       policyDecision,
       details: storedDetails,
       prevHash,
@@ -346,11 +417,13 @@ export class Audit {
 
   /**
    * Walks the chain oldest → newest and recomputes every hash.
-   * → { ok, brokenAt, brokenReason, count, unchained, firstSequence,
-   *     lastSequence, headHash }
+   * → { ok, brokenAt, brokenReason, count, unchained, legacy, chainVersion,
+   *     firstSequence, lastSequence, headHash }
    * `brokenAt` is the sequence number of the first record that does not match
    * what was stored (an edited row, a removed row in the middle, or a broken
-   * link). `unchained` counts rows written before schema v5.
+   * link). `unchained` counts rows written before schema v5; `legacy` counts
+   * rows whose hash matches audit chain version 1, which did not cover
+   * workspace_id or run_id — those two fields are unverifiable on such rows.
    */
   verify({ limit = 100000 } = {}) {
     if (!this.chained)
@@ -360,6 +433,8 @@ export class Audit {
         brokenReason: "The audit hash chain columns are missing (schema < 5)",
         count: 0,
         unchained: this.count(),
+        legacy: 0,
+        chainVersion: AUDIT_CHAIN_VERSION,
         firstSequence: null,
         lastSequence: null,
         headHash: null,
@@ -373,6 +448,7 @@ export class Audit {
       )
       .all(Math.max(1, Math.min(Number(limit) || 100000, 1000000)));
     let previous = null;
+    let legacy = 0;
     for (const row of rows) {
       const entry = rowToEntry(row);
       if (previous) {
@@ -383,6 +459,8 @@ export class Audit {
             brokenReason: `Sequence jumped from ${previous.sequence} to ${entry.sequence}: a record was removed`,
             count: rows.length,
             unchained,
+            legacy,
+            chainVersion: AUDIT_CHAIN_VERSION,
             firstSequence: rows[0].sequence,
             lastSequence: rows[rows.length - 1].sequence,
             headHash: null,
@@ -394,21 +472,22 @@ export class Audit {
             brokenReason: "The link to the previous record does not match",
             count: rows.length,
             unchained,
+            legacy,
+            chainVersion: AUDIT_CHAIN_VERSION,
             firstSequence: rows[0].sequence,
             lastSequence: rows[rows.length - 1].sequence,
             headHash: null,
           };
       }
-      const expected = auditHash({
-        sequence: entry.sequence,
-        timestamp: entry.timestamp,
-        actor: entry.actor,
-        action: entry.action,
-        target: entry.target,
-        policyDecision: entry.policyDecision,
-        details: entry.details,
-        prevHash: entry.prevHash,
-      });
+      const expected = auditHash(entry);
+      // A row written before the chain version bump hashes with the version 1
+      // input. It is reported as belonging to the older chain — its
+      // workspace_id and run_id were never covered — not as tampered with.
+      if (expected !== entry.hash && legacyAuditHash(entry) === entry.hash) {
+        legacy += 1;
+        previous = entry;
+        continue;
+      }
       if (expected !== entry.hash)
         return {
           ok: false,
@@ -416,6 +495,8 @@ export class Audit {
           brokenReason: "The stored hash does not match the record contents",
           count: rows.length,
           unchained,
+          legacy,
+          chainVersion: AUDIT_CHAIN_VERSION,
           firstSequence: rows[0].sequence,
           lastSequence: rows[rows.length - 1].sequence,
           headHash: null,
@@ -428,6 +509,8 @@ export class Audit {
       brokenReason: null,
       count: rows.length,
       unchained,
+      legacy,
+      chainVersion: AUDIT_CHAIN_VERSION,
       firstSequence: rows.length ? rows[0].sequence : null,
       lastSequence: previous?.sequence ?? null,
       headHash: previous?.hash ?? null,

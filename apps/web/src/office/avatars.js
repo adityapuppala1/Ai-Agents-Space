@@ -137,15 +137,20 @@ export function createFigure(agent, index, res, options = {}) {
     if (detail.legs) box(0.18, 0.1, 0.3, dark, 0, -0.42, -0.06, hip);
     legs[side] = hip;
   }
+  // Cached by colour, not tracked per figure: agents come and go all day, and
+  // an untracked material per figure is never released until the whole scene
+  // is disposed.
   const ring = new THREE.Mesh(
     res.ring(0.47, 0.5),
-    res.track(
-      new THREE.MeshBasicMaterial({
-        color: baseColor,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.3,
-      }),
+    res.cached(
+      `figure-ring:${baseColor}`,
+      () =>
+        new THREE.MeshBasicMaterial({
+          color: baseColor,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.3,
+        }),
     ),
   );
   ring.rotation.x = -Math.PI / 2;
@@ -171,29 +176,24 @@ export function createFigure(agent, index, res, options = {}) {
     res.material("#c8524a", { emissive: "#c8524a", emissiveIntensity: 0.5 }),
   );
   indicators.add(error);
-  const badgeTexture = textTexture(res, {
-    lines: ["?", "approval"],
-    bg: "#fff4d6",
-    fg: "#7a5a12",
-    w: 128,
-    h: 96,
-    bold: "bold 40px sans-serif",
-    mono: "14px sans-serif",
+  // The approval badge is identical for every agent, so exactly one texture
+  // and one material exist for the whole scene.
+  const badgeMaterial = res.cached("figure-approval-badge", () => {
+    const texture = textTexture(res, {
+      lines: ["?", "approval"],
+      bg: "#fff4d6",
+      fg: "#7a5a12",
+      w: 128,
+      h: 96,
+      bold: "bold 40px sans-serif",
+      mono: "14px sans-serif",
+    });
+    return new THREE.MeshBasicMaterial({
+      map: texture,
+      side: THREE.DoubleSide,
+    });
   });
-  const badge = plane(
-    0.5,
-    0.38,
-    res.track(
-      new THREE.MeshBasicMaterial({
-        map: badgeTexture,
-        side: THREE.DoubleSide,
-      }),
-    ),
-    0.35,
-    0.1,
-    0,
-    indicators,
-  );
+  const badge = plane(0.5, 0.38, badgeMaterial, 0.35, 0.1, 0, indicators);
   const celebrate = sphere(
     0.1,
     res.material("#77a98b", { emissive: "#77a98b", emissiveIntensity: 0.6 }),

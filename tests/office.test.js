@@ -18,6 +18,7 @@ import {
   showLabel,
   orderByTeam,
   teamGroups,
+  spreadLabels,
   avoidCollisions,
   blendFactor,
   blendInto,
@@ -61,8 +62,20 @@ test("QA screen shows reported counts and never invents a number", () => {
       { id: "b", name: "Sage", runId: "run-2" },
     ],
     testResults: {
-      "run-1": { passed: 12, failed: 0, total: 12, updatedAt: 10 },
-      "run-2": { passed: 3, failed: 2, total: 5, updatedAt: 99 },
+      "run-1": {
+        passed: 12,
+        failed: 0,
+        total: 12,
+        reported: true,
+        updatedAt: 10,
+      },
+      "run-2": {
+        passed: 3,
+        failed: 2,
+        total: 5,
+        reported: true,
+        updatedAt: 99,
+      },
     },
   });
   assert.equal(reported.hasResults, true);
@@ -72,13 +85,52 @@ test("QA screen shows reported counts and never invents a number", () => {
   assert.equal(reported.lines[2], "from Sage's test output");
   assert.equal(reported.tone, "fail");
 
+  const green = qaScreen({
+    testers: [{ id: "a", name: "Nova", runId: "run-1" }],
+    testResults: {
+      "run-1": {
+        passed: 12,
+        failed: 0,
+        total: 12,
+        unknown: 0,
+        reported: true,
+        updatedAt: 10,
+      },
+    },
+  });
+  assert.equal(green.tone, "pass");
+
+  // Two commands, one exit code: the evidence is incomplete, so the screen is
+  // neutral and says how many commands never reported an outcome.
+  const incomplete = qaScreen({
+    testers: [{ id: "a", name: "Nova", runId: "run-1" }],
+    testResults: {
+      "run-1": {
+        passed: 1,
+        failed: 0,
+        total: undefined,
+        unknown: 1,
+        reported: false,
+        updatedAt: 1,
+      },
+    },
+  });
+  assert.equal(incomplete.lines[0], "1 passed · 0 failed");
+  assert.equal(incomplete.lines[1], "total not reported");
+  assert.ok(incomplete.lines.includes("1 reported no exit code"));
+  assert.equal(incomplete.tone, "none", "incomplete evidence is never green");
+
   const partial = qaScreen({
     testers: [{ id: "a", name: "Nova", runId: "run-1" }],
     testResults: { "run-1": { passed: 4, updatedAt: 1 } },
   });
   assert.equal(partial.lines[0], "4 passed");
   assert.equal(partial.lines[1], "total not reported");
-  assert.equal(partial.tone, "pass");
+  assert.equal(
+    partial.tone,
+    "none",
+    "nothing usable was parsed, so nothing is claimed",
+  );
 });
 
 test("pipeline panels come from recorded build events, in order", () => {
@@ -166,6 +218,29 @@ test("review chips link at most three real artifacts", () => {
   );
   assert.equal(chips[0].agentName, "Nova");
   assert.equal(reviewChips([{ id: "a" }], null).length, 0);
+
+  // Presentation mode masks private paths everywhere, including the chip
+  // titles rendered as visible text and as DOM `title` attributes.
+  const priv = {
+    a: [
+      {
+        id: "x1",
+        title: "C:\\Users\\alice\\clients\\acme\\src\\handler.js",
+        kind: "diff",
+      },
+    ],
+  };
+  const masked = reviewChips([{ id: "a", name: "Nova" }], priv, 3, {
+    mask: true,
+  });
+  assert.ok(!masked[0].title.includes("alice"));
+  assert.ok(!masked[0].title.includes("acme"));
+  assert.deepEqual(
+    artifactChips(priv, "a", 3, { mask: true })[0].title,
+    masked[0].title,
+  );
+  const plain = reviewChips([{ id: "a", name: "Nova" }], priv);
+  assert.ok(plain[0].title.includes("alice"), "unmasked keeps the real path");
 });
 
 test("handoffs and messages are only ever what was recorded", () => {
@@ -390,4 +465,36 @@ test("scene vocabulary matches the architecture brief", () => {
   assert.equal(statusTone({ activity: "WAITING_APPROVAL" }), "amber");
   assert.equal(statusTone({ activity: "ERROR" }), "red");
   assert.equal(statusTone({ activity: "TESTING" }), "green");
+});
+
+test("scene labels are pushed apart so an isometric cluster stays readable", () => {
+  const items = [
+    { id: "a", x: 100, y: 100, w: 120, h: 22 },
+    { id: "b", x: 110, y: 104, w: 120, h: 22 },
+    { id: "c", x: 105, y: 108, w: 120, h: 22 },
+    { id: "far", x: 400, y: 102, w: 120, h: 22 },
+  ];
+  const spread = spreadLabels(items);
+  assert.equal(spread.get("a"), 100, "the nearest label never moves");
+  assert.equal(
+    spread.get("far"),
+    102,
+    "a label that does not overlap stays put",
+  );
+  assert.ok(spread.get("b") >= 122, "an overlapping label is pushed clear");
+  assert.ok(
+    spread.get("c") > spread.get("b"),
+    "a third label clears the second",
+  );
+  for (const id of ["a", "b", "c", "far"])
+    assert.ok(
+      spread.get(id) >= items.find((i) => i.id === id).y,
+      "labels only ever move down, never above their figure",
+    );
+  assert.deepEqual(
+    [...spreadLabels(items)],
+    [...spread],
+    "the same frame produces the same layout",
+  );
+  assert.equal(spreadLabels([]).size, 0);
 });
