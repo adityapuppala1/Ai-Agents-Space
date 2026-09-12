@@ -15,11 +15,16 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Changed
 
+- **Resolving a provider binary no longer holds the server.** The synchronous `where` / `which` fallback was capped at five seconds and re-ran on every launch attempt, so an unresponsive PATH entry froze every page and WebSocket repeatedly. It is now capped at 800 ms and cached for 30 seconds, keyed by binary name and PATH.
 - **The workspace menu says less.** Rows carried nine facts each; a row you are scanning past now shows its name and at most one signal (`2 attention`, else `3 running`, else nothing). Only the workspace you are in spells out its folder and environment. "Recent" became an ordering rather than a second list that repeated rows already on screen. Renaming and archiving moved behind a "Manage workspaces" mode, and a filter appears once there are nine workspaces.
 
 ### Fixed
 
 - **Agents stood inside their own desks.** A desk agent was sent to the desk anchor, which the desktop covers; it is now sent to the chair, and sits in it. The seated pose that the conference table introduced now applies at desks as well.
+
+### Withdrawn
+
+- **Moving the run worker into its own OS process**, planned as a robustness fix, was withdrawn: the premise that a wedged provider CLI could take the interface down did not survive measurement. A CLI is a separate process with piped stdio and cannot block the event loop. See [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) §1.2 for what was measured and what was actually wrong.
 
 ## 2026-09-12 — The office becomes a place
 

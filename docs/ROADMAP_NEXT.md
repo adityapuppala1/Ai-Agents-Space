@@ -32,9 +32,10 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | # | Item | Priority | Slices | Depends on | Source |
 | --- | --- | --- | --- | --- | --- |
 | 1.1 | ~~Agents that can see the furniture~~ **Done 12 Sep** | — | 2 | — | Your screenshot |
-| 1.2 | Run worker in its own process | P0 | 1 | — | Robustness |
+| 1.2 | ~~Run worker in its own process~~ **Withdrawn 12 Sep — premise unproven** | — | — | — | Robustness |
+| 1.2a | Bound and cache binary resolution | P0 | — | — | What 1.2 actually found |
 | 1.3 | ~~The workspace menu, decluttered~~ **Done 12 Sep** | — | 1 | — | Your item 4 |
-| 2.1 | Speak to an agent from its desk | P0 | 2 | 1.2 | CLAW3D |
+| 2.1 | Speak to an agent from its desk | P0 | 2 | — | CLAW3D |
 | 2.2 | Give an instruction mid-run | P0 | 1 | 2.1 | CLAW3D |
 | 2.3 | Address a room | P1 | 1 | 2.1, 1.1 | CLAW3D |
 | 3.1 | Over the shoulder | P1 | 1 | 1.1 | Your "agents view" |
@@ -70,9 +71,27 @@ Four layers, none of them per-agent, so every agent is covered by construction:
 
 *Truthfulness guard:* gaze targets come only from recorded events. *Fallback:* an unreachable goal takes the old straight line rather than freezing. *Cost:* no new packages.
 
-### 1.2 The run worker in its own process
+### 1.2 The run worker in its own process — **withdrawn as stated, 12 September 2026**
 
-A wedged provider CLI can currently take the interface down with it. The worker gets its own OS process with supervised restart and an unchanged contract above it. This is listed at P0 not for its own sake but because **wave two lets you talk to a live run**, and doing that safely means the thing holding the run cannot be the thing holding the UI.
+> **The premise did not survive measurement.** This item said "a wedged provider CLI can currently take the interface down with it." That is not true, and it should not have been written without checking.
+>
+> A provider CLI is spawned with `spawn()` and piped stdio (`runs/process.js`). It is a separate OS process whose output arrives through async streams, so a CLI that wedges, floods or dies cannot block the server's event loop. It holds a queue slot and some memory; it does not hold the thread.
+>
+> Three candidate blockers were measured rather than assumed:
+>
+> | Suspect | Measured | Verdict |
+> | --- | --- | --- |
+> | Artifact capture reading untracked files with `readFileSync` | Worst event-loop pause **16–44 ms** across 2 000–20 000 untracked files | Bounded by the `DIFF_LIMIT` check; not a freeze |
+> | A wedged CLI holding the main thread | Not reproducible by construction — async pipes | Not a real failure mode |
+> | Synchronous binary resolution (`execFileSync` for `where`/`which`) | Up to its **5 000 ms** timeout, on every launch attempt, whenever PATH holds something unresponsive | **Real.** Fixed — see below |
+>
+> So the 2 400-line extraction of `RunWorker` across a process boundary — which would also have forced either multi-process SQLite or a large IPC surface — had no demonstrated problem behind it. Building it would have been a lot of risk bought with an assumption.
+>
+> **What was actually wrong, and is now fixed:** binary resolution is synchronous, so whatever it waited for, every open page and WebSocket waited for. Its `where` / `which` fallback was capped at five seconds and re-ran on every launch attempt. The cap is now 800 ms — close to what a working lookup costs — and results are cached for 30 seconds, keyed by name and PATH, so a provider that is simply not installed no longer pays the full cost on each attempt. A short TTL means installing a CLI is still picked up without a restart. `tests/binary-lookup.test.js` pins the bound, the caching, and that the cache never answers for a different environment.
+>
+> **What is left of the original idea.** Nothing urgent. If a future change makes the run path genuinely CPU-bound — parsing a very high-volume stream, say — the honest fix would be a worker thread for that parsing, not a second process holding the database. Revisit only with a measurement in hand.
+>
+> **Consequence for wave 2.** Talking to a live run does *not* depend on this, which removes the only dependency that made 2.1 a P0-after-1.2. It moves up.
 
 ### 1.3 The workspace menu, decluttered — **done, 12 September 2026**
 

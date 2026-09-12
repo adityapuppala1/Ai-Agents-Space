@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **The workspace menu says less, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.3).** Done, with tests:
+> **Binary resolution stops holding the server, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.2).** Done, with tests — and a planned item withdrawn:
+>
+> - **The planned work was withdrawn because its premise was wrong.** Item 1.2 said a wedged provider CLI could take the interface down. It cannot: a CLI is spawned as a separate process with piped stdio, so it can hold a queue slot but never the event loop. Extracting the 2 400-line `RunWorker` across a process boundary — which would also have forced multi-process SQLite or a large IPC surface — would have been substantial risk bought with an assumption.
+> - **Measured instead of assumed.** Artifact capture reads untracked files with `readFileSync`, which looked like the culprit; across 2 000 to 20 000 untracked files the worst event-loop pause was **16–44 ms**, because the `diff.length < DIFF_LIMIT` check stops the reads. That check is load-bearing and does not look it, so `tests/artifacts-blocking.test.js` now fails if it is removed.
+> - **One real problem was found.** Resolving a provider binary is synchronous, so whatever it waits for, every open page and WebSocket waits for. Its `where` / `which` fallback was capped at **five seconds** and re-ran on every launch attempt, so a PATH entry on an unresponsive network share froze the whole server repeatedly.
+> - **Fixed narrowly.** The cap is now 800 ms — close to what a working lookup actually costs — and a resolution is cached for 30 seconds, keyed by binary name and PATH. A provider that is simply not installed no longer pays the full cost on every attempt, and the short expiry means installing a CLI is still picked up without restarting.
+> - **Not changed:** `resolveBinary()` stays synchronous. Making it async would force `workflows/dryRun.js` `plan()` async and ripple through its callers, which is not worth it for a bounded wait.
+>
+> Verification: `npm test` 658 / 0 (five new across `tests/binary-lookup.test.js` and `tests/artifacts-blocking.test.js`). Server-side change: restart the server. No UI change, so nothing to look at.
+
+> **The workspace menu says less, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.3).** Done, with tests:
 >
 > - **Nine facts per row became one.** Each row carried a name, up to two tags, a four-part stats line, a folder path, a colour swatch, an environment name, a runtime note and two icon buttons — and the panel also held an "All workspaces" list, a "Recent" section, an inline create form and an inline rename form. A row you are scanning past now shows its name and, at most, the one thing that needs you: `2 attention`, else `3 running`, else nothing. Never `0 running`, which is noise pretending to be information.
 > - **Only the workspace you are in spells itself out** — its folder, its environment, and any runtime restriction. On every other row those were facts nobody asked for while trying to pick a name.
