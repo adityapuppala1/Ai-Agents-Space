@@ -10,3 +10,10 @@ graphify-out/
 artifacts/*.log
 .claude/
 data/
+
+# Local agent/editor tooling, not part of the product.
+# .agents/ vendors third-party skill definitions (each with its own licence);
+# skills-lock.json only describes that folder; .vscode/ is personal editor state.
+.agents/
+skills-lock.json
+.vscode/
