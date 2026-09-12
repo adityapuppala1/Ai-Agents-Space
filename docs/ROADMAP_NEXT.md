@@ -44,7 +44,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 4.1 | ~~Subagents as visible helpers~~ **Already was — see below** | — | — | — | Your "multiple agents" |
 | 4.2 | ~~Workflow fan-out on the floor~~ **Done 12 Sep** | — | 1 | — | Your "orchestrated" |
 | 4.3 | ~~Which worktree is this desk on~~ **Done 12 Sep** | — | 1 | — | Vibe Kanban, Conductor |
-| 5.1 | The arranger in 3D | P1 | 2 | 1.1 | Your item 3 |
+| 5.1 | ~~The arranger in 3D~~ **Preview done 12 Sep; drag-in-3D not** | P2 | 2 | 1.1 | Your item 3 |
 | 5.2 | The campus becomes a building | P2 | 2 | 5.1 | Your "3D layers" |
 | 5.3 | Depth and light | P2 | 1 | — | Your "3D layers" |
 | 6.1 | A one-line presence strip | P2 | 1 | — | Agent Island |
@@ -164,7 +164,8 @@ Your "multiple agents as needed when work is happening", done truthfully: agents
 
 ## 8. Wave five — more 3D layers (P1 → P2)
 
-- **5.1 The arranger in 3D.** A live preview beside the plan, drag with snapping and a ghost that turns red on collision (reusing 1.1's obstacle map), and a walkthrough button that sends a test figure along the real routed path so you can tell whether an arrangement works before saving. The plan view stays as the keyboard and non-WebGL path.
+- **5.1 The arranger in 3D — the preview is done, 12 September 2026; dragging in 3D is not.** A live preview now stands above the plan, built by `office/arrangeStage.js` from the same `computeLayout()` the office runs, so it cannot drift from what saving produces. It draws the floor, the rooms as named slabs, the desks as guides and the furniture with the office's own catalogue, highlights whatever the plan has selected, and rings anything standing in something else (`propClashes`). Without WebGL it simply does not appear — the plan is the editor and always was.
+  **Still not done:** dragging *in* the 3D view, snapping, and the walkthrough. The plan already drags with snapping and is the keyboard path, so 3D dragging is a second way to do something that works; it drops to P2 rather than being called finished.
 - **5.2 The campus becomes a building.** The Campus view already shows several workspaces; give it vertical structure — workspaces as floors, with movement between them — so "more layers" is literal and navigational rather than decorative.
 - **5.3 Depth and light.** Contact shadows, layered glass in the conference wing, and light falloff that separates the floor planes. Gated by graphics preset and disabled under reduced motion; this is the one item here that is purely presentational, which is why it sits last in its wave.
 

@@ -8,6 +8,7 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Added
 
+- **Arranging the office shows a live 3D preview.** It stands above the plan, is built from the same layout computation the office runs, highlights whatever the plan has selected, and rings any furniture standing in something else. Without WebGL it does not appear — the plan is the editor and always was. Dragging in 3D is not built.
 - **Parallel workflow steps are drawn as parallel.** The relay strip put an arrow between every consecutive step, so two steps that depend on none of each other and run at the same time looked like a queue. Steps are now grouped into the stages they form: arrows only between stages, steps within a stage braced together, and "one of 2 running at the same time" for a screen reader.
 - **Every agent says which branch it is on.** The snapshot's agents now carry `branch` and `isolated`; the run passport names the branch and says whether it is an isolated worktree or your own working tree, and an agent's tooltip in the office says the same. A run that recorded no branch says so rather than being shown as `main`.
 - **The review table says what changed.** Its board read "2 artifacts linked"; it now reads "3 files changed: app.js, routes.js", from the diff artifact's own record of the files it touched. When no diff was recorded it says so, rather than showing "0 files changed" — those are different facts.

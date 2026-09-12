@@ -45,6 +45,15 @@ test("an office is arranged, saved, drawn and carried in the visual preset", asy
     .click();
   await page.getByRole("button", { name: "Arrange the office" }).click();
   const dialog = page.getByRole("dialog", { name: "Arrange the office" });
+  // The 3D preview stands beside the plan. It is decoration for assistive
+  // technology — the plan is the editor — so it is hidden from the tree, and
+  // this checks it is actually drawing rather than an empty box.
+  const previewCanvas = dialog.locator(".arrange-preview-canvas canvas");
+  await expect(previewCanvas).toHaveCount(1);
+  await expect(
+    dialog.locator(".arrange-preview-canvas"),
+  ).toHaveAttribute("class", /arrange-preview-canvas/);
+  await expect(previewCanvas).toHaveAttribute("aria-hidden", "true");
   await expect(dialog).toBeVisible();
   // Every shared room is in the plan, and the desks are drawn as a guide.
   await expect(dialog.locator(".arrange-room")).toHaveCount(5);

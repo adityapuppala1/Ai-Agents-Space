@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **Parallel workflow steps stop pretending to be a queue, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 4.2).** Done, with tests:
+> **The arranger shows what the room will look like, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 5.1).** Done in part, with tests:
+>
+> - **A live 3D preview stands above the plan** (`web/office/arrangeStage.js`), built from the same `computeLayout()` the office runs on the same draft — so what is previewed is what saving produces, and the two cannot drift. It draws the floor, the rooms as named slabs, the desks as guides, and the furniture with the office's own catalogue.
+> - **It highlights what the plan has selected**, so the two views always agree about what you are holding, and **rings anything standing in something else** — `propClashes()` reports furniture overlapping a desk, a room's furniture, or another piece, which a flat plan makes easy to miss. The panel counts them in words.
+> - **The plan stays the editor.** It is the keyboard path, it announces every change, and it works without WebGL — where the preview simply does not appear rather than leaving an empty box.
+> - **A bug worth recording:** the first build drew nothing at all. `buildOfficeProps()` calls `group.clear()` on the group it is handed — it owns it, which is right for the office, where it gets a group of its own — and the preview was handing it the group holding the floor, the desks and the rooms. Diagnosed by logging `group.children.length` (0, then 2 once a prop existed) rather than by guessing at the camera.
+> - **Not done, and not claimed:** dragging in the 3D view, snapping, and the walkthrough. The plan already drags with snapping; a second way to do the same thing is not worth the risk yet.
+>
+> Verification: `npm test` 690 / 0 (three new for `propClashes` in `tests/office-navigation.test.js`) and `npx playwright test` 55 / 0, with the arranger's own spec now asserting the preview canvas exists and is hidden from assistive technology. Looked at on the isolated server with no page or console errors: `artifacts/arranger-preview.png`. Web-only change: rebuild and reload.
+
+> **Parallel workflow steps stop pretending to be a queue, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 4.2).** Done, with tests:
 >
 > - **The relay strip was claiming an order that does not exist.** It laid every step out in a row with an arrow between each pair. Two steps that depend on none of each other and run at the same time were therefore drawn as though one followed the other — which is exactly the kind of thing §0 forbids, arrived at by a stylesheet rule (`li + li::before { content: "→" }`) rather than by anyone deciding it.
 > - **Steps are now grouped into the stages they form.** `relayLayers()` folds the already-sorted steps into `[{ layer, steps }]`; arrows are drawn only between stages, and steps inside one stage are braced together. A screen reader hears "one of 2 running at the same time".

@@ -3218,6 +3218,9 @@ export default function Office({
               deskArea={arrangePlan.deskArea}
               functionNames={getTheme(theme).rooms}
               aspect={arrangePlan.aspect}
+              agentCount={agents.length}
+              layoutProfile={themeDef.layoutProfile}
+              theme={themeDef}
               onSave={(next) => onArrangeSave?.(next)}
               onClose={() => onArrangeClose?.()}
             />,

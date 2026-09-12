@@ -117,6 +117,38 @@ export function officeObstacles(layout, options = {}) {
   return out;
 }
 
+/**
+ * Which placed furniture is standing in something else.
+ *
+ * Used while arranging: a sofa dropped across a desk, or two pieces in the
+ * same spot, is almost always a mistake rather than an intention, and the
+ * plan view alone makes it easy to miss. Returns the set of prop indices
+ * that overlap a desk, a room's furniture, or another piece.
+ *
+ * No padding: this is about things occupying the same floor, not about
+ * whether someone can squeeze past.
+ */
+export function propClashes(layout) {
+  const all = officeObstacles(layout);
+  const props = all.filter((o) => o.kind === "prop");
+  const fixed = all.filter((o) => o.kind !== "prop");
+  const hit = (a, b) =>
+    Math.abs(a.x - b.x) < a.hw + b.hw && Math.abs(a.z - b.z) < a.hd + b.hd;
+  const clashing = new Set();
+  for (const prop of props) {
+    if (fixed.some((other) => hit(prop, other))) {
+      clashing.add(prop.id);
+      continue;
+    }
+    for (const other of props)
+      if (other !== prop && hit(prop, other)) {
+        clashing.add(prop.id);
+        break;
+      }
+  }
+  return clashing;
+}
+
 /** The walkable rectangle of the floor, already inset by a figure's width. */
 export function floorBounds(layout, pad = FIGURE_RADIUS) {
   const halfW = layout.width / 2 - pad;

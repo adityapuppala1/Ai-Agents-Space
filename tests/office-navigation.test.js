@@ -10,6 +10,7 @@ import {
   floorBounds,
   nearestClear,
   officeObstacles,
+  propClashes as propClashesOf,
   segmentClear,
 } from "../apps/web/src/office/obstacles.js";
 import {
@@ -241,4 +242,42 @@ test("the grid keeps the floor walkable and marks the desks", () => {
   assert.ok(free < grid.free.length, "and the furniture is not");
   // Small enough to search cheaply on every walk.
   assert.ok(grid.free.length < 8000, `grid is ${grid.free.length} cells`);
+});
+
+test("furniture standing in something else is reported, and clear furniture is not", async () => {
+  const { propClashes } = await import(
+    "../apps/web/src/office/obstacles.js"
+  );
+  const base = layoutOf(9);
+  const halfX = base.width / 2 - 0.6;
+  const halfZ = base.depth / 2 - 0.6;
+  const desk = base.desks[4];
+  // One sofa dropped straight onto a desk, one out on the open floor.
+  const arranged = {
+    zones: {},
+    props: [
+      { kind: "sofa", x: desk.x / halfX, z: (desk.z - 0.35) / halfZ, rotation: 0 },
+      { kind: "plant", x: 0, z: 0.92, rotation: 0 },
+    ],
+  };
+  const layout = layoutOf(9, "studio", arranged);
+  const clashing = propClashes(layout);
+  assert.equal(clashing.has(0), true, "the sofa is standing in a desk");
+  assert.equal(clashing.has(1), false, "the plant is on open floor");
+});
+
+test("two pieces in the same spot are both reported", () => {
+  const arranged = {
+    zones: {},
+    props: [
+      { kind: "plant", x: 0.4, z: 0.9, rotation: 0 },
+      { kind: "plant", x: 0.4, z: 0.9, rotation: 0 },
+    ],
+  };
+  const clashing = propClashesOf(layoutOf(6, "studio", arranged));
+  assert.deepEqual([...clashing].sort(), [0, 1]);
+});
+
+test("an office with no furniture has nothing standing in anything", () => {
+  assert.equal(propClashesOf(layoutOf(6)).size, 0);
 });

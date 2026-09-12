@@ -1,6 +1,8 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, RotateCw, Trash2, Undo2 } from "lucide-react";
 import Dialog from "./Dialog.jsx";
+import { computeLayout } from "../office/zones.js";
+import { createArrangeStage } from "../office/arrangeStage.js";
 import {
   ARRANGE_COARSE,
   ARRANGE_STEP,
@@ -51,6 +53,11 @@ export default function OfficeArranger({
   deskArea = null,
   functionNames = {},
   aspect = 1.35,
+  // The floor the preview builds: the same inputs the office uses, so what
+  // is previewed is what saving produces. Without them there is no preview.
+  agentCount = null,
+  layoutProfile = "studio",
+  theme = null,
   busy = false,
   onSave,
   onClose,
@@ -62,6 +69,48 @@ export default function OfficeArranger({
   const planHeight = INSET_Y * 2 + SPAN_X / (aspect || 1.35);
   const planRef = useRef(null);
   const dragging = useRef(null);
+  const stageRef = useRef(null);
+  const stage = useRef(null);
+  const [preview, setPreview] = useState(true);
+  const [clashes, setClashes] = useState(() => new Set());
+
+  // What the draft means in world units: the same computeLayout the office
+  // runs, so the preview cannot drift from what saving would produce.
+  const previewLayout = useMemo(
+    () =>
+      agentCount == null
+        ? null
+        : computeLayout(
+            agentCount,
+            layoutProfile,
+            layoutFromDraft(draft, defaults),
+          ),
+    [draft, defaults, agentCount, layoutProfile],
+  );
+
+  useEffect(() => {
+    if (!stageRef.current || !theme) return undefined;
+    const made = createArrangeStage(stageRef.current, { theme });
+    // No WebGL: the plan view is the editor anyway, so it simply goes away.
+    if (!made) {
+      setPreview(false);
+      return undefined;
+    }
+    stage.current = made;
+    const onResize = () => made.resize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      made.dispose();
+      stage.current = null;
+    };
+  }, [theme]);
+
+  useEffect(() => {
+    if (!stage.current || !previewLayout) return;
+    stage.current.update(previewLayout, { selection, roomNames: functionNames });
+    setClashes(stage.current.clashes(previewLayout));
+  }, [previewLayout, selection, functionNames]);
 
   const say = (draftNow, next) =>
     setMessage(describeSelection(draftNow, next ?? selection, functionNames));
@@ -156,6 +205,20 @@ export default function OfficeArranger({
       </p>
         <div className="arrange-body">
           <div className="arrange-plan-wrap">
+            {/* The preview answers what a plan cannot — what the room will
+                look like. The plan below it stays the editor: it is the
+                keyboard path and the one that works without WebGL. */}
+            {preview ? (
+              <div className="arrange-preview">
+                <div ref={stageRef} className="arrange-preview-canvas" />
+                <p className="as-muted as-small">
+                  Preview · drag to look around.
+                  {clashes.size
+                    ? ` ${clashes.size} piece${clashes.size === 1 ? "" : "s"} standing in something else.`
+                    : ""}
+                </p>
+              </div>
+            ) : null}
             <svg
               ref={planRef}
               className="arrange-plan"

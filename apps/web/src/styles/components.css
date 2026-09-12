@@ -3180,6 +3180,35 @@
   gap: 8px;
   min-width: 0;
 }
+/* The 3D preview sits above the plan: it answers what the room will look
+   like, while the plan below stays the thing you edit. */
+.arrange-preview {
+  display: grid;
+  gap: 4px;
+}
+.arrange-preview-canvas {
+  width: 100%;
+  height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+  overflow: hidden;
+  touch-action: none;
+}
+.arrange-preview-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.arrange-preview p {
+  margin: 0;
+}
+@media (max-height: 44rem) {
+  /* A short window needs the editor more than the picture of it. */
+  .arrange-preview-canvas {
+    height: 150px;
+  }
+}
 .arrange-plan {
   width: 100%;
   border: 1px solid var(--line);
