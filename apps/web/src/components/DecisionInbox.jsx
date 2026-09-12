@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   Check,
   X,
@@ -17,18 +17,24 @@ import {
   parseDiff,
   formatElapsed,
   RUN_STATUS_LABELS,
+  useTicker,
 } from "../hooks/useApi.js";
-import { useGlobal } from "../hooks/useGlobal.js";
+import { useGlobalChange } from "../hooks/useGlobal.js";
 import ProviderBadge from "./ProviderBadge.jsx";
 import EmptyState from "./EmptyState.jsx";
 import {
   URGENCY_RANK,
+  dualApprovalState,
   orderByUrgency,
   urgencyRank,
 } from "../hooks/viewLogic.js";
 
 /* Urgency ordering is in ../hooks/viewLogic.js (covered by node:test). */
 export { orderByUrgency, urgencyRank, URGENCY_RANK };
+
+const EDITABLE =
+  "input, textarea, select, [contenteditable=''], [contenteditable='true']";
+const DECISION_KEYS = { a: "approve", d: "deny", c: "request-change" };
 
 function UrgencyBadge({ urgency }) {
   const level = urgency?.level ?? "normal";
@@ -165,9 +171,13 @@ function ProposedAction({ approval, presentation }) {
  * waiting, and the card says so, because pretending otherwise would let a run
  * resume on a request the agent never saw.
  *
- * Keyboard: with a card focused (or the first card when nothing is focused)
- * `A` approves, `D` declines, `C` requests a change, `J`/`K` move between
- * cards, and `R` refreshes. Every shortcut has a visible button too.
+ * Keyboard: `J`/`K` move between requests and `R` refreshes. `A` approves,
+ * `D` declines and `C` requests a change, but only for the request whose card
+ * (or a control inside it) has focus. Nothing is ever acted on by default:
+ * a decision key pressed anywhere else in the inbox says how to choose a
+ * request instead. The request is found by its id, not its position, so a
+ * re-sorted list cannot redirect a key press; a held key does not repeat a
+ * decision. Every shortcut has a visible button too.
  *
  * @param {{
  *   onOpenRun?: (runId: string, workspaceId?: string) => void,
@@ -182,27 +192,25 @@ export default function DecisionInbox({
   presentation = false,
   workspaceId = null,
 }) {
-  const { revision } = useGlobal();
   const inbox = useApi(
     `/inbox${workspaceId ? `?workspace=${encodeURIComponent(workspaceId)}` : ""}`,
     { interval: 15000 },
   );
   const [notes, setNotes] = useState({});
+  // Approver names for requests that need more than one approver.
+  const [names, setNames] = useState({});
+  const nameRefs = useRef({});
   const [busy, setBusy] = useState("");
   const [feedback, setFeedback] = useState("");
-  const [cursor, setCursor] = useState(0);
-  const [, setTick] = useState(0);
   const cardRefs = useRef([]);
+  // Decisions in flight, by approval id: a second press while the first is
+  // on its way must not send another decision.
+  const inFlight = useRef(new Set());
+  const decidableRef = useRef([]);
 
-  useEffect(() => {
-    if (revision === 0) return;
-    inbox.reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revision]);
-  useEffect(() => {
-    const timer = setInterval(() => setTick((value) => value + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  useGlobalChange(() => inbox.reload());
+  // Expiry countdowns tick each second.
+  useTicker();
 
   const data = inbox.data ?? {};
   const approvals = useMemo(
@@ -211,42 +219,80 @@ export default function DecisionInbox({
   );
   const runs = data.runs ?? data.failedRuns ?? [];
   const reviews = data.reviews ?? data.tasks ?? [];
-  const questions = (data.questions ?? []).filter(
-    (question) => !approvals.some((approval) => approval.id === question.id),
-  );
-  const decidable = useMemo(
-    () => [...approvals, ...questions],
-    [approvals, questions],
-  );
+  const decidable = useMemo(() => {
+    const questions = (data.questions ?? []).filter(
+      (question) => !approvals.some((approval) => approval.id === question.id),
+    );
+    return [...approvals, ...questions];
+  }, [approvals, data]);
+  decidableRef.current = decidable;
 
-  const decide = async (approval, decision) => {
+  /**
+   * Sends one decision. `refocus` is the card position to move focus to once
+   * the list has reloaded (keyboard triage continues on the next request);
+   * a pointer decision leaves focus alone.
+   */
+  const decide = async (approval, decision, { refocus = null } = {}) => {
+    if (inFlight.current.has(approval.id)) return;
+    const dual = dualApprovalState(approval);
+    const name = (names[approval.id] ?? "").trim();
+    // Each of several approvers is told apart by the name they give; the
+    // server refuses a second decision from the same actor.
+    if (dual && decision === "approve" && !name) {
+      setFeedback(
+        `Type your name first: this request needs ${dual.required} different approvers.`,
+      );
+      nameRefs.current[approval.id]?.focus();
+      return;
+    }
+    inFlight.current.add(approval.id);
     setBusy(approval.id);
     setFeedback("");
     try {
-      await apiFetch(`/approvals/${encodeURIComponent(approval.id)}/decide`, {
-        method: "POST",
-        body: { decision, note: notes[approval.id] ?? "" },
-      });
-      setFeedback(
-        decision === "approve"
-          ? `Approved ${approval.kind ?? "request"}. The run resumes with exactly the payload you saw.`
-          : decision === "deny"
-            ? `Declined ${approval.kind ?? "request"}. The provider is told no; work already done is not undone.`
-            : `Change requested. The approval stays pending and the run keeps waiting until you approve or decline.`,
+      const result = await apiFetch(
+        `/approvals/${encodeURIComponent(approval.id)}/decide`,
+        {
+          method: "POST",
+          body: {
+            decision,
+            note: notes[approval.id] ?? "",
+            // The server refuses the decision if what it would run changed
+            // since this card was drawn.
+            payloadHash: approval.payload?._hash ?? undefined,
+            actor: dual && name ? name : undefined,
+          },
+        },
       );
-      inbox.reload();
+      const after = dualApprovalState(result);
+      // The next approver types their own name.
+      if (after?.awaitingSecond)
+        setNames((current) => ({ ...current, [approval.id]: "" }));
+      setFeedback(
+        decision === "approve" && after?.awaitingSecond
+          ? `Approval ${after.approvedBy.length} of ${after.required} recorded, by ${name}. The run keeps waiting for ${after.remaining === 1 ? "a second, different approver" : `${after.remaining} more approvers`}.`
+          : decision === "approve"
+            ? `Approved ${approval.kind ?? "request"}. The run resumes with exactly the payload you saw.`
+            : decision === "deny"
+              ? `Declined ${approval.kind ?? "request"}. The provider is told no; work already done is not undone.`
+              : `Change requested. The approval stays pending and the run keeps waiting until you approve or decline.`,
+      );
     } catch (error) {
+      // The server says what happened (already decided, the payload changed,
+      // the same approver twice); a generic line here was wrong for two of
+      // those three.
       setFeedback(
-        error.status === 409
-          ? "Already decided by someone else."
-          : error.status === 410
-            ? "This request expired."
-            : error.message,
+        error.status === 410 ? "This request expired." : error.message,
       );
-      inbox.reload();
     } finally {
+      inFlight.current.delete(approval.id);
       setBusy("");
     }
+    await inbox.reload();
+    if (refocus !== null)
+      requestAnimationFrame(() => {
+        const last = decidableRef.current.length - 1;
+        if (last >= 0) cardRefs.current[Math.min(refocus, last)]?.focus();
+      });
   };
 
   const retry = async (run) => {
@@ -268,80 +314,116 @@ export default function DecisionInbox({
   };
 
   const onKeyDown = (event) => {
-    if (event.target instanceof HTMLInputElement) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
+    // Typing in the note (or any field) is text, never a decision.
+    if (event.target?.closest?.(EDITABLE)) return;
     const key = event.key.toLowerCase();
-    const target = decidable[cursor];
-    if (key === "j" || key === "arrowdown") {
+    const card = event.target?.closest?.("[data-approval-id]") ?? null;
+    const index = card
+      ? decidable.findIndex((entry) => entry.id === card.dataset.approvalId)
+      : -1;
+    const down = key === "j" || (card && key === "arrowdown");
+    const up = key === "k" || (card && key === "arrowup");
+    if (down || up) {
+      if (!decidable.length) return;
       event.preventDefault();
-      const next = Math.min(cursor + 1, Math.max(0, decidable.length - 1));
-      setCursor(next);
+      const next =
+        index < 0
+          ? 0
+          : Math.max(
+              0,
+              Math.min(decidable.length - 1, index + (down ? 1 : -1)),
+            );
       cardRefs.current[next]?.focus();
-    } else if (key === "k" || key === "arrowup") {
-      event.preventDefault();
-      const next = Math.max(cursor - 1, 0);
-      setCursor(next);
-      cardRefs.current[next]?.focus();
-    } else if (key === "r") {
+      return;
+    }
+    if (key === "r") {
       event.preventDefault();
       inbox.reload();
-    } else if (target && key === "a") {
-      event.preventDefault();
-      decide(target, "approve");
-    } else if (target && key === "d") {
-      event.preventDefault();
-      decide(target, "deny");
-    } else if (target && key === "c") {
-      event.preventDefault();
-      decide(target, "request-change");
+      return;
     }
+    const decision = DECISION_KEYS[key];
+    if (!decision) return;
+    // Claimed inside the inbox, so the app-wide "A" (Analytics) and "D"
+    // shortcuts never fire from here.
+    event.preventDefault();
+    if (event.repeat) return;
+    if (index < 0) {
+      setFeedback(
+        decidable.length
+          ? "Decision keys act only on the request that has focus. Press J to move to the first request, or Tab to it."
+          : "There is no request to decide.",
+      );
+      return;
+    }
+    decide(decidable[index], decision, { refocus: index });
   };
 
-  const total =
-    approvals.length + runs.length + reviews.length + questions.length;
+  const total = decidable.length + runs.length + reviews.length;
   const counts = {
     critical: approvals.filter((a) => a.urgency?.level === "critical").length,
     high: approvals.filter((a) => a.urgency?.level === "high").length,
   };
+  const firstLoad = inbox.loading && !inbox.data && !inbox.error;
+  const summary = [
+    decidable.length
+      ? `${decidable.length} request${decidable.length === 1 ? "" : "s"} to decide`
+      : null,
+    runs.length
+      ? `${runs.length} run${runs.length === 1 ? "" : "s"} to check`
+      : null,
+    reviews.length
+      ? `${reviews.length} result${reviews.length === 1 ? "" : "s"} to review`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <section
-      className="as-inbox"
+      className="as-inbox inbox"
       aria-label="Decision inbox"
       onKeyDown={onKeyDown}
     >
-      <header className="as-section-head">
-        <h3>
-          <Inbox size={14} aria-hidden="true" /> Decisions
-          {total ? <span className="as-count">{total}</span> : null}
-        </h3>
-        <div className="as-row">
-          {counts.critical ? (
-            <span className="as-urgency as-urgency-critical">
-              {counts.critical} critical
-            </span>
-          ) : null}
-          {counts.high ? (
-            <span className="as-urgency as-urgency-high">
-              {counts.high} high
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Refresh inbox"
-            onClick={() => inbox.reload()}
-          >
-            <RefreshCw size={14} />
-          </button>
-        </div>
-      </header>
-      <p className="as-muted as-small">
-        Ordered by urgency, which the server computes from what is blocked, the
-        policy rule that raised it, task priority and how long it has waited.
-        Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>A</kbd> approve, <kbd>D</kbd>{" "}
-        decline, <kbd>C</kbd> request a change, <kbd>R</kbd> refresh.
-      </p>
+      {/* The page header names the view; this row says what is waiting. */}
+      <div className="inbox-head">
+        {firstLoad || summary ? (
+          <p className="inbox-summary">
+            <Inbox size={15} aria-hidden="true" />
+            {/* Empty is said once, by the empty state below. */}
+            <strong>{firstLoad ? "Loading decisions…" : summary}</strong>
+            {counts.critical ? (
+              <span className="as-urgency as-urgency-critical">
+                {counts.critical} critical
+              </span>
+            ) : null}
+            {counts.high ? (
+              <span className="as-urgency as-urgency-high">
+                {counts.high} high
+              </span>
+            ) : null}
+          </p>
+        ) : (
+          <span />
+        )}
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Refresh inbox"
+          onClick={() => inbox.reload()}
+        >
+          <RefreshCw size={14} />
+        </button>
+      </div>
+      {decidable.length ? (
+        <p className="as-muted as-small">
+          Ordered by urgency, which the server computes from what is blocked,
+          the policy rule that raised it, task priority and how long it has
+          waited. Keys act on the request that has focus: <kbd>J</kbd>/
+          <kbd>K</kbd> move, then <kbd>A</kbd> approve, <kbd>D</kbd> decline,{" "}
+          <kbd>C</kbd> request a change. <kbd>R</kbd> refreshes.
+        </p>
+      ) : null}
 
       {inbox.error ? (
         <EmptyState
@@ -367,6 +449,7 @@ export default function DecisionInbox({
 
       {decidable.map((approval, index) => {
         const expiry = expiresIn(approval.expiresAt ?? approval.expires_at);
+        const dual = dualApprovalState(approval);
         const changeRequests = approval.changeRequests ?? [];
         return (
           <article
@@ -375,9 +458,9 @@ export default function DecisionInbox({
               cardRefs.current[index] = node;
             }}
             tabIndex={0}
-            onFocus={() => setCursor(index)}
-            className={`as-card as-approval ${index === cursor ? "focused" : ""}`}
-            aria-label={`${approval.kind === "question" ? "Question" : "Approval"} · urgency ${approval.urgency?.level ?? "normal"}`}
+            data-approval-id={approval.id}
+            className="as-card as-approval"
+            aria-label={`${approval.kind === "question" ? "Question" : "Approval"} · urgency ${approval.urgency?.level ?? "normal"}. Keys A, D and C decide this request.`}
           >
             <header className="as-row as-wrap">
               <UrgencyBadge urgency={approval.urgency} />
@@ -412,6 +495,41 @@ export default function DecisionInbox({
             ) : null}
 
             <ProposedAction approval={approval} presentation={presentation} />
+
+            {dual ? (
+              <div className="as-dual" role="group" aria-label="Approvers">
+                <p>
+                  <strong>Needs {dual.required} different approvers</strong> ·{" "}
+                  {dual.approvedBy.length} of {dual.required} recorded
+                  {dual.approvedBy.length
+                    ? ` (${dual.approvedLabels.join(", ")})`
+                    : ""}
+                </p>
+                <label className="as-inline-label">
+                  Your name{" "}
+                  <span className="optional">
+                    (recorded with your decision; Agent Space cannot verify who
+                    is at this machine)
+                  </span>
+                  <input
+                    ref={(node) => {
+                      nameRefs.current[approval.id] = node;
+                    }}
+                    value={names[approval.id] ?? ""}
+                    maxLength={60}
+                    autoComplete="off"
+                    onChange={(event) =>
+                      setNames({ ...names, [approval.id]: event.target.value })
+                    }
+                    placeholder={
+                      dual.awaitingSecond
+                        ? "Someone other than " + dual.approvedLabels.join(", ")
+                        : "Who is approving"
+                    }
+                  />
+                </label>
+              </div>
+            ) : null}
 
             {changeRequests.length ? (
               <ul className="as-changerequests" aria-label="Change requests">
@@ -450,7 +568,11 @@ export default function DecisionInbox({
                 onClick={() => decide(approval, "approve")}
                 aria-label={`Approve ${approval.kind ?? "request"}`}
               >
-                <Check size={12} /> Approve <kbd>A</kbd>
+                <Check size={12} />{" "}
+                {dual?.awaitingSecond
+                  ? "Approve as second approver"
+                  : "Approve"}{" "}
+                <kbd>A</kbd>
               </button>
               <button
                 type="button"
@@ -511,17 +633,31 @@ export default function DecisionInbox({
               <span className="as-tag">attempt {run.attempt}</span>
             ) : null}
           </header>
-          {run.error ? <p className="as-error-text">{run.error}</p> : null}
+          {run.error && run.status !== "stale" ? (
+            <p className="as-error-text">{run.error}</p>
+          ) : null}
+          {run.status === "stale" ? (
+            <p className="as-muted">
+              No new events since{" "}
+              {run.lastEventAt
+                ? new Date(run.lastEventAt).toLocaleString()
+                : "the run started"}
+              . Open the run to check it before retrying.
+            </p>
+          ) : null}
           <div className="as-row">
-            <button
-              type="button"
-              className="button"
-              disabled={busy === run.id}
-              onClick={() => retry(run)}
-              aria-label={`Retry run ${run.id.slice(0, 8)}`}
-            >
-              <RotateCcw size={12} /> Retry
-            </button>
+            {/* Only a run Agent Space launched can be retried from here. */}
+            {run.mode !== "observed" ? (
+              <button
+                type="button"
+                className="button"
+                disabled={busy === run.id}
+                onClick={() => retry(run)}
+                aria-label={`Retry run ${run.id.slice(0, 8)}`}
+              >
+                <RotateCcw size={12} /> Retry
+              </button>
+            ) : null}
             <button
               type="button"
               className="text-button"

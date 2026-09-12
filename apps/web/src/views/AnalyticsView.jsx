@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ChartBar,
   Download,
   Table2,
   Bookmark,
@@ -20,6 +19,7 @@ import {
   RUN_STATUS_LABELS,
 } from "../hooks/useApi.js";
 import EmptyState from "../components/EmptyState.jsx";
+import { useGlobal } from "../hooks/useGlobal.js";
 import { normalizeHeatmap } from "../hooks/viewLogic.js";
 
 /* One-hue sequential ramp (reference palette, blue 100→700). Light: more is
@@ -62,9 +62,9 @@ const TIME_BUCKETS = [
   ["reviewingMs", "Reviewing", false],
 ];
 const RANGES = [
-  ["24h", "Last 24 hours", 24 * 3600 * 1000],
-  ["7d", "Last 7 days", 7 * 24 * 3600 * 1000],
-  ["30d", "Last 30 days", 30 * 24 * 3600 * 1000],
+  ["24h", "24 hours", 24 * 3600 * 1000],
+  ["7d", "7 days", 7 * 24 * 3600 * 1000],
+  ["30d", "30 days", 30 * 24 * 3600 * 1000],
   ["all", "All time", 0],
 ];
 const FORECAST_METRICS = [
@@ -137,7 +137,7 @@ function UsageTable({ caption, rows, labelOf }) {
             <th scope="col">Input tokens</th>
             <th scope="col">Output tokens</th>
             <th scope="col">Cost</th>
-            <th scope="col">Basis</th>
+            <th scope="col">Cost basis</th>
           </tr>
         </thead>
         <tbody>
@@ -173,22 +173,41 @@ function UsageTable({ caption, rows, labelOf }) {
   );
 }
 
+/**
+ * One headline number. A value the server did not send is "Not recorded",
+ * never a dash under a "counted" label: a count that was not made is not a
+ * count.
+ */
 function Tile({ label, value, basis, hint }) {
+  const missing = value === null || value === undefined;
+  const shown = missing ? "Not recorded" : formatNumber(value);
+  const shownBasis = missing ? "not recorded" : basis;
   return (
     <div
-      className="as-tile"
+      className={`as-tile${missing ? " is-missing" : ""}`}
       role="group"
-      aria-label={`${label}: ${value} (${basis})`}
+      aria-label={`${label}: ${shown} (${shownBasis})`}
     >
       <span className="as-tile-label">{label}</span>
-      <strong className="as-tile-value">{value}</strong>
-      <span className={`as-tag ${basis === "estimated" ? "as-tag-warn" : ""}`}>
-        {basis}
+      <strong className="as-tile-value">{shown}</strong>
+      <span
+        className={`as-tag ${shownBasis === "estimated" ? "as-tag-warn" : ""}`}
+      >
+        {shownBasis}
       </span>
       {hint ? <span className="as-muted as-small">{hint}</span> : null}
     </div>
   );
 }
+
+const STAGE_LABELS = {
+  created: "Created",
+  dispatched: "Dispatched",
+  started: "Started",
+  artifact: "Produced an artifact",
+  reviewed: "Reviewed",
+  accepted: "Accepted",
+};
 
 function BarCell({ value, max }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
@@ -207,14 +226,16 @@ function Heatmap({
   onDrill,
   asTable,
   onToggleTable,
+  rowHeader = "Row",
+  labelOf = (row) => String(row.title),
 }) {
   if (!data) return null;
   return (
     <article className="as-card as-span2">
       <div className="as-row as-wrap">
-        <h4>
+        <h2>
           {title} <span className="as-tag">measured</span>
-        </h4>
+        </h2>
         <button
           type="button"
           className="text-button"
@@ -231,7 +252,7 @@ function Heatmap({
           <table className={`as-table as-numeric ${asTable ? "" : "as-heat"}`}>
             <thead>
               <tr>
-                <th scope="col">Row</th>
+                <th scope="col">{rowHeader}</th>
                 {Array.from({ length: 24 }, (_, hour) => (
                   <th key={hour} scope="col" abbr={`${hour}:00`}>
                     {hour}
@@ -242,7 +263,9 @@ function Heatmap({
             <tbody>
               {data.rows.map((row) => (
                 <tr key={row.id}>
-                  <th scope="row">{String(row.title).slice(0, 32)}</th>
+                  <th scope="row" title={labelOf(row)}>
+                    {labelOf(row).slice(0, 32)}
+                  </th>
                   {Array.from({ length: 24 }, (_, hour) => {
                     const value = Number(row.hours[hour]) || 0;
                     const step =
@@ -260,7 +283,7 @@ function Heatmap({
                       data.unit === "ms"
                         ? formatElapsed(value)
                         : formatNumber(value);
-                    const label = `${row.title}, ${hour}:00 — ${text}`;
+                    const label = `${labelOf(row)}, ${hour}:00 — ${text}`;
                     const drillable =
                       value > 0 &&
                       (row.runIds[hour].length || row.taskIds[hour].length);
@@ -347,6 +370,17 @@ export default function AnalyticsView({
   const [viewName, setViewName] = useState("");
   const [viewMessage, setViewMessage] = useState("");
   const [metric, setMetric] = useState("durationMs");
+  const { global } = useGlobal();
+  const workspaceNames = useMemo(
+    () =>
+      new Map(
+        (global.workspaces ?? []).map((workspace) => [
+          workspace.id,
+          workspace.name,
+        ]),
+      ),
+    [global.workspaces],
+  );
 
   const since = useMemo(() => {
     const window = RANGES.find((entry) => entry[0] === range)?.[2] ?? 0;
@@ -524,45 +558,75 @@ export default function AnalyticsView({
     setDrill(null);
   }, [range, workspaceId]);
 
+  const rangeText = since
+    ? `Since ${new Date(since).toLocaleString([], {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })}`
+    : "All recorded time";
+
   return (
-    <section className="as-analytics" aria-label="Analytics">
-      <header className="as-section-head">
-        <h3>
-          <ChartBar size={14} aria-hidden="true" /> Analytics
-        </h3>
-        <div className="as-row as-filters" role="group" aria-label="Time range">
+    <section className="as-analytics an" aria-label="Analytics">
+      {/* The page header names the view; this bar holds every control. */}
+      <div className="an-toolbar">
+        <div className="segmented" role="group" aria-label="Time range">
           {RANGES.map(([id, label]) => (
             <button
               key={id}
               type="button"
-              className={`as-chip ${range === id ? "active" : ""}`}
               aria-pressed={range === id}
               onClick={() => setRange(id)}
             >
               {label}
             </button>
           ))}
-          <label className="as-inline-label">
-            Provider
+        </div>
+        <label className="an-field">
+          Provider
+          <select
+            value={provider}
+            onChange={(event) => setProvider(event.target.value)}
+          >
+            <option value="">All</option>
+            {providerOptions.map((id) => (
+              <option key={id} value={id}>
+                {providerLabel(id)}
+              </option>
+            ))}
+          </select>
+        </label>
+        {savedViews.length ? (
+          <label className="an-field">
+            Saved view
             <select
-              value={provider}
-              onChange={(event) => setProvider(event.target.value)}
+              value=""
+              onChange={(event) => {
+                const view = savedViews.find(
+                  (entry) => entry.id === event.target.value,
+                );
+                if (view) applyView(view);
+              }}
             >
-              <option value="">All</option>
-              {providerOptions.map((id) => (
-                <option key={id} value={id}>
-                  {providerLabel(id)}
+              <option value="">Choose…</option>
+              {savedViews.map((view) => (
+                <option key={view.id} value={view.id}>
+                  {view.name}
                 </option>
               ))}
             </select>
           </label>
+        ) : null}
+        <div className="an-export">
           <a
             className="button"
             href={exportHref("csv")}
             download
             aria-label="Export analytics as CSV"
           >
-            <Download size={12} /> Export CSV
+            <Download size={12} aria-hidden="true" /> Export CSV
           </a>
           <a
             className="text-button"
@@ -573,78 +637,100 @@ export default function AnalyticsView({
             JSON
           </a>
         </div>
-      </header>
+      </div>
 
-      <p className="as-muted as-small">
-        Basis labels: <span className="as-tag">counted</span> from stored
-        records · <span className="as-tag">reported</span> by the provider ·{" "}
-        <span className="as-tag">measured</span> from recorded timestamps ·{" "}
-        <span className="as-tag as-tag-warn">estimated</span> computed with
-        stated assumptions. Missing data is shown as missing, never guessed.
-        {since ? ` Range starts ${formatTime(since)}.` : " Range: all time."}
+      <p className="an-legend">
+        <strong>{rangeText}.</strong>{" "}
+        <span className="as-muted">
+          Every number says how it is known:{" "}
+          <span className="as-tag" title="Counted from stored records">
+            counted
+          </span>{" "}
+          <span className="as-tag" title="Reported by the provider">
+            reported
+          </span>{" "}
+          <span className="as-tag" title="Measured from recorded timestamps">
+            measured
+          </span>{" "}
+          <span
+            className="as-tag as-tag-warn"
+            title="Computed with the stated assumptions"
+          >
+            estimated
+          </span>
+          . Missing data says so and is never guessed.
+        </span>
       </p>
 
       {/* ------------------------------------------------------ saved views */}
-      <div className="as-savedviews">
-        <span className="as-row as-wrap">
+      <details className="an-views">
+        <summary>
           <Bookmark size={12} aria-hidden="true" />
-          <strong>Saved views</strong>
+          {savedViews.length
+            ? `Save or manage views (${savedViews.length})`
+            : "Save these filters as a view"}
+        </summary>
+        <div className="an-views-body">
           {views.error ? (
             <span className="as-muted as-small">
               Saved views need{" "}
               <code className="as-mono">GET /api/analytics/views</code>.
             </span>
           ) : null}
-          {savedViews.map((view) => (
-            <span key={view.id} className="as-savedview">
-              <button
-                type="button"
-                className="as-chip"
-                onClick={() => applyView(view)}
-              >
-                {view.name}
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={`Delete saved view ${view.name}`}
-                onClick={async () => {
-                  await apiFetch(
-                    `/analytics/views/${encodeURIComponent(view.id)}`,
-                    { method: "DELETE" },
-                  );
-                  views.reload();
-                }}
-              >
-                <Trash2 size={11} />
-              </button>
-            </span>
-          ))}
-        </span>
-        <span className="as-row">
-          <label className="as-inline-label">
-            <span className="sr-only">Name for this view</span>
-            <input
-              value={viewName}
-              onChange={(event) => setViewName(event.target.value)}
-              placeholder="Name the current filters"
-            />
-          </label>
-          <button
-            type="button"
-            className="button"
-            onClick={saveView}
-            disabled={!viewName.trim()}
-          >
-            Save view
-          </button>
-        </span>
-        {viewMessage ? (
-          <p className="as-feedback" role="status">
-            {viewMessage}
-          </p>
-        ) : null}
-      </div>
+          <span className="as-row as-wrap">
+            <label className="as-inline-label">
+              <span className="sr-only">Name for this view</span>
+              <input
+                value={viewName}
+                onChange={(event) => setViewName(event.target.value)}
+                placeholder="Name the current filters"
+              />
+            </label>
+            <button
+              type="button"
+              className="button"
+              onClick={saveView}
+              disabled={!viewName.trim()}
+            >
+              Save view
+            </button>
+          </span>
+          {savedViews.length ? (
+            <ul className="an-views-list" role="list">
+              {savedViews.map((view) => (
+                <li key={view.id}>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => applyView(view)}
+                  >
+                    {view.name}
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={`Delete saved view ${view.name}`}
+                    onClick={async () => {
+                      await apiFetch(
+                        `/analytics/views/${encodeURIComponent(view.id)}`,
+                        { method: "DELETE" },
+                      );
+                      views.reload();
+                    }}
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </details>
+      {viewMessage ? (
+        <p className="as-feedback" role="status">
+          {viewMessage}
+        </p>
+      ) : null}
 
       {analytics.error ? (
         <EmptyState
@@ -660,51 +746,49 @@ export default function AnalyticsView({
           <div className="as-tiles">
             <Tile
               label="Accepted results"
-              value={formatNumber(counts.completed)}
+              value={counts.completed}
               basis="counted"
               hint="a reviewer accepted the result"
             />
             <Tile
               label="Failed runs"
-              value={formatNumber(counts.failed)}
+              value={counts.failed}
               basis="counted"
+              hint={
+                counts.failed === undefined
+                  ? "restart the server to start counting"
+                  : undefined
+              }
             />
-            <Tile
-              label="Cancelled"
-              value={formatNumber(counts.cancelled)}
-              basis="counted"
-            />
-            <Tile
-              label="Retries"
-              value={formatNumber(counts.retries)}
-              basis="counted"
-            />
+            <Tile label="Cancelled" value={counts.cancelled} basis="counted" />
+            <Tile label="Retries" value={counts.retries} basis="counted" />
             <Tile
               label="Disconnects"
-              value={formatNumber(counts.disconnects)}
+              value={counts.disconnects}
               basis="counted"
             />
             <Tile
               label="Stale events"
-              value={formatNumber(counts.stale)}
+              value={counts.stale}
               basis="counted"
+              hint="a run went quiet past the stale limit"
             />
           </div>
 
           <div className="as-analytics-grid">
             <article className="as-card">
-              <h4>
+              <h2>
                 Funnel <span className="as-tag">counted</span>
-              </h4>
+              </h2>
               {funnel.length === 0 ? (
                 <p className="as-muted">No funnel data.</p>
               ) : (
-                <table className="as-table as-numeric">
+                <table className="as-table as-numeric as-table-compact">
                   <thead>
                     <tr>
                       <th scope="col">Stage</th>
                       <th scope="col">Count</th>
-                      <th scope="col">
+                      <th scope="col" className="as-bar-col">
                         <span className="sr-only">Share of created</span>
                       </th>
                     </tr>
@@ -712,7 +796,7 @@ export default function AnalyticsView({
                   <tbody>
                     {funnel.map(([stage, value]) => (
                       <tr key={stage}>
-                        <th scope="row">{stage}</th>
+                        <th scope="row">{STAGE_LABELS[stage] ?? stage}</th>
                         <td>{formatNumber(value)}</td>
                         <td>
                           <BarCell value={value} max={maxFunnel} />
@@ -729,18 +813,18 @@ export default function AnalyticsView({
             </article>
 
             <article className="as-card">
-              <h4>
+              <h2>
                 Time breakdown <span className="as-tag">measured</span>
-              </h4>
+              </h2>
               {time.length === 0 ? (
                 <p className="as-muted">No timing data.</p>
               ) : (
-                <table className="as-table as-numeric">
+                <table className="as-table as-numeric as-table-compact">
                   <thead>
                     <tr>
                       <th scope="col">State</th>
                       <th scope="col">Total</th>
-                      <th scope="col">
+                      <th scope="col" className="as-bar-col">
                         <span className="sr-only">Share</span>
                       </th>
                     </tr>
@@ -771,7 +855,7 @@ export default function AnalyticsView({
             </article>
 
             <article className="as-card as-span2">
-              <h4>Usage by provider</h4>
+              <h2>Usage by provider</h2>
               {providers.length === 0 ? (
                 <p className="as-muted">
                   No usage reported by any provider in this range.
@@ -788,7 +872,7 @@ export default function AnalyticsView({
             </article>
 
             <article className="as-card as-span2">
-              <h4>Usage by model</h4>
+              <h2>Usage by model</h2>
               {models.length === 0 ? (
                 <p className="as-muted">
                   No model was reported for any run in this range.
@@ -813,6 +897,7 @@ export default function AnalyticsView({
               asTable={heatTable}
               onToggleTable={() => setHeatTable((value) => !value)}
               onDrill={drillDown}
+              rowHeader="Task"
             />
             <Heatmap
               title="Workload by provider and hour"
@@ -822,6 +907,8 @@ export default function AnalyticsView({
               asTable={workloadTable}
               onToggleTable={() => setWorkloadTable((value) => !value)}
               onDrill={drillDown}
+              rowHeader="Provider"
+              labelOf={(row) => providerLabel(String(row.title))}
             />
 
             {drillError ? (
@@ -834,7 +921,7 @@ export default function AnalyticsView({
             {drill ? (
               <article className="as-card as-span2" aria-live="polite">
                 <div className="as-row as-wrap">
-                  <h4>Runs behind “{drill.label}”</h4>
+                  <h3>Runs behind “{drill.label}”</h3>
                   <button
                     type="button"
                     className="text-button"
@@ -907,10 +994,10 @@ export default function AnalyticsView({
             {/* ---------------------------------------------- forecast */}
             <article className="as-card">
               <div className="as-row as-wrap">
-                <h4>
+                <h2>
                   <TrendingUp size={13} aria-hidden="true" /> Forecast{" "}
                   <span className="as-tag as-tag-warn">estimated</span>
-                </h4>
+                </h2>
                 <label className="as-inline-label">
                   Metric
                   <select
@@ -978,17 +1065,17 @@ export default function AnalyticsView({
 
             {/* ------------------------------------------ availability */}
             <article className="as-card">
-              <h4>
+              <h2>
                 <Activity size={13} aria-hidden="true" /> Provider availability{" "}
                 <span className="as-tag">measured</span>
-              </h4>
+              </h2>
               {!availability ? (
                 <p className="as-muted">
                   No availability recorded in this range.
                 </p>
               ) : (
                 <>
-                  <table className="as-table as-numeric">
+                  <table className="as-table as-numeric as-table-compact">
                     <thead>
                       <tr>
                         <th scope="col">Provider</th>
@@ -1023,10 +1110,10 @@ export default function AnalyticsView({
 
             {/* -------------------------------------------- saturation */}
             <article className="as-card as-span2">
-              <h4>
+              <h2>
                 <Gauge size={13} aria-hidden="true" /> Runner saturation{" "}
                 <span className="as-tag">measured</span>
-              </h4>
+              </h2>
               {!saturation?.byWorkspace?.length ? (
                 <p className="as-muted">
                   No run overlapped a concurrency limit in this range.
@@ -1046,7 +1133,10 @@ export default function AnalyticsView({
                     <tbody>
                       {saturation.byWorkspace.map((row) => (
                         <tr key={row.workspaceId}>
-                          <th scope="row">{row.workspaceId}</th>
+                          <th scope="row">
+                            {workspaceNames.get(row.workspaceId) ??
+                              row.workspaceId}
+                          </th>
                           <td>{formatNumber(row.limit)}</td>
                           <td>{formatNumber(row.maxConcurrent)}</td>
                           <td>{formatElapsed(row.saturatedMs ?? 0)}</td>
@@ -1057,7 +1147,7 @@ export default function AnalyticsView({
                                 className="text-button"
                                 onClick={() =>
                                   drillDown({
-                                    label: `saturation in ${row.workspaceId}`,
+                                    label: `saturation in ${workspaceNames.get(row.workspaceId) ?? row.workspaceId}`,
                                     runIds: row.windows.flatMap(
                                       (window) => window.runIds ?? [],
                                     ),

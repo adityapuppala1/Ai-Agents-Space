@@ -1,12 +1,27 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Radio, ExternalLink, FolderOpen } from "lucide-react";
-import { formatElapsed, maskPath, basename } from "../hooks/useApi.js";
+import {
+  formatElapsed,
+  formatTime,
+  maskPath,
+  basename,
+  useTicker,
+} from "../hooks/useApi.js";
 import { useGlobal } from "../hooks/useGlobal.js";
 import ProviderBadge from "./ProviderBadge.jsx";
 import ActivityBadge from "./ActivityBadge.jsx";
+import { sessionState } from "../hooks/viewLogic.js";
 
 /**
  * Live provider sessions observed on this machine (from `global.liveSessions`).
+ *
+ * A session is "live" while its provider process runs. That is not the same
+ * as working: a session whose run has recorded nothing for a while is shown
+ * as Quiet with the time of its last event, never as active. Before the
+ * first snapshot arrives the page says it is connecting instead of claiming
+ * that nothing is running, and while the channel is down it says the list
+ * may be out of date.
+ *
  * @param {{
  *   onOpenRun?: (runId: string, workspaceId?: string) => void,
  *   onSwitchWorkspace?: (workspaceId: string) => void,
@@ -20,30 +35,50 @@ export default function LiveSessions({
   presentation = false,
   sessions,
 }) {
-  const { global, connected } = useGlobal();
+  const { global, connected, revision } = useGlobal();
   const list = sessions ?? global.liveSessions ?? [];
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setTick((v) => v + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  useTicker();
   const now = Date.now();
-  const workspaceName = (id) =>
-    global.workspaces.find((w) => w.id === id)?.name ?? id;
+  // The app always passes an array (empty until the first snapshot), so
+  // "loaded" follows the shared channel, not the prop.
+  const loaded = revision > 0 || list.length > 0;
+  const workspaceName = (session) =>
+    session.workspaceName ??
+    global.workspaces.find((w) => w.id === session.workspaceId)?.name ??
+    session.workspaceId;
+  const states = list.map((session) => sessionState(session, now));
+  const quiet = states.filter((state) => state.key === "quiet").length;
+  const active = states.filter((state) => state.key === "active").length;
+
+  let summary;
+  if (!loaded) summary = "Connecting to the live channel…";
+  else if (!list.length) summary = null;
+  else
+    summary = [
+      `${list.length} live session${list.length === 1 ? "" : "s"}`,
+      active && quiet ? `${active} active` : null,
+      quiet ? `${quiet} quiet` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
   return (
-    <section className="as-live" aria-label="Live sessions">
-      <header className="as-section-head">
-        <h3>
-          <Radio size={14} aria-hidden="true" /> Live sessions
-        </h3>
-        <span className={`live-pill ${connected ? "" : "offline"}`}>
-          {connected ? `${list.length} live` : "reconnecting"}
-        </span>
-      </header>
-      {list.length === 0 ? (
+    <section className="as-live live" aria-label="Live sessions">
+      {summary || !connected ? (
+        <p className="live-summary">
+          <Radio size={15} aria-hidden="true" />
+          {summary ? <strong>{summary}</strong> : null}
+          {loaded && !connected ? (
+            <span className="live-pill offline">
+              Reconnecting — this list may be out of date
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+      {loaded && list.length === 0 ? (
         <div className="empty-state">
           <Radio size={28} aria-hidden="true" />
-          <h3>No live sessions detected</h3>
+          <h2>No live sessions detected</h2>
           <p>
             Start Claude Code, Codex or Copilot in a terminal; Agent Space reads
             their own session files (observe must be enabled in Connections).
@@ -51,33 +86,34 @@ export default function LiveSessions({
         </div>
       ) : null}
       <ul className="as-live-list">
-        {list.map((session) => {
+        {list.map((session, index) => {
+          const state = states[index];
           const started = session.startedAt
             ? new Date(session.startedAt).getTime()
             : null;
+          const lastEvent = session.lastEventAt
+            ? new Date(session.lastEventAt).getTime()
+            : null;
+          const name = workspaceName(session);
           return (
             <li
               key={`${session.provider}:${session.sessionId}`}
-              className={`as-card as-live-item ${session.live ? "" : "as-ended"}`}
+              className={`as-card as-live-item is-${state.key}`}
             >
-              <div className="as-row as-wrap">
+              <div className="live-item-head">
                 <ProviderBadge provider={session.provider} mode="observed" />
-                <strong className="as-live-title">
+                <strong className="as-live-title" title={session.title ?? ""}>
                   {session.title ?? "Untitled session"}
                 </strong>
-                {session.live ? (
-                  <span className="status as-activity-coding">
-                    <i className="dot" aria-hidden="true" />
-                    live
-                  </span>
-                ) : (
-                  <span className="status status-queue">
-                    <i className="dot" aria-hidden="true" />
-                    ended
-                  </span>
-                )}
+                <span className={`live-state is-${state.key}`}>
+                  <i aria-hidden="true" />
+                  {state.label}
+                </span>
               </div>
+              <p className="live-item-note">{state.detail}</p>
               <dl className="as-passport as-compact">
+                <dt>Workspace</dt>
+                <dd>{name ?? "—"}</dd>
                 <dt>Folder</dt>
                 <dd
                   className="as-mono"
@@ -98,19 +134,21 @@ export default function LiveSessions({
                 </dd>
                 <dt>Model</dt>
                 <dd>{session.model ?? "model not reported"}</dd>
-                <dt>Elapsed</dt>
+                <dt>Started</dt>
                 <dd>
                   {started
-                    ? formatElapsed(
-                        (session.live
-                          ? now
-                          : new Date(session.lastEventAt ?? now).getTime()) -
+                    ? `${formatTime(started)} · ${formatElapsed(
+                        (state.key === "ended" && lastEvent ? lastEvent : now) -
                           started,
-                      )
+                      )}`
                     : "—"}
                 </dd>
-                <dt>Workspace</dt>
-                <dd>{workspaceName(session.workspaceId)}</dd>
+                <dt>Last event</dt>
+                <dd>
+                  {lastEvent
+                    ? `${formatElapsed(Math.max(0, now - lastEvent))} ago`
+                    : "none recorded"}
+                </dd>
               </dl>
               <div className="as-row">
                 {session.runId ? (
@@ -122,7 +160,7 @@ export default function LiveSessions({
                     }
                     aria-label={`Open run for ${session.title ?? session.sessionId}`}
                   >
-                    <ExternalLink size={12} /> Open run
+                    <ExternalLink size={12} aria-hidden="true" /> Open run
                   </button>
                 ) : null}
                 {session.workspaceId ? (
@@ -130,9 +168,9 @@ export default function LiveSessions({
                     type="button"
                     className="text-button"
                     onClick={() => onSwitchWorkspace?.(session.workspaceId)}
-                    aria-label={`Open workspace ${workspaceName(session.workspaceId)}`}
+                    aria-label={`Open workspace ${name}`}
                   >
-                    <FolderOpen size={12} /> Open workspace
+                    <FolderOpen size={12} aria-hidden="true" /> Open workspace
                   </button>
                 ) : null}
               </div>
@@ -140,6 +178,13 @@ export default function LiveSessions({
           );
         })}
       </ul>
+      {list.length ? (
+        <p className="as-muted as-small">
+          Live means the {list.length === 1 ? "provider's" : "providers'"}{" "}
+          process is running. Activity is inferred from the latest tool call in
+          its session files; a quiet session has recorded nothing recently.
+        </p>
+      ) : null}
     </section>
   );
 }

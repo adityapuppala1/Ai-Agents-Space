@@ -1,0 +1,202 @@
+/* Agent Space design tokens: the single source for colour, type, spacing,
+   radius, elevation and motion. Loaded before every other stylesheet
+   (main.jsx) and never redefined elsewhere, so the light, dark and
+   high-contrast values below are the values the app actually renders.
+
+   Status is never colour alone: every status token pairs with a word or a
+   shape in the markup. Text colours are chosen to reach WCAG AA (4.5:1) on
+   the surfaces they sit on; e2e/accessibility.spec.js checks the core pairs. */
+
+:root {
+  color-scheme: light;
+
+  /* Type. System stacks only: the product runs offline and ships no fonts. */
+  --font-ui:
+    "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+    BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --font-display:
+    "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system,
+    BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, "SF Mono", Menlo,
+    monospace;
+  /* Six steps, in rem so the reader's own font size scales the interface
+     (WCAG 1.4.4). 1rem is the browser's default, normally 16px. Nothing in
+     the interface is set below --text-xs. */
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --leading-tight: 1.25;
+  --leading: 1.5;
+
+  /* Surfaces */
+  --page: #f1f3f8;
+  --panel: #ffffff;
+  --soft: #f6f8fb;
+  --surface-raised: #ffffff;
+  --surface-subtle: #f8f9fd;
+  --surface-glass: #ffffffeb;
+  --line: #e0e5ef;
+  --line-strong: #c9d1de;
+
+  /* Text */
+  --text: #27394a;
+  --text-strong: #17283a;
+  --muted: #5a6b7f;
+
+  /* Accent: one indigo for selection, links, focus and primary actions. */
+  --accent: #4d5fd3;
+  --accent-ink: #3f50bb;
+  --accent-soft: #edf0ff;
+  --blue: var(--accent);
+  --interactive: #4d5fd3;
+  --interactive-hover: #3f50bb;
+  --on-interactive: #ffffff;
+  --focus-ring: #4d5fd3;
+  --as-focus: var(--focus-ring);
+
+  /* Rail (navigation) stays dark in both themes. */
+  --rail-bg: #18213a;
+  --rail-bg-end: #1f2842;
+  --rail-ink: #b9c5da;
+  --rail-ink-strong: #ffffff;
+  --rail-muted: #8d9bb6;
+  --rail-hover: #ffffff14;
+  --rail-active: #6b7de838;
+  --rail-marker: #9aa7ff;
+
+  /* Status: ok / warn / bad / info, each with a tinted background. */
+  --as-ok: #2e7852;
+  --as-ok-bg: #eaf5ee;
+  --as-warn: #8a6417;
+  --as-warn-bg: #fbf3e2;
+  --as-bad: #b3403f;
+  --as-bad-bg: #fdeeee;
+  --as-info: #3f50bb;
+  --as-info-bg: #edf0ff;
+  --as-good: var(--as-ok);
+  /* Activity tones: text on its own tint, each pair at least 4.5:1. */
+  --act-build: #735f2a; /* testing, debugging */
+  --act-build-bg: #f8f3e6;
+  --act-shell: #4f6275; /* running a command */
+  --act-shell-bg: #eef2f6;
+  --act-talk: #5f58a0; /* reviewing, messaging, delegating */
+  --act-talk-bg: #f1f0fa;
+  --act-plan: #6a4fa3; /* planning, researching */
+  --act-plan-bg: #f3f0f8;
+  --act-stale: #666666;
+  --act-stale-bg: #efefef;
+  --status-success: var(--as-ok);
+  --status-success-bg: var(--as-ok-bg);
+  --status-warning: var(--as-warn);
+  --status-warning-bg: var(--as-warn-bg);
+  --status-danger: var(--as-bad);
+  --status-danger-bg: var(--as-bad-bg);
+  --as-diff-add-bg: #e8f5ea;
+  --as-diff-add: #2f6b3d;
+  --as-diff-del-bg: #fbe9e9;
+  --as-diff-del: #9b3b3b;
+
+  /* Shape and depth */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px #1a2b4512;
+  --shadow: 0 4px 16px #1a2b4514;
+  --shadow-lg: 0 16px 40px #1a2b4524;
+
+  /* Layout */
+  --rail-w: 220px;
+  --topbar-h: 60px;
+  --control-h: 36px;
+  --gutter: clamp(16px, 2.2vw, 36px);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 140ms;
+  --duration-standard: 220ms;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #19222e;
+  --panel: #222e3c;
+  --soft: #283546;
+  --surface-raised: #222e3c;
+  --surface-subtle: #1e2936;
+  --surface-glass: #1e2936eb;
+  --line: #324052;
+  --line-strong: #46566c;
+
+  --text: #dae2ec;
+  --text-strong: #eef4fb;
+  --muted: #a3b1c6;
+
+  --accent: #93acf6;
+  --accent-ink: #c2cdff;
+  --accent-soft: #2f3a62;
+  --interactive: #93acf6;
+  --interactive-hover: #aabdf8;
+  --on-interactive: #0e1733;
+  --focus-ring: #a9c2ff;
+
+  --rail-bg: #121a2d;
+  --rail-bg-end: #172036;
+
+  --as-ok: #8fcf9f;
+  --as-ok-bg: #22392a;
+  --as-warn: #e6c374;
+  --as-warn-bg: #3d3520;
+  --as-bad: #f0a0a0;
+  --as-bad-bg: #452626;
+  --as-info: #b3c5f7;
+  --as-info-bg: #2b3553;
+  --act-build: #e6c374;
+  --act-build-bg: #3d3520;
+  --act-shell: #b7c6d8;
+  --act-shell-bg: #2f3d4d;
+  --act-talk: #c3bdf0;
+  --act-talk-bg: #35324f;
+  --act-plan: #c9b8ee;
+  --act-plan-bg: #35304a;
+  --act-stale: #b5b5b5;
+  --act-stale-bg: #3a3a3a;
+  --as-diff-add-bg: #22392a;
+  --as-diff-add: #a8dfb3;
+  --as-diff-del-bg: #452626;
+  --as-diff-del: #f0a0a0;
+
+  --shadow-sm: 0 1px 2px #0006;
+  --shadow: 0 4px 16px #0007;
+  --shadow-lg: 0 16px 40px #0009;
+}
+
+/* Increased contrast: stronger boundaries, secondary text and focus. Both
+   blocks set the same properties so the dark block always wins in dark. */
+@media (prefers-contrast: more) {
+  :root {
+    --line: #8a97a8;
+    --line-strong: #5f6d80;
+    --muted: #3f4b59;
+    --text: #0f1b28;
+    --focus-ring: #1c3fae;
+  }
+  [data-theme="dark"] {
+    --line: #8395ad;
+    --line-strong: #a9b8cc;
+    --muted: #d8e1ee;
+    --text: #f5f8fc;
+    --focus-ring: #c4d8ff;
+  }
+}

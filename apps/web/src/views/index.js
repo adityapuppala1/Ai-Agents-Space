@@ -16,3 +16,4 @@ export {
   default as AnalyticsView,
   normalizeHeatmap,
 } from "./AnalyticsView.jsx";
+export { default as WorkflowEditor } from "./WorkflowEditor.jsx";

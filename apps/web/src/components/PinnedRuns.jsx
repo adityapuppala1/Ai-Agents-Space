@@ -63,7 +63,7 @@ export function PinToggle({ runId, title = "run", storageKey }) {
       aria-label={on ? `Unpin ${title}` : `Pin ${title}`}
       title={on ? "Unpin this run" : "Pin this run so it stays visible"}
     >
-      {on ? <Pin size={13} /> : <PinOff size={13} />}
+      <Pin size={14} aria-hidden="true" fill={on ? "currentColor" : "none"} />
     </button>
   );
 }
@@ -77,7 +77,8 @@ export function PinToggle({ runId, title = "run", storageKey }) {
  *   runs?: any[],                                  // candidate runs (workspace or global)
  *   onOpenRun?: (runId: string, workspaceId?: string) => void,
  *   storageKey?: string,
- *   now?: number
+ *   now?: number,
+ *   hideWhenEmpty?: boolean                        // render nothing with no pins
  * }} props
  */
 export default function PinnedRuns({
@@ -85,11 +86,13 @@ export default function PinnedRuns({
   onOpenRun,
   storageKey = PINNED_RUNS_KEY,
   now = Date.now(),
+  hideWhenEmpty = false,
 }) {
   const { pinned, toggle, clear } = usePinnedRuns(storageKey);
   const byId = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
   const resolved = pinned.map((id) => ({ id, run: byId.get(id) ?? null }));
 
+  if (pinned.length === 0 && hideWhenEmpty) return null;
   if (pinned.length === 0)
     return (
       <EmptyState
@@ -103,10 +106,10 @@ export default function PinnedRuns({
   return (
     <section className="as-pinned" aria-label="Pinned runs">
       <header className="as-section-head">
-        <h3>
+        <h2>
           <Pin size={14} aria-hidden="true" /> Pinned runs
           <span className="as-count">{pinned.length}</span>
-        </h3>
+        </h2>
         <button type="button" className="text-button" onClick={clear}>
           Unpin all
         </button>

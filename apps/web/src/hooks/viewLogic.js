@@ -1,4 +1,144 @@
-import { providerLabel } from "./useApi.js";
+import { providerLabel, formatElapsed, RUN_STATUS_LABELS } from "./useApi.js";
+import { isOnFloor, activityOf } from "../office/presence.js";
+
+/* ------------------------------------------------------------------ */
+/* Agent directory                                                     */
+/* ------------------------------------------------------------------ */
+
+const ATTENTION_RUN = new Set(["waiting_approval", "blocked", "stale"]);
+const ATTENTION_ACTIVITY = new Set([
+  "WAITING_APPROVAL",
+  "BLOCKED",
+  "ERROR",
+  "STALE",
+]);
+const STATE_ORDER = { attention: 0, working: 1, idle: 2 };
+
+/**
+ * Where an agent stands, from its recorded state only: "attention" (needs
+ * approval, blocked, failed or stale), "working" (on the office floor) or
+ * "idle" (a profile with no recorded work right now).
+ */
+export function agentState(agent) {
+  if (
+    agent?.state === "BLOCKED" ||
+    ATTENTION_RUN.has(agent?.runStatus) ||
+    ATTENTION_ACTIVITY.has(activityOf(agent))
+  )
+    return "attention";
+  return isOnFloor(agent) ? "working" : "idle";
+}
+
+/**
+ * Rows for the Agents directory: filtered by search text, state and
+ * provider, ordered attention → working → idle and then by name, with counts
+ * per state (before the state filter, so the filter chips can show them).
+ */
+export function agentDirectory(
+  agents = [],
+  { query = "", status = "all", provider = null } = {},
+) {
+  const needle = String(query).trim().toLowerCase();
+  const searchable = (agent) =>
+    [
+      agent.name,
+      agent.role,
+      agent.specialty,
+      agent.provider ? providerLabel(agent.provider) : "",
+      ...(Array.isArray(agent.skills) ? agent.skills : []),
+    ]
+      .join(" ")
+      .toLowerCase();
+  const scoped = agents
+    .filter((agent) => !provider || agent.provider === provider)
+    .filter((agent) => !needle || searchable(agent).includes(needle))
+    .map((agent) => ({ agent, state: agentState(agent) }));
+  const counts = { all: scoped.length, working: 0, attention: 0, idle: 0 };
+  for (const row of scoped) counts[row.state] += 1;
+  const rows = scoped
+    .filter((row) => status === "all" || row.state === status)
+    .sort(
+      (a, b) =>
+        STATE_ORDER[a.state] - STATE_ORDER[b.state] ||
+        String(a.agent.name).localeCompare(String(b.agent.name)),
+    );
+  const providers = [
+    ...new Set(agents.map((agent) => agent.provider).filter(Boolean)),
+  ].sort();
+  return { rows, counts, providers };
+}
+
+/** The Agents page's sections, in the order someone scanning a team needs them. */
+export const AGENT_SECTIONS = Object.freeze([
+  {
+    id: "attention",
+    title: "Needs attention",
+    hint: "Blocked, failed, stale or waiting for an approval",
+  },
+  { id: "working", title: "Working now", hint: "Recorded work in progress" },
+  { id: "idle", title: "Ready for work", hint: "No recorded work right now" },
+]);
+
+/**
+ * Directory rows (agentDirectory) grouped into AGENT_SECTIONS, each keeping
+ * the rows' order. Empty sections are left out.
+ */
+export function agentSections(rows = []) {
+  return AGENT_SECTIONS.map((section) => ({
+    ...section,
+    rows: rows.filter((row) => row.state === section.id),
+  })).filter((section) => section.rows.length > 0);
+}
+
+/**
+ * What a live session is doing, from its recorded state only. Live means the
+ * provider process is open; that is not the same as working. The run behind
+ * it goes stale when nothing has been recorded for the stale limit, and then
+ * the session is Quiet, never Active.
+ */
+export function sessionState(session, now = Date.now()) {
+  const last = session?.lastEventAt
+    ? new Date(session.lastEventAt).getTime()
+    : null;
+  if (session?.live === false || session?.endedAt)
+    return {
+      key: "ended",
+      label: "Ended",
+      detail: "The session has ended.",
+    };
+  if (session?.status === "stale")
+    return {
+      key: "quiet",
+      label: "Quiet",
+      detail: last
+        ? `The process is open, but nothing has been recorded for ${formatElapsed(Math.max(0, now - last))}.`
+        : "The process is open, but nothing has been recorded.",
+    };
+  return {
+    key: "active",
+    label: "Active",
+    detail: last ? "Recording events." : "Waiting for its first event.",
+  };
+}
+
+const PROVIDER_RUN_MODES = new Set(["observed", "managed"]);
+
+/**
+ * What a task card says about progress. A provider run reports its status and
+ * elapsed time, never a percentage; only a manual or demo task carries one,
+ * because a person (or the labelled simulation) set it.
+ */
+export function cardProgress(task, run, now = Date.now()) {
+  if (run && PROVIDER_RUN_MODES.has(run.mode)) {
+    const label = RUN_STATUS_LABELS[run.status] ?? run.status;
+    if (!run.startedAt) return label;
+    const end = run.endedAt ? new Date(run.endedAt).getTime() : now;
+    return `${label} ${formatElapsed(end - new Date(run.startedAt).getTime())}`;
+  }
+  if (task?.status === "IN_PROGRESS" && typeof task.progress === "number")
+    return `${task.progress}%`;
+  return null;
+}
 
 /**
  * Pure logic behind the wave-2 components and views.
@@ -43,15 +183,140 @@ export function filtersAreEmpty(filters) {
 }
 
 /** Human labels for the active filter chips. */
-export function describeFilters(filters) {
+/* ------------------------------------------------------------------ */
+/* Build and deploy events for the office pipeline wall                */
+/* ------------------------------------------------------------------ */
+
+// A command position: the start of the text, after "Ran:", or after a shell
+// separator. A tool name elsewhere in a command (a path, a package name, a
+// grep pattern) is not a build.
+const AT_COMMAND = String.raw`(?:^|Ran:\s*|[;&|(]\s*|&&\s*)`;
+const BUILD_RUN = new RegExp(
+  AT_COMMAND +
+    String.raw`(?:cd\s+\S+\s*&&\s*)?(?:` +
+    [
+      String.raw`(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build(?::[\w-]+)?\b`,
+      String.raw`(?:npx\s+)?vite\s+build\b`,
+      String.raw`(?:npx\s+)?webpack(?:\s|$)`,
+      String.raw`(?:npx\s+)?rollup\s+-c\b`,
+      String.raw`(?:npx\s+)?tsc(?:\s|$)`,
+      String.raw`make(?:\s|$)`,
+      String.raw`msbuild\b`,
+      String.raw`(?:\.\/)?gradlew?\s+(?:build|assemble)\b`,
+      String.raw`mvn\s+(?:package|install|compile|verify)\b`,
+      String.raw`cargo\s+build\b`,
+      String.raw`go\s+build\b`,
+      String.raw`dotnet\s+(?:build|publish)\b`,
+    ].join("|") +
+    ")",
+  "i",
+);
+const DEPLOY_RUN = new RegExp(
+  AT_COMMAND +
+    String.raw`(?:cd\s+\S+\s*&&\s*)?(?:` +
+    [
+      String.raw`(?:npm|pnpm|yarn)\s+publish\b`,
+      String.raw`(?:npm|pnpm|yarn)\s+run\s+deploy\b`,
+      String.raw`terraform\s+apply\b`,
+      String.raw`kubectl\s+(?:apply|rollout)\b`,
+      String.raw`docker\s+push\b`,
+      String.raw`helm\s+(?:upgrade|install)\b`,
+      String.raw`vercel(?:\s+--prod)?(?:\s|$)`,
+      String.raw`netlify\s+deploy\b`,
+      String.raw`fly\s+deploy\b`,
+      String.raw`gh\s+release\s+create\b`,
+    ].join("|") +
+    ")",
+  "i",
+);
+export const isBuildCommand = (text) => BUILD_RUN.test(String(text ?? ""));
+export const isDeployCommand = (text) => DEPLOY_RUN.test(String(text ?? ""));
+
+/** Recorded builds older than this are history, not what the wall shows. */
+export const BUILD_WALL_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Build/deploy activity for the office pipeline wall. Two honest sources:
+ * recorded command events that actually run a build or deploy (plus every
+ * recorded test run), and CI checks a connector read. A recorded command has
+ * no outcome of its own, so it is "recorded", never "passed". Only the last
+ * two hours are shown, so yesterday's build never reads as current.
+ */
+export function buildEventsFrom(
+  events = [],
+  checks = null,
+  { now = Date.now(), windowMs = BUILD_WALL_WINDOW_MS } = {},
+) {
+  const list = [];
+  for (const event of events) {
+    if (event.kind !== "command" && event.kind !== "test") continue;
+    // The server sends epoch milliseconds; Date.parse() of a number is NaN,
+    // which let every old build through the window.
+    const at =
+      typeof event.timestamp === "number"
+        ? event.timestamp
+        : Date.parse(event.timestamp ?? "");
+    if (Number.isFinite(at) && now - at > windowMs) continue;
+    const text = String(event.message ?? event.tool ?? "");
+    const deploy = isDeployCommand(text);
+    const build = isBuildCommand(text);
+    if (event.kind !== "test" && !deploy && !build) continue;
+    list.push({
+      id: event.id,
+      kind: deploy ? "deploy" : event.kind === "test" ? "check" : "build",
+      status: "recorded",
+      label: event.message ?? event.tool ?? "command",
+      timestamp: event.timestamp,
+    });
+  }
+  for (const check of checks?.available ? (checks.checks ?? []) : []) {
+    list.push({
+      id: `check:${check.name ?? check.workflow ?? list.length}`,
+      kind: "check",
+      status: String(
+        check.conclusion ?? check.state ?? check.status ?? "unknown",
+      ).toLowerCase(),
+      label: check.name ?? check.workflow ?? "check",
+      timestamp: check.completedAt ?? check.updatedAt ?? null,
+    });
+  }
+  return list.length ? list : undefined;
+}
+
+const TASK_STATUS_WORDS = {
+  QUEUE: "Queued",
+  IN_PROGRESS: "In progress",
+  BLOCKED: "Blocked",
+  COMPLETED: "Completed",
+};
+
+/**
+ * Chips for the active filters, worded for people: provider and status names
+ * instead of ids, and the agent's name when `agentName` can resolve it.
+ */
+export function describeFilters(filters, { agentName } = {}) {
   const f = normalizeFilters(filters);
   const chips = [];
   if (f.provider)
-    chips.push({ key: "provider", label: `Provider: ${f.provider}` });
-  if (f.status) chips.push({ key: "status", label: `Task: ${f.status}` });
+    chips.push({
+      key: "provider",
+      label: `Provider: ${f.provider === "simulated" ? "Demo" : providerLabel(f.provider)}`,
+    });
+  if (f.status)
+    chips.push({
+      key: "status",
+      label: `Task: ${TASK_STATUS_WORDS[f.status] ?? f.status}`,
+    });
   if (f.runStatus)
-    chips.push({ key: "runStatus", label: `Run: ${f.runStatus}` });
-  if (f.agentId) chips.push({ key: "agentId", label: `Agent: ${f.agentId}` });
+    chips.push({
+      key: "runStatus",
+      label: `Run: ${RUN_STATUS_LABELS[f.runStatus] ?? f.runStatus}`,
+    });
+  if (f.agentId)
+    chips.push({
+      key: "agentId",
+      label: `Agent: ${agentName?.(f.agentId) ?? "selected agent"}`,
+    });
   if (f.role) chips.push({ key: "role", label: `Role: ${f.role}` });
   if (f.query) chips.push({ key: "query", label: `Text: ${f.query}` });
   return chips;
@@ -228,6 +493,122 @@ export function buildChapter(run, events = [], artifacts = []) {
   };
 }
 
+/** Readable names for milestone kinds (the raw kind stays in the event). */
+export const BEAT_LABELS = Object.freeze({
+  prompt: "Prompt",
+  "file.edit": "Edited",
+  test: "Test",
+  command: "Command",
+  "approval.request": "Approval asked",
+  "approval.decision": "Decision",
+  delegation: "Delegated",
+  error: "Error",
+  "run.status": "Status",
+  "turn.end": "Turn ended",
+});
+
+/**
+ * Text a coding tool adds to the conversation on the person's behalf:
+ * attachment lists, reminders, plugin hints, a continued session's summary.
+ * Recorded as a "prompt", but not something the person wrote, so it is
+ * labelled as added context and kept out of the prompt count. The patterns
+ * are the wrappers seen in recorded sessions, not guesses about content.
+ */
+const INJECTED_PROMPT =
+  /^\s*(?:<[a-z][\w-]*>|# Files mentioned by the user|Caveat: The messages below were generated|This session is being continued from a previous conversation|\[Request interrupted by user)/i;
+
+export function isInjectedPrompt(text) {
+  return INJECTED_PROMPT.test(String(text ?? ""));
+}
+
+const KEY_PRIORITY = {
+  error: 0,
+  "approval.request": 1,
+  "approval.decision": 1,
+  "run.status": 2,
+  delegation: 3,
+  test: 4,
+};
+
+/**
+ * What one run did, from its recorded milestones only: counts per kind, the
+ * files it edited, and a short list of key moments (the first real prompt,
+ * then errors, approvals, status changes, delegations and tests, earliest
+ * first). Nothing is summarised into prose; every moment is a cited event.
+ */
+export function chapterDigest(chapter, { keyLimit = 8 } = {}) {
+  const counts = {
+    prompts: 0,
+    injected: 0,
+    edits: 0,
+    commands: 0,
+    tests: 0,
+    errors: 0,
+    approvals: 0,
+    delegations: 0,
+  };
+  const files = new Map();
+  const beats = (chapter?.beats ?? []).map((beat, order) => {
+    const injected = beat.kind === "prompt" && isInjectedPrompt(beat.text);
+    if (beat.kind === "prompt") counts[injected ? "injected" : "prompts"] += 1;
+    else if (beat.kind === "file.edit") {
+      counts.edits += 1;
+      if (beat.file) files.set(beat.file, (files.get(beat.file) ?? 0) + 1);
+    } else if (beat.kind === "command") counts.commands += 1;
+    else if (beat.kind === "test") counts.tests += 1;
+    else if (beat.kind === "error") counts.errors += 1;
+    else if (beat.kind === "approval.request") counts.approvals += 1;
+    else if (beat.kind === "delegation") counts.delegations += 1;
+    return {
+      ...beat,
+      injected,
+      order,
+      label: BEAT_LABELS[beat.kind] ?? beat.kind,
+    };
+  });
+  const firstPrompt = beats.find(
+    (beat) => beat.kind === "prompt" && !beat.injected,
+  );
+  const important = beats.filter((beat) => beat.kind in KEY_PRIORITY);
+  let picks = important;
+  if (picks.length > keyLimit - (firstPrompt ? 1 : 0))
+    picks = [...important]
+      .sort(
+        (a, b) =>
+          KEY_PRIORITY[a.kind] - KEY_PRIORITY[b.kind] || a.order - b.order,
+      )
+      .slice(0, keyLimit - (firstPrompt ? 1 : 0));
+  let keyMoments = [firstPrompt, ...picks].filter(Boolean);
+  // A run with nothing notable still shows where it ended.
+  if (keyMoments.length === 0)
+    keyMoments = beats.filter((beat) => !beat.injected).slice(-3);
+  keyMoments = [...new Set(keyMoments)].sort((a, b) => a.order - b.order);
+  return {
+    counts,
+    files: [...files.entries()]
+      .map(([path, edits]) => ({ path, edits }))
+      .sort((a, b) => b.edits - a.edits || a.path.localeCompare(b.path)),
+    beats,
+    keyMoments,
+  };
+}
+
+/** "3 prompts · 12 files edited · 1 error", zero counts left out. */
+export function digestLine(counts, files = []) {
+  const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+  return [
+    counts.prompts ? plural(counts.prompts, "prompt") : null,
+    files.length ? `${plural(files.length, "file")} edited` : null,
+    counts.commands ? plural(counts.commands, "command") : null,
+    counts.tests ? plural(counts.tests, "test run") : null,
+    counts.approvals ? plural(counts.approvals, "approval") : null,
+    counts.delegations ? plural(counts.delegations, "delegation") : null,
+    counts.errors ? plural(counts.errors, "error") : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 /* ------------------------------------------------------------------ */
 /* Decision inbox urgency ordering                                     */
 /* ------------------------------------------------------------------ */
@@ -361,3 +742,148 @@ export const SAMPLE_SCOPE = Object.freeze([
   "A run you start later spends your own provider quota — Agent Space never buys tokens.",
   "Archiving the workspace hides it; nothing on disk is deleted by Agent Space.",
 ]);
+
+/**
+ * Events (newest first) grouped by the local day they were recorded on, for
+ * the Activity page: "Today", "Yesterday" or the date. An event without a
+ * usable time goes in a last "Time not recorded" group instead of being
+ * given a day it may not belong to.
+ */
+export function activityDays(events = [], now = Date.now()) {
+  const startOf = (time) => {
+    const day = new Date(time);
+    day.setHours(0, 0, 0, 0);
+    return day.getTime();
+  };
+  const today = startOf(now);
+  const yesterday = startOf(today - 1);
+  const labelFor = (day) => {
+    if (day === today) return "Today";
+    if (day === yesterday) return "Yesterday";
+    return new Date(day).toLocaleDateString([], {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+    });
+  };
+  const groups = [];
+  const undated = [];
+  for (const event of events ?? []) {
+    const at =
+      typeof event?.timestamp === "number"
+        ? event.timestamp
+        : Date.parse(event?.timestamp ?? "");
+    if (!Number.isFinite(at) || at <= 0) {
+      undated.push(event);
+      continue;
+    }
+    const day = startOf(at);
+    let group = groups.at(-1);
+    if (!group || group.day !== day) {
+      group = { day, label: labelFor(day), events: [] };
+      groups.push(group);
+    }
+    group.events.push(event);
+  }
+  if (undated.length)
+    groups.push({ day: null, label: "Time not recorded", events: undated });
+  return groups;
+}
+
+/**
+ * The Activity feed's list: the live head (the snapshot's latest events) and
+ * the older pages read from GET /api/workspaces/:id/events, each event once,
+ * newest first. The first page is read from the newest event, so an event that
+ * later scrolls off the live head is still in the fetched pages: no gap opens
+ * between the two. The live copy wins for an event in both.
+ */
+export function mergeEventHistory(head = [], fetched = []) {
+  const byId = new Map();
+  for (const event of [...(fetched ?? []), ...(head ?? [])])
+    if (event?.id != null) byId.set(event.id, event);
+  const time = (event) =>
+    typeof event.timestamp === "number"
+      ? event.timestamp
+      : Date.parse(event.timestamp ?? "") || 0;
+  return [...byId.values()].sort((a, b) =>
+    Number.isFinite(a.sequence) && Number.isFinite(b.sequence)
+      ? b.sequence - a.sequence
+      : time(b) - time(a),
+  );
+}
+
+/**
+ * How many events the workspace has recorded, from the history endpoint's
+ * `total` at the time it was read plus the live events newer than the newest
+ * one it had then. Null when the total was never read.
+ */
+export function eventHistoryTotal(probe, head = []) {
+  if (!probe || !Number.isFinite(probe.total)) return null;
+  const newest = Number.isFinite(probe.newest) ? probe.newest : Infinity;
+  return (
+    probe.total +
+    (head ?? []).filter(
+      (event) => Number.isFinite(event?.sequence) && event.sequence > newest,
+    ).length
+  );
+}
+
+/**
+ * Who a recorded approver is, for display. A name typed in the Inbox is
+ * recorded behind the transport's own actor ("local-user:alice"); the part
+ * after the colon is the name the person gave.
+ */
+export function approverLabel(actor) {
+  const text = String(actor ?? "").trim();
+  if (!text) return "someone";
+  const colon = text.indexOf(":");
+  return colon > 0 && colon < text.length - 1 ? text.slice(colon + 1) : text;
+}
+
+/**
+ * Where a request that needs more than one approver stands, from the
+ * decisions the server recorded: how many are required, who has approved,
+ * and whether the approver must give a name (the server refuses the same
+ * actor twice, so each approver has to be told apart). Null for an ordinary
+ * single-approver request.
+ */
+export function dualApprovalState(approval) {
+  const required = Math.max(1, Number(approval?.requiredDecisions) || 1);
+  if (required < 2) return null;
+  const approvedBy = [
+    ...new Set(
+      (approval?.decisions ?? [])
+        .filter((entry) => entry?.decision === "approve")
+        .map((entry) => entry.actor),
+    ),
+  ];
+  return {
+    required,
+    approvedBy,
+    approvedLabels: approvedBy.map(approverLabel),
+    remaining: Math.max(0, required - approvedBy.length),
+    awaitingSecond:
+      Boolean(approval?.awaitingSecondApprover) ||
+      (approvedBy.length > 0 && approvedBy.length < required),
+  };
+}
+
+/** What a run action did, in words, from what was asked and what came back. */
+export function actionMessage(action, body = {}, result = null) {
+  switch (action) {
+    case "review":
+      return body?.decision === "reject"
+        ? "Review rejected. Your note is kept with the task, and the run can be retried."
+        : "Review accepted: the task is completed.";
+    case "cancel":
+      return "Cancel requested. Work the provider already did is not undone.";
+    case "retry":
+      return result?.attempt
+        ? `Retry started as attempt ${result.attempt}.`
+        : "Retry started.";
+    case "input":
+      return body?.resume ? "Resume requested." : "Input sent to the run.";
+    default:
+      return "Done.";
+  }
+}

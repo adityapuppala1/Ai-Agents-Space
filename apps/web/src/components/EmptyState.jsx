@@ -46,7 +46,7 @@ export default function EmptyState({
       <span aria-hidden="true">
         {icon ?? <Inbox size={compact ? 20 : 28} />}
       </span>
-      <h3>{heading}</h3>
+      <h2>{heading}</h2>
       {notFound || unavailable ? (
         <>
           <p>

@@ -6,9 +6,13 @@
 // encodes (especially "never invent a number") is unit tested in
 // tests/office.test.js.
 
+import { activityOf, MANUAL_ACTIVITY } from "./presence.js";
+import { relayLabel } from "./relay.js";
+import { timeAgo } from "../hooks/useApi.js";
+
 /** UI vocabulary from docs/ARCHITECTURE.md §6. */
 export const ACTIVITY_LABELS = {
-  IDLE: "Available",
+  IDLE: "Idle",
   ANALYZING: "Planning",
   CODING: "Coding",
   RESEARCHING: "Researching",
@@ -22,6 +26,8 @@ export const ACTIVITY_LABELS = {
   BLOCKED: "Blocked",
   ERROR: "Error",
   STALE: "Stale",
+  // A manual task: the only recorded fact is its status (see presence.js).
+  MANUAL: "In progress",
 };
 
 export const PROVIDER_LABELS = {
@@ -32,19 +38,15 @@ export const PROVIDER_LABELS = {
   gemini: "Gemini",
 };
 
-const KNOWN_ACTIVITIES = new Set(Object.keys(ACTIVITY_LABELS));
-
-/** Activity with fallback to the legacy `state` field. */
-export function activityOf(agent) {
-  if (!agent) return "IDLE";
-  if (agent.activity && KNOWN_ACTIVITIES.has(agent.activity))
-    return agent.activity;
-  if (agent.state && KNOWN_ACTIVITIES.has(agent.state)) return agent.state;
-  return "IDLE";
-}
+/** Activity with fallback to the legacy `state` field (see presence.js). */
+export { activityOf };
 
 export function activityLabel(agent) {
-  return ACTIVITY_LABELS[activityOf(agent)] ?? "Available";
+  const activity = activityOf(agent);
+  // A team member whose relay step is queued says who it is waiting for
+  // (office/relay.js relayPresence), not "Idle".
+  if (activity === "IDLE" && agent?.relay) return relayLabel(agent.relay);
+  return ACTIVITY_LABELS[activity] ?? "Idle";
 }
 
 /** Provider badge text; never relies on colour alone. */
@@ -52,7 +54,26 @@ export function providerLabel(agent) {
   if (agent?.provider && PROVIDER_LABELS[agent.provider])
     return PROVIDER_LABELS[agent.provider];
   if (agent?.runMode === "simulated") return "Demo";
+  // A team member waiting on its relay step: the step's assistant, if one
+  // was chosen, or "Demo" for the demo's own relay.
+  if (agent?.relay?.provider && PROVIDER_LABELS[agent.relay.provider])
+    return PROVIDER_LABELS[agent.relay.provider];
+  if (agent?.relay?.simulated) return "Demo";
   return "Manual";
+}
+
+export const PROVIDER_GLYPHS = Object.freeze({
+  "claude-code": "bars",
+  codex: "ring",
+  copilot: "cube",
+  cursor: "pointer",
+  gemini: "diamond",
+});
+
+/** Provider → a small, shape-based avatar insignia. */
+export function providerGlyph(agent) {
+  const provider = typeof agent === "string" ? agent : agent?.provider;
+  return PROVIDER_GLYPHS[provider] ?? null;
 }
 
 /** Non-colour status class used by the label dot (matches existing .dot classes). */
@@ -333,27 +354,53 @@ export function handoffFor(handoffs, agentId) {
   };
 }
 
-/** Card text for the meeting area, or null when nothing was recorded. */
-export function handoffCard(handoffs, agents = [], { mask } = {}) {
+/** A handoff older than this is history (the Timeline has it), not news. */
+export const HANDOFF_WINDOW_MS = 30 * 60 * 1000;
+
+/** "just now", "4m ago", "2h ago" for a recorded time; null when unknown. */
+export const ageLabel = timeAgo;
+
+/**
+ * Card text for the meeting area, or null when nothing was recorded in the
+ * last HANDOFF_WINDOW_MS. It says how long ago the handoff was, so an old one
+ * never reads as happening now. A handoff without a time is not shown: its
+ * age cannot be stated.
+ */
+export function handoffCard(
+  handoffs,
+  agents = [],
+  { mask, now = Date.now(), windowMs = HANDOFF_WINDOW_MS } = {},
+) {
   if (!Array.isArray(handoffs) || !handoffs.length) return null;
   const nameOf = (id) => agents.find((a) => a?.id === id)?.name ?? null;
   const latest = [...handoffs]
-    .filter(Boolean)
+    .filter((h) => h && toTime(h.timestamp) > 0)
+    .filter((h) => now - toTime(h.timestamp) <= windowMs)
     .sort((a, b) => toTime(a.timestamp) - toTime(b.timestamp))
     .pop();
   if (!latest) return null;
   const from = clean(nameOf(latest.fromAgentId) ?? "unknown agent", 20);
-  const to = clean(nameOf(latest.toAgentId) ?? "unknown agent", 20);
+  const to = clean(
+    nameOf(latest.toAgentId) ?? latest.toLabel ?? "unknown agent",
+    20,
+  );
   const title = clean(
     mask ? maskPrivate(latest.taskTitle) : latest.taskTitle,
     34,
   );
+  const age = ageLabel(latest.timestamp, now);
   return {
     id: latest.id ?? null,
-    lines: ["Handoff", `${from} → ${to}`, title || "task title not recorded"],
+    lines: [
+      `Handoff · ${age}`,
+      `${from} → ${to}`,
+      title || "task title not recorded",
+    ],
     from,
     to,
     title,
+    age,
+    at: toTime(latest.timestamp),
     timestamp: latest.timestamp ?? null,
   };
 }
@@ -553,6 +600,113 @@ export function sameCamera(a, b) {
   return JSON.stringify(x) === JSON.stringify(y);
 }
 
+const vdot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const vcross = (a, b) => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+];
+const vnorm = (v) => {
+  const length = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / length, v[1] / length, v[2] / length];
+};
+
+/**
+ * The room as the camera sees it from `position` looking at `target`, in
+ * world units on the view plane: half its width and height, and where its
+ * centre sits relative to the target (the walls make it top-heavy). Counted:
+ * the floor slab, the back and left walls (3.25 high) and the head height of
+ * the front row (2.2), so labels on the nearest desks stay inside the frame.
+ * `bounds` ({ minX, maxX, minZ, maxZ }), when given, is the whole scene: the
+ * floor plus the conference wing beside it (office/conference.js).
+ */
+export function roomExtents(
+  { width, depth, bounds = null },
+  position = [16, 16, 21],
+  target = [0, 0.3, 0],
+) {
+  const forward = vnorm([
+    target[0] - position[0],
+    target[1] - position[1],
+    target[2] - position[2],
+  ]);
+  const right = vnorm(vcross(forward, [0, 1, 0]));
+  const up = vcross(right, forward);
+  const b = bounds ?? {
+    minX: -width / 2,
+    maxX: width / 2,
+    minZ: -depth / 2,
+    maxZ: depth / 2,
+  };
+  const xs = [b.minX - 0.3, b.maxX + 0.3];
+  const zs = [b.minZ - 0.3, b.maxZ + 0.3];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const x of xs)
+    for (const z of zs) {
+      const walled = x < 0 || z < 0;
+      for (const y of walled ? [-0.3, 3.25] : [-0.3, 2.2]) {
+        const p = [x - target[0], y - target[1], z - target[2]];
+        const px = vdot(p, right);
+        const py = vdot(p, up);
+        minX = Math.min(minX, px);
+        maxX = Math.max(maxX, px);
+        minY = Math.min(minY, py);
+        maxY = Math.max(maxY, py);
+      }
+    }
+  return {
+    halfWidth: (maxX - minX) / 2,
+    halfHeight: (maxY - minY) / 2,
+    centerX: (maxX + minX) / 2,
+    centerY: (maxY + minY) / 2,
+  };
+}
+
+/**
+ * Pixels the overlays take from the canvas, top and bottom. On a narrow
+ * canvas the room label row and the camera bar span its width, so the room is
+ * fitted between them; on a wide one they sit in corners the room leaves empty.
+ * Matches .office-meta and .office-bottom in styles.css (≤680px block).
+ */
+export function overlayInsets(canvasWidth) {
+  return canvasWidth > 0 && canvasWidth < 560
+    ? { top: 36, bottom: 60 }
+    : { top: 0, bottom: 0 };
+}
+
+/**
+ * The orthographic frustum for a canvas: { top, bottom, left, right } in
+ * world units that show the whole room with a small margin inside the part of
+ * the canvas the overlays leave free. On a portrait phone the width decides,
+ * on a wide screen the height does. The old rule sized by room depth only, so
+ * a large team's room sat in a third of the canvas. Null without a room.
+ */
+export function roomFrustum(extents, width, height, margin = 0.07) {
+  if (!extents || !(width > 0) || !(height > 0)) return null;
+  const inset = overlayInsets(width);
+  const usable = Math.max(height * 0.6, height - inset.top - inset.bottom);
+  const grow = 1 + margin;
+  const fit = Math.max(
+    extents.halfHeight * grow,
+    (extents.halfWidth * grow * usable) / width,
+  );
+  const half = (fit * height) / usable;
+  const perPixel = (2 * half) / height;
+  // Centre the room in the free band, which sits (bottom - top) / 2 pixels
+  // above the canvas middle.
+  const offsetY = extents.centerY - ((inset.bottom - inset.top) / 2) * perPixel;
+  const halfX = (half * width) / height;
+  return {
+    top: half + offsetY,
+    bottom: -half + offsetY,
+    left: -halfX + extents.centerX,
+    right: halfX + extents.centerX,
+  };
+}
+
 /** Validates a restored camera state before it is applied. */
 export function validCamera(state) {
   if (!state || typeof state !== "object") return false;
@@ -603,6 +757,7 @@ export function hoverPreview(agent, { mask = false, elapsedMs = null } = {}) {
       : null,
     activity: activityLabel(agent),
     inferred: agent.activityProvenance === "inferred",
+    manual: activityOf(agent) === MANUAL_ACTIVITY,
     file,
     provider: providerLabel(agent),
     host: hostChip(agent),

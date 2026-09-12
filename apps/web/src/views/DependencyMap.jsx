@@ -8,7 +8,12 @@ import {
   ShieldCheck,
   Save,
 } from "lucide-react";
-import { apiFetch, useApi, layerGraph } from "../hooks/useApi.js";
+import {
+  apiFetch,
+  useApi,
+  layerGraph,
+  providerLabel,
+} from "../hooks/useApi.js";
 import { moveInList } from "../hooks/viewLogic.js";
 import EmptyState from "../components/EmptyState.jsx";
 import { useSelection, FilterChips } from "../components/SelectionProvider.jsx";
@@ -36,12 +41,17 @@ export { moveInList };
 
 /**
  * SVG dependency DAG from GET /api/workspaces/:id/graph ({ nodes, edges }),
- * plus a small visual workflow editor.
+ * plus an editor for what the selected task waits for. (The Workflow editor
+ * route edits a workflow's step definition; this edits task dependencies.)
  *
  * The editor adds, removes and reorders the dependencies of the selected task
- * with the pointer or the keyboard, validates the whole graph through
- * `GET /api/workspaces/:id/validate` before anything is written, and saves
- * with `PATCH /api/workspaces/:id/tasks/:taskId/dependencies`. Order is
+ * with the pointer or the keyboard and saves with
+ * `PATCH /api/workspaces/:id/tasks/:taskId/dependencies`. Validate checks
+ * what is on screen: with unsaved changes it sends the draft to
+ * `POST /api/workspaces/:id/validate` (nothing is written); with none it
+ * checks the saved graph. The verdict names which one it checked and is
+ * cleared the moment the draft changes, so "valid" never describes a graph
+ * other than the one shown. Order is
  * recorded because it is the order a reader sees; the scheduler still requires
  * every dependency, whatever the order.
  *
@@ -70,7 +80,11 @@ export default function DependencyMap({
   );
   const graph = givenGraph ?? fetched.data ?? null;
 
-  const [draft, setDraft] = useState(null); // string[] of dependency task ids
+  // An edit is kept with the task it belongs to; until the first edit the
+  // draft simply is the task's saved list. (Copying the saved list in an
+  // effect left a moment after selection where the draft was empty and an
+  // early edit was silently dropped.)
+  const [edit, setEdit] = useState(null); // { taskId, deps: string[] }
   const [validation, setValidation] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -83,13 +97,20 @@ export default function DependencyMap({
     [nodes],
   );
   const selectedNode = activeId ? (byId.get(activeId) ?? null) : null;
+  const draft = selectedNode
+    ? edit?.taskId === selectedNode.id
+      ? edit.deps
+      : [...(selectedNode.dependsOn ?? [])]
+    : null;
+  const setDraft = (deps) => {
+    if (selectedNode) setEdit({ taskId: selectedNode.id, deps });
+  };
 
   useEffect(() => {
-    setDraft(selectedNode ? [...(selectedNode.dependsOn ?? [])] : null);
     setValidation(null);
     setMessage("");
     setError("");
-  }, [activeId, selectedNode?.dependsOn?.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   const visibleNodes = useMemo(
     () => nodes.filter((node) => selection.matchesTask(node)),
@@ -135,15 +156,45 @@ export default function DependencyMap({
     onSelectTask?.(taskId);
   };
 
-  const validate = async () => {
+  const dirtyNow = () =>
+    Boolean(selectedNode) &&
+    Array.isArray(draft) &&
+    JSON.stringify(draft) !== JSON.stringify(selectedNode.dependsOn ?? []);
+
+  // A verdict describes one graph; editing the draft makes it stale.
+  const draftKey = JSON.stringify(draft ?? null);
+  useEffect(() => {
+    setValidation((current) =>
+      current && current.scope === "draft" && current.draftKey !== draftKey
+        ? null
+        : current,
+    );
+  }, [draftKey]);
+
+  const validate = async ({ saved = false } = {}) => {
     setBusy(true);
     setError("");
+    const path = `/workspaces/${encodeURIComponent(workspaceId)}/validate`;
+    const proposing = !saved && dirtyNow();
     try {
-      setValidation(
-        await apiFetch(
-          `/workspaces/${encodeURIComponent(workspaceId)}/validate`,
-        ),
-      );
+      if (proposing) {
+        try {
+          const report = await apiFetch(path, {
+            method: "POST",
+            body: { taskId: selectedNode.id, dependsOn: draft },
+          });
+          setValidation({ ...report, scope: "draft", draftKey });
+          return;
+        } catch (err) {
+          // A server started before draft checks existed answers 404/405:
+          // say so rather than passing the saved graph off as the draft.
+          if (err.status !== 404 && err.status !== 405) throw err;
+          const report = await apiFetch(path);
+          setValidation({ ...report, scope: "saved-only", draftKey });
+          return;
+        }
+      }
+      setValidation({ ...(await apiFetch(path)), scope: "saved", draftKey });
     } catch (err) {
       setError(err.message);
       setValidation(null);
@@ -165,8 +216,9 @@ export default function DependencyMap({
       setMessage(
         "Dependencies saved. The server refused any cycle or cross-workspace link.",
       );
+      setEdit(null);
       fetched.reload?.();
-      await validate();
+      await validate({ saved: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -212,15 +264,15 @@ export default function DependencyMap({
 
   return (
     <section className="as-depmap" aria-label="Dependency map">
-      <header className="as-section-head">
-        <h3>
-          <GitBranch size={14} aria-hidden="true" /> Dependencies
-        </h3>
-        <span className="as-muted">
-          {layout.nodes.length} tasks · {layout.edges.length} links · arrows
-          point to the task that waits
-        </span>
-      </header>
+      {/* The page header names the view; this line says what is drawn. */}
+      <p className="dep-summary">
+        <GitBranch size={15} aria-hidden="true" />
+        <strong>
+          {layout.nodes.length} task{layout.nodes.length === 1 ? "" : "s"} ·{" "}
+          {layout.edges.length} link{layout.edges.length === 1 ? "" : "s"}
+        </strong>
+        <span className="as-muted">Arrows point to the task that waits.</span>
+      </p>
       <FilterChips label="Filters shared with every view" />
 
       {message ? (
@@ -322,14 +374,17 @@ export default function DependencyMap({
                     }
                   }}
                 >
+                  <title>{node.title ?? node.id}</title>
                   <rect width={NODE_W} height={NODE_H} rx={8} />
                   <text x={10} y={18} className="as-dep-title">
-                    {String(node.title ?? node.id).slice(0, 24)}
+                    {String(node.title ?? node.id).length > 24
+                      ? `${String(node.title ?? node.id).slice(0, 23)}…`
+                      : String(node.title ?? node.id)}
                   </text>
                   <text x={10} y={35} className="as-dep-status">
                     {STATUS_TEXT[status] ?? status}
-                    {node.provider ? ` · ${node.provider}` : ""}
-                    {node.ready ? " · ready" : ""}
+                    {node.provider ? ` · ${providerLabel(node.provider)}` : ""}
+                    {node.ready ? " · can start" : ""}
                   </text>
                 </g>
               );
@@ -340,9 +395,9 @@ export default function DependencyMap({
 
       {editable ? (
         <div className="as-depeditor">
-          <h4>
-            <Link2 size={13} aria-hidden="true" /> Workflow editor
-          </h4>
+          <h2>
+            <Link2 size={13} aria-hidden="true" /> What this task waits for
+          </h2>
           {!selectedNode ? (
             <p className="as-muted as-small">
               Select a task in the graph (click it, or Tab to it and press
@@ -417,6 +472,7 @@ export default function DependencyMap({
               <label className="as-inline-label">
                 Add a dependency
                 <select
+                  aria-label="Add a dependency"
                   value=""
                   onChange={(event) => {
                     if (event.target.value) addDependency(event.target.value);
@@ -452,10 +508,16 @@ export default function DependencyMap({
                 <button
                   type="button"
                   className="button"
-                  onClick={validate}
+                  onClick={() => validate()}
                   disabled={busy}
+                  title={
+                    dirty
+                      ? "Checks the graph with your unsaved changes. Nothing is written."
+                      : "Checks the saved graph."
+                  }
                 >
-                  <ShieldCheck size={12} /> Validate
+                  <ShieldCheck size={12} aria-hidden="true" />{" "}
+                  {dirty ? "Check these changes" : "Validate"}
                 </button>
                 <button
                   type="button"
@@ -469,9 +531,7 @@ export default function DependencyMap({
                   <button
                     type="button"
                     className="text-button"
-                    onClick={() =>
-                      setDraft([...(selectedNode.dependsOn ?? [])])
-                    }
+                    onClick={() => setEdit(null)}
                   >
                     Discard changes
                   </button>
@@ -487,9 +547,19 @@ export default function DependencyMap({
             >
               <strong>{validation.ok ? "VALID" : "PROBLEMS FOUND"}</strong>
               <span>
-                {validation.checked} task(s) checked ·{" "}
+                {validation.scope === "draft"
+                  ? "Your unsaved changes, checked without writing"
+                  : "The saved graph"}{" "}
+                · {validation.checked} task(s) checked ·{" "}
                 {(validation.problems ?? []).length} problem(s)
               </span>
+              {validation.scope === "saved-only" ? (
+                <span className="as-small">
+                  This server can only check the saved graph, so your unsaved
+                  changes were not checked. Restart it to check changes before
+                  saving; saving still refuses a cycle.
+                </span>
+              ) : null}
               {(validation.problems ?? []).length ? (
                 <ul className="as-validation-list">
                   {validation.problems.map((problem, index) => (

@@ -8,6 +8,7 @@ import { clean } from "./data.js";
 export const THEMES = {
   studio: {
     id: "studio",
+    layoutProfile: "studio",
     label: "Development studio",
     floorLabel: "FLOOR 01",
     rooms: {
@@ -47,6 +48,7 @@ export const THEMES = {
   },
   operations: {
     id: "operations",
+    layoutProfile: "command",
     label: "Operations center",
     floorLabel: "OPS DECK",
     rooms: {
@@ -87,11 +89,149 @@ export const THEMES = {
 };
 
 // Palette variants share the proven room layout and event-driven props.
-for (const [id, label, palette, light] of [
-  ["garden", "Garden atelier", {base:"#e8eddf",floor:"#cad7c4",wall:"#d3e1cf",wood:"#b5a17c",accent:"#548c74",green:"#357455",mat:"#acc6b4",sign:"#366653"}, {sky:"#f3ffe8",sunColor:"#fff0cb"}],
-  ["midnight", "Midnight lab", {base:"#25263f",floor:"#24233b",wall:"#2d2c4b",wood:"#51436a",accent:"#a795ed",green:"#729aaf",mat:"#403b60",sign:"#d4c7ff",screenBg:"#17162d",screenFg:"#cbbcff",minimapFloor:"#25233b",minimapZone:"#45405e",minimapText:"#ddd3fa"}, {sky:"#c8c6ff",ground:"#282343",hemi:2.2,sunColor:"#e6d7ff",sun:2.3}],
-  ["sandstone", "Desert studio", {base:"#f5e7d8",floor:"#dfcbb6",wall:"#eddbc7",wood:"#bc8b67",accent:"#bb7553",green:"#7c916c",mat:"#d6b89e",sign:"#86583d"}, {sky:"#fff0de",sunColor:"#ffe0b2"}],
-]) THEMES[id] = {...THEMES.studio, id, label, floorLabel: label.toUpperCase(), palette:{...THEMES.studio.palette,...palette}, light:{...THEMES.studio.light,...light}, signLines:[label.toUpperCase(), "A shared space for real work."]};
+for (const [id, label, layoutProfile, palette, light] of [
+  [
+    "garden",
+    "Garden atelier",
+    "courtyard",
+    {
+      base: "#e8eddf",
+      floor: "#cad7c4",
+      wall: "#d3e1cf",
+      wood: "#b5a17c",
+      accent: "#548c74",
+      green: "#357455",
+      mat: "#acc6b4",
+      sign: "#366653",
+    },
+    { sky: "#f3ffe8", sunColor: "#fff0cb" },
+  ],
+  [
+    "midnight",
+    "Midnight lab",
+    "command",
+    {
+      base: "#25263f",
+      floor: "#24233b",
+      wall: "#2d2c4b",
+      wood: "#51436a",
+      accent: "#a795ed",
+      green: "#729aaf",
+      mat: "#403b60",
+      sign: "#d4c7ff",
+      screenBg: "#17162d",
+      screenFg: "#cbbcff",
+      minimapFloor: "#25233b",
+      minimapZone: "#45405e",
+      minimapText: "#ddd3fa",
+    },
+    {
+      sky: "#c8c6ff",
+      ground: "#282343",
+      hemi: 2.2,
+      sunColor: "#e6d7ff",
+      sun: 2.3,
+    },
+  ],
+  [
+    "sandstone",
+    "Desert studio",
+    "studio",
+    {
+      base: "#f5e7d8",
+      floor: "#dfcbb6",
+      wall: "#eddbc7",
+      wood: "#bc8b67",
+      accent: "#bb7553",
+      green: "#7c916c",
+      mat: "#d6b89e",
+      sign: "#86583d",
+    },
+    { sky: "#fff0de", sunColor: "#ffe0b2" },
+  ],
+  [
+    "data-lab",
+    "Data lab",
+    "spine",
+    {
+      base: "#e0f0f1",
+      floor: "#bcd6d9",
+      wall: "#d0e7e9",
+      wood: "#668f96",
+      accent: "#318ca4",
+      green: "#4b9b86",
+      mat: "#a5cbd1",
+      sign: "#286a7c",
+      screenBg: "#113440",
+      screenFg: "#bdeff5",
+    },
+    {
+      sky: "#dcfbff",
+      ground: "#78a5ad",
+      hemi: 2.5,
+      sunColor: "#d4faff",
+      sun: 2.8,
+    },
+  ],
+  [
+    "research-library",
+    "Research library",
+    "stacks",
+    {
+      base: "#eee5d6",
+      floor: "#d4bf9c",
+      wall: "#ddceb8",
+      wood: "#765538",
+      accent: "#876744",
+      green: "#6c8763",
+      mat: "#c4a97d",
+      sign: "#5b432e",
+      screenBg: "#3a2b21",
+      screenFg: "#f8e8c9",
+    },
+    {
+      sky: "#fff4d7",
+      ground: "#b99a70",
+      hemi: 2.45,
+      sunColor: "#ffe6ae",
+      sun: 2.7,
+    },
+  ],
+  [
+    "creative-studio",
+    "Creative studio",
+    "gallery",
+    {
+      base: "#f1e3ea",
+      floor: "#dfc1d0",
+      wall: "#ead1de",
+      wood: "#ae6f8b",
+      accent: "#b44b79",
+      green: "#6f9a83",
+      mat: "#d6adc0",
+      sign: "#7e3158",
+      screenBg: "#3b1e32",
+      screenFg: "#ffd8ea",
+    },
+    {
+      sky: "#ffe8f5",
+      ground: "#b5859d",
+      hemi: 2.55,
+      sunColor: "#ffe4f0",
+      sun: 2.9,
+    },
+  ],
+])
+  THEMES[id] = {
+    ...THEMES.studio,
+    id,
+    label,
+    layoutProfile,
+    floorLabel: label.toUpperCase(),
+    palette: { ...THEMES.studio.palette, ...palette },
+    light: { ...THEMES.studio.light, ...light },
+    signLines: [label.toUpperCase(), "A shared space for real work."],
+  };
 
 export function getTheme(name) {
   return THEMES[name] ?? THEMES.studio;
@@ -147,21 +287,47 @@ export function buildRoom(group, theme, layout, res, options = {}) {
   // They never represent telemetry or fabricated pipeline activity.
   if (theme.id === "garden") {
     const { cylinder, sphere } = builders(res);
-    for (let i=0; i<4; i++) {
-      const z=-D/2+1.4+i*1.05;
-      cylinder(.23,.18,.26,mat.wood,-W/2+.3,2.25,z,group);
-      box(.025,.65,.025,mat.metal,-W/2+.3,2.68,z,group);
-      for(let j=0;j<3;j++) sphere(.2,mat.green,-W/2+.27+j*.07,2.44-j*.14,z+(j-1)*.16,group);
+    for (let i = 0; i < 4; i++) {
+      const z = -D / 2 + 1.4 + i * 1.05;
+      cylinder(0.23, 0.18, 0.26, mat.wood, -W / 2 + 0.3, 2.25, z, group);
+      box(0.025, 0.65, 0.025, mat.metal, -W / 2 + 0.3, 2.68, z, group);
+      for (let j = 0; j < 3; j++)
+        sphere(
+          0.2,
+          mat.green,
+          -W / 2 + 0.27 + j * 0.07,
+          2.44 - j * 0.14,
+          z + (j - 1) * 0.16,
+          group,
+        );
     }
   }
   if (theme.id === "midnight") {
-    const glow=res.material("#b29aff", {emissive:"#8055e0",emissiveIntensity:.7});
-    box(W,.045,.04,glow,0,2.98,-D/2+.01,group);
-    box(.04,.045,D,glow,-W/2+.01,2.98,0,group);
+    const glow = res.material("#b29aff", {
+      emissive: "#8055e0",
+      emissiveIntensity: 0.7,
+    });
+    box(W, 0.045, 0.04, glow, 0, 2.98, -D / 2 + 0.01, group);
+    box(0.04, 0.045, D, glow, -W / 2 + 0.01, 2.98, 0, group);
   }
   if (theme.id === "sandstone") {
-    for(let i=0;i<12;i++) box(.07,.95,.10,mat.wood,-W/2+.12,1.7,-D/2+.8+i*.25,group);
+    for (let i = 0; i < 12; i++)
+      box(
+        0.07,
+        0.95,
+        0.1,
+        mat.wood,
+        -W / 2 + 0.12,
+        1.7,
+        -D / 2 + 0.8 + i * 0.25,
+        group,
+      );
   }
+  if (theme.id === "data-lab") buildDataLabShell(group, layout, res, mat);
+  if (theme.id === "research-library")
+    buildLibraryShell(group, layout, res, mat);
+  if (theme.id === "creative-studio")
+    buildCreativeShell(group, layout, res, mat);
 
   // Room name sign on the back wall (top-left).
   const signTexture = textTexture(res, {
@@ -180,6 +346,76 @@ export function buildRoom(group, theme, layout, res, options = {}) {
     plane(3.2, 0.75, signMaterial, -W / 2 + 2.3, 2.45, -D / 2 - 0.01, group);
   }
   return handles;
+}
+
+function buildDataLabShell(group, layout, res, mat) {
+  const { box } = builders(res);
+  const { width: W, depth: D } = layout;
+  const glow = res.material("#4cc6d9", {
+    emissive: "#267f91",
+    emissiveIntensity: 0.45,
+  });
+  for (let i = 0; i < 6; i++)
+    box(
+      0.55,
+      1.7,
+      0.24,
+      mat.metal,
+      W / 2 - 0.45,
+      1.15,
+      -D / 2 + 1 + i * 0.7,
+      group,
+    );
+  for (let i = 0; i < 5; i++)
+    box(
+      0.45,
+      0.025,
+      0.025,
+      glow,
+      W / 2 - 0.76,
+      0.55 + i * 0.25,
+      -D / 2 + 1.05 + (i % 5) * 0.7,
+      group,
+    );
+  box(W - 3, 0.025, 0.08, glow, 0, 0.07, D / 2 - 1.15, group);
+}
+
+function buildLibraryShell(group, layout, res, mat) {
+  const { box } = builders(res);
+  const { width: W, depth: D } = layout;
+  const book = ["#a05a43", "#3f6b78", "#bb9860", "#607952"];
+  for (let shelf = 0; shelf < 4; shelf++)
+    for (let row = 0; row < 5; row++)
+      box(
+        0.12,
+        0.28,
+        0.34,
+        res.material(book[(shelf + row) % book.length]),
+        W / 2 - 0.2,
+        0.42 + row * 0.32,
+        -D / 2 + 0.9 + shelf * 0.72,
+        group,
+      );
+  box(0.24, 2.1, D - 1.4, mat.wood, W / 2 - 0.38, 1.05, 0, group);
+}
+
+function buildCreativeShell(group, layout, res, mat) {
+  const { box, cylinder } = builders(res);
+  const { width: W, depth: D } = layout;
+  const paper = res.material("#fff8ee");
+  box(2.1, 1.28, 0.06, paper, W / 2 - 1.55, 1.9, -D / 2 + 0.04, group);
+  for (let i = 0; i < 4; i++)
+    cylinder(
+      0.05,
+      0.05,
+      1.3,
+      mat.metal,
+      -W / 2 + 0.55 + i * 0.34,
+      0.78,
+      D / 2 - 0.7,
+      group,
+    );
+  box(1.65, 0.06, 0.72, mat.wood, -W / 2 + 1.05, 1.42, D / 2 - 0.7, group);
 }
 
 function buildStudioShell(group, theme, layout, res, mat) {

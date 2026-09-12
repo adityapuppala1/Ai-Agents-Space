@@ -1,14 +1,37 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Play, Plus, Info } from "lucide-react";
 import { apiFetch, useApi, providerLabel } from "../hooks/useApi.js";
 import Dialog from "./Dialog.jsx";
+import { routingReason } from "../hooks/routingLogic.js";
+
+/** Data labels, least to most sensitive (core/routing/router.js). */
+const DATA_LABELS = [
+  ["public", "Public"],
+  ["internal", "Internal"],
+  ["confidential", "Confidential"],
+  ["restricted", "Restricted"],
+];
 
 const PRIORITIES = ["critical", "high", "medium", "low"];
 
-function connectionReason(connection, capabilities) {
+/**
+ * Why an assistant cannot be launched here, or "" when it can. Shared with
+ * the team dialog (TemplateGallery), which offers the same assistants.
+ */
+export function connectionReason(connection, capabilities, workspaceId = null) {
   if (!connection) return "not detected";
   if (connection.enabled === false || connection.enabled === 0)
     return "disabled in Connections";
+  // The server refuses an account scoped to other workspaces
+  // (Policy.accessRefusal), so it is not offered here either.
+  const scope = connection.allowedWorkspaces;
+  if (
+    workspaceId &&
+    Array.isArray(scope) &&
+    scope.length &&
+    !scope.includes(workspaceId)
+  )
+    return "limited to other workspaces";
   if (connection.status === "missing") return "binary not found";
   if (connection.status === "error")
     return connection.error ? `error: ${connection.error}` : "probe failed";
@@ -77,7 +100,30 @@ export default function TaskLauncher({
     isolation: workspace?.policy?.autonomy === "sandbox" ? "worktree" : "none",
     dependsOn: [],
     model: "",
+    sensitivity: "",
   });
+  // The routing ranking for this task's label (POST /route): which assistant
+  // is recommended, and why any other is excluded. Read-only advice; the
+  // server enforces the data rules at launch. A server without routing
+  // answers 404 and the picker simply shows no routing reasons.
+  const [routing, setRouting] = useState(null);
+  useEffect(() => {
+    if (!workspace?.id) return undefined;
+    let stale = false;
+    apiFetch(`/workspaces/${encodeURIComponent(workspace.id)}/route`, {
+      method: "POST",
+      body: { sensitivity: form.sensitivity || null },
+    })
+      .then((result) => {
+        if (!stale) setRouting(result);
+      })
+      .catch(() => {
+        if (!stale) setRouting(null);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [workspace?.id, form.sensitivity]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const set = (key, value) =>
@@ -86,7 +132,11 @@ export default function TaskLauncher({
   const providerOptions = useMemo(() => {
     const byProvider = new Map();
     for (const connection of connections) {
-      const reason = connectionReason(connection, capabilities);
+      const reason = connectionReason(
+        connection,
+        capabilities,
+        workspace?.id ?? null,
+      );
       const existing = byProvider.get(connection.provider);
       if (!existing || (existing.reason && !reason))
         byProvider.set(connection.provider, {
@@ -100,7 +150,7 @@ export default function TaskLauncher({
         (a.reason ? 1 : 0) - (b.reason ? 1 : 0) ||
         a.provider.localeCompare(b.provider),
     );
-  }, [connections, capabilities]);
+  }, [connections, capabilities, workspace?.id]);
 
   const agentOptions = useMemo(() => {
     const active = agents.filter((a) => !a.archived);
@@ -142,8 +192,12 @@ export default function TaskLauncher({
             }
           : undefined,
       executionPolicy:
-        form.preset || form.isolation
-          ? { autonomy: form.preset || undefined, isolation: form.isolation }
+        form.preset || form.isolation || form.sensitivity
+          ? {
+              autonomy: form.preset || undefined,
+              isolation: form.isolation,
+              sensitivity: form.sensitivity || undefined,
+            }
           : undefined,
       dependsOn: form.dependsOn.length ? form.dependsOn : undefined,
       model: form.model.trim() || undefined,
@@ -440,20 +494,19 @@ export default function TaskLauncher({
               onChange={(e) => set("provider", e.target.value)}
             >
               <option value="">Board only (no provider)</option>
-              {providerOptions.map((option) => (
-                <option
-                  key={option.provider}
-                  value={option.provider}
-                  disabled={Boolean(option.reason)}
-                >
-                  {providerLabel(option.provider)}
-                  {option.reason
-                    ? ` — ${option.reason}`
-                    : connectionHint(option.connection)
-                      ? ` — ${connectionHint(option.connection)}`
-                      : ""}
-                </option>
-              ))}
+              {providerOptions.map((option) => {
+                const routed = routingReason(routing, option.provider);
+                return (
+                  <option
+                    key={option.provider}
+                    value={option.provider}
+                    disabled={Boolean(option.reason || routed)}
+                  >
+                    {providerLabel(option.provider)}
+                    {providerNote(option, routed, routing)}
+                  </option>
+                );
+              })}
             </select>
           </label>
           <label>
@@ -511,6 +564,27 @@ export default function TaskLauncher({
             {selectedPreset.description}
           </p>
         ) : null}
+        <div className="form-columns">
+          <label>
+            Data label{" "}
+            <span className="optional">(where this task's work may go)</span>
+            <select
+              value={form.sensitivity}
+              onChange={(e) => set("sensitivity", e.target.value)}
+            >
+              <option value="">Workspace default</option>
+              {DATA_LABELS.map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="form-note routing-note" role="status">
+            <Info size={14} aria-hidden="true" />
+            {routingSummary(routing, form.provider)}
+          </p>
+        </div>
         <div className="form-columns">
           <label>
             Depends on
@@ -572,4 +646,25 @@ export default function TaskLauncher({
       </form>
     </Dialog>
   );
+}
+
+/** The note after an assistant's name in the picker. */
+function providerNote(option, routed, routing) {
+  if (option.reason) return ` — ${option.reason}`;
+  if (routed) return ` — ${routed}`;
+  if (routing?.recommended === option.provider) return " — recommended";
+  const hint = connectionHint(option.connection);
+  return hint ? ` — ${hint}` : "";
+}
+
+/** What routing says for this task, in one line. */
+function routingSummary(routing, provider) {
+  if (!routing) return "Routing advice is not available from this server.";
+  const chosen = routing.candidates?.find((c) => c.provider === provider);
+  if (chosen && !chosen.eligible) {
+    const failing = chosen.checks.find((check) => !check.ok);
+    return `${chosen.name} would be refused: ${failing?.text ?? "it fails a check"}`;
+  }
+  if (routing.recommended) return `Recommended: ${routing.why}`;
+  return "No assistant passes every routing check for this task.";
 }

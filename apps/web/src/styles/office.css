@@ -10,13 +10,151 @@
   border-radius: 999px;
   background: #e8f0f9;
   color: #4d6a8c;
-  font-size: 9px;
+  font-size: var(--text-xs);
   letter-spacing: 0.3px;
 }
+.office-quality {
+  font-style: normal;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  letter-spacing: 0.25px;
+  text-transform: capitalize;
+}
+.office-floor-empty {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  z-index: 4;
+  display: grid;
+  gap: 4px;
+  width: min(280px, calc(100% - 32px));
+  padding: 13px 16px;
+  transform: translate(-50%, -50%);
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  box-shadow: 0 12px 34px #21364e1c;
+  backdrop-filter: blur(12px);
+  color: var(--text);
+  text-align: center;
+  pointer-events: none;
+}
+.office-floor-empty strong {
+  font-size: var(--text-xs);
+}
+.office-floor-empty span {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.office-live-links {
+  position: absolute;
+  top: 44px;
+  right: 14px;
+  z-index: 5;
+  display: grid;
+  width: min(260px, calc(100% - 28px));
+  gap: 5px;
+  pointer-events: none;
+}
+.office-control-disclosure {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.office-control-disclosure summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+.office-control-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+.office-control-disclosure summary small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.office-control-drawer {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0 10px;
+}
+.office-live-links button {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  box-shadow: 0 6px 20px #20324a16;
+  backdrop-filter: blur(12px);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.office-live-links button:disabled {
+  cursor: default;
+}
+.office-live-links button:hover:not(:disabled),
+.office-live-links button:focus-visible {
+  border-color: #4d9dc7;
+  transform: translateX(-2px);
+}
+.office-live-links button:focus-visible {
+  outline: 2px solid var(--as-focus);
+  outline-offset: 1px;
+}
+.office-live-links i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4d9dc7;
+  box-shadow: 0 0 0 3px #4d9dc724;
+}
+.office-live-links .link-handoff i {
+  background: #8868d8;
+  box-shadow: 0 0 0 3px #8868d824;
+}
+.office-live-links .link-provider i {
+  background: var(--as-good);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--as-good) 20%, transparent);
+}
+.office-live-links span,
+.office-live-links strong,
+.office-live-links small {
+  display: block;
+  min-width: 0;
+}
+.office-live-links strong {
+  overflow: hidden;
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.office-live-links small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .scene-label > .scene-provider {
   display: inline;
-  color: #6f8196;
-  font-size: 8px;
+  color: #5a6b7f;
+  font-size: var(--text-xs);
   border-left: 1px solid #e3e8ef;
   padding-left: 6px;
   text-transform: none;
@@ -31,25 +169,7 @@
 .dot.red {
   background: #c8524a;
 }
-.scene-cluster {
-  position: absolute;
-  z-index: 3;
-  transform: translate(-50%, -100%);
-  background: #ffffffed;
-  border: 1px dashed #b7c4d1;
-  border-radius: 6px;
-  padding: 5px 9px;
-  font-size: 10px;
-  color: #405367;
-  white-space: nowrap;
-  box-shadow: 0 2px 5px #28405a14;
-}
-.scene-cluster-collapse {
-  transform: none;
-  left: auto;
-  right: 16px;
-  top: 16px;
-}
+
 .office-minimap {
   position: absolute;
   left: 16px;
@@ -64,10 +184,7 @@
 }
 .office-theme-operations.office-wrap {
   background: radial-gradient(ellipse at 50% 38%, #3a4658 0, #1e2530 100%);
-}
-.office-theme-operations .office-meta span,
-.office-theme-operations .office-bottom > span {
-  color: #c9d6e2;
+  --office-ink: #c9d6e2;
 }
 .office-theme-operations .office-minimap {
   background: #1e2530e6;
@@ -116,7 +233,7 @@
   border: 1px solid #dde5ec;
   border-radius: 999px;
   padding: 3px 9px;
-  font-size: 9px;
+  font-size: var(--text-xs);
   color: #55697d;
   white-space: nowrap;
 }
@@ -132,8 +249,9 @@
 .scene-label > .scene-host,
 .scene-label > .scene-pronouns,
 .scene-label > .scene-message {
+  display: none !important;
   color: #6f8196;
-  font-size: 8px;
+  font-size: var(--text-xs);
   border-left: 1px solid #e3e8ef;
   padding-left: 6px;
   text-transform: none;
@@ -156,15 +274,50 @@
 .scene-label.scene-label-dim {
   opacity: 0.45;
 }
-.office-labels-none .scene-label.scene-label-dim {
-  visibility: hidden !important;
+/*
+ * Labels the scene does not draw: every unselected agent under label density
+ * "none", and a quiet agent round a busy conference table (its room's chip
+ * names the team; hovering the figure shows the label). They are clipped,
+ * never `visibility: hidden` or `display: none`, because both of those take
+ * the "Inspect <name>" button out of the tab order and out of the
+ * accessibility tree — the agent would stop being reachable without a mouse.
+ */
+.office-labels-none .scene-label.scene-label-dim,
+.scene-label.scene-label-seated {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  box-shadow: none;
+  pointer-events: none;
+}
+/* Focus un-clips the button where it stands, so a keyboard user can see it. */
+.office-labels-none .scene-label.scene-label-dim:focus,
+.office-labels-none .scene-label.scene-label-dim:focus-visible,
+.scene-label.scene-label-seated:focus,
+.scene-label.scene-label-seated:focus-visible {
+  width: auto;
+  height: auto;
+  padding: 5px 8px;
+  overflow: visible;
+  clip-path: none;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  border: 1px solid var(--agent-color, #dde5ec);
+  box-shadow:
+    0 0 0 2px #84a0d0,
+    0 3px 10px #426ba522;
+  z-index: 6;
 }
 .office-large-labels .scene-label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   padding: 7px 11px;
 }
 .office-large-labels .scene-label > span {
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .scene-team {
   position: absolute;
@@ -175,7 +328,7 @@
   background: #eef3f9d9;
   border: 1px dashed #b7c4d1;
   color: #4a6079;
-  font-size: 9px;
+  font-size: var(--text-xs);
   letter-spacing: 0.4px;
   white-space: nowrap;
   pointer-events: none;
@@ -193,18 +346,18 @@
   background: #ffffffef;
   border: 1px solid #d8e1ea;
   box-shadow: 0 4px 14px #28405a1f;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: #4a5c6e;
   pointer-events: none;
 }
 .scene-preview strong {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: #24374b;
 }
 .scene-preview em {
   font-style: normal;
-  color: #6d829a;
-  font-size: 9px;
+  color: #5a6b7f;
+  font-size: var(--text-xs);
   letter-spacing: 0.3px;
 }
 .scene-preview span {
@@ -231,7 +384,7 @@
   border: 1px solid #dde5ec;
   border-radius: 6px;
   padding: 4px 8px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: #3f5468;
   max-width: 100%;
   overflow: hidden;
@@ -239,10 +392,8 @@
   white-space: nowrap;
 }
 .scene-artifact-chip span {
-  color: #8a9bab;
-  font-size: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  color: #5a6b7f;
+  font-size: var(--text-xs);
 }
 .scene-artifact-chip:hover,
 .scene-artifact-chip:focus-visible {
@@ -259,20 +410,18 @@
   border-radius: 7px;
   background: #fdf6e6f2;
   border: 1px solid #e4d4ac;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: #6c5a33;
   max-width: 220px;
 }
 .scene-handoff strong {
-  font-size: 9px;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
+  font-size: var(--text-xs);
 }
 .scene-handoff button {
   pointer-events: auto;
   margin-top: 3px;
   justify-self: start;
-  font-size: 9px;
+  font-size: var(--text-xs);
   color: #7a5a12;
   text-decoration: underline;
 }
@@ -295,15 +444,13 @@
   border: 1px solid #dde5ec;
   border-radius: 6px;
   padding: 4px 8px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: #3f5468;
   white-space: nowrap;
 }
 .scene-build span {
-  font-size: 8px;
-  color: #8a9bab;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: var(--text-xs);
+  color: #5a6b7f;
 }
 .office-presentation-bar {
   position: absolute;
@@ -318,7 +465,7 @@
   border-radius: 999px;
   background: #ffffffee;
   border: 1px solid #dde5ec;
-  font-size: 9px;
+  font-size: var(--text-xs);
   color: #5b6f83;
   box-shadow: 0 2px 6px #28405a14;
 }
@@ -358,7 +505,8 @@
 @media (max-width: 700px) {
   .office-rooms,
   .scene-builds,
-  .scene-handoff {
+  .scene-handoff,
+  .office-live-links {
     display: none;
   }
   .scene-preview {
@@ -366,5 +514,513 @@
   }
   .scene-artifacts {
     max-width: 60%;
+  }
+}
+
+/* The minimap canvas stays mounted while the scene runs; the toggle only
+   shows it. */
+.office-minimap[hidden] {
+  display: none;
+}
+
+/* Recoverable 3D failure: the dead renderer canvas and the camera tools step
+   aside so the accessible fallback and its Retry action are in view. */
+.office-canvas.is-failed {
+  height: auto;
+  min-height: 320px;
+  max-height: none;
+  overflow: visible;
+}
+.office-canvas.is-failed > canvas {
+  display: none;
+}
+.office-failed .office-bottom {
+  display: none;
+}
+.scene-fallback {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 40px 20px;
+  text-align: center;
+}
+.scene-fallback h3 {
+  font-size: var(--text-lg);
+  color: var(--text-strong);
+}
+.scene-fallback p {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--muted);
+}
+.scene-fallback button:not(.button) {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* Inferred activity reads as inferred at rest, not only on hover: the label
+   uses the same dashed outline as the inferred provenance chip. */
+.scene-label.is-inferred {
+  border-style: dashed;
+}
+.office-meta .office-floor {
+  margin-left: 6px;
+  padding-left: 8px;
+  border-left: 1px solid currentColor;
+  opacity: 0.8;
+}
+.office-meta .office-quality {
+  pointer-events: auto;
+}
+
+/* Label for a provider beacon (the glowing marker on the floor). */
+.beacon-label {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, -100%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--text-strong);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+.beacon-label small {
+  color: var(--muted);
+  font-weight: 500;
+}
+.beacon-label i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  background: var(--as-ok);
+}
+.beacon-label i[data-provider="claude-code"] {
+  background: #d97745;
+}
+.beacon-label i[data-provider="codex"] {
+  background: #16a085;
+}
+.beacon-label i[data-provider="copilot"] {
+  background: #6487e8;
+}
+.beacon-label i[data-provider="cursor"] {
+  background: #8a78e6;
+}
+.beacon-label i[data-provider="gemini"] {
+  background: #4285f4;
+}
+.beacon-label:hover,
+.beacon-label:focus-visible {
+  border-color: var(--accent);
+}
+
+/* --- Moments, subagent helpers and the team relay (office/episodes.js,
+   office/relay.js). Captions and chips sit over the scene like the agent
+   labels and stay light chips in every theme. --- */
+.scene-moment {
+  position: absolute;
+  z-index: 5;
+  /* Hangs just below the agents' feet (placed at floor level). */
+  transform: translate(-50%, 18px);
+  display: grid;
+  justify-items: start;
+  gap: 1px;
+  max-width: min(260px, 70vw);
+  padding: 6px 10px 6px 12px;
+  border: 1px solid #c9bdf0;
+  border-left: 4px solid #7a5cd0;
+  border-radius: 8px;
+  background: #fbf9ffef;
+  box-shadow: 0 6px 18px #2a1f5a26;
+  color: #2f2748;
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+  animation: moment-in 0.25s ease-out;
+}
+.scene-moment strong {
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.scene-moment span,
+.scene-moment small {
+  max-width: 100%;
+  overflow: hidden;
+  color: #4a4266;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scene-moment em {
+  margin-top: 1px;
+  color: #5d4f8c;
+  font-style: normal;
+  font-size: var(--text-xs);
+  letter-spacing: 0.2px;
+}
+.scene-moment.moment-message {
+  border-color: #b7d3e6;
+  border-left-color: #2f7fae;
+  background: #f6fbffef;
+}
+.scene-moment.moment-message em {
+  color: #2c5f80;
+}
+.scene-moment.moment-kickoff {
+  border-color: #d6c98f;
+  border-left-color: #a07d1c;
+  background: #fffcf1ef;
+}
+.scene-moment.moment-kickoff em {
+  color: #6f5714;
+}
+.scene-moment:hover,
+.scene-moment:focus-visible {
+  box-shadow: 0 8px 22px #2a1f5a3a;
+}
+.scene-moment:focus-visible,
+.scene-helper:focus-visible,
+.scene-relay button:focus-visible {
+  outline: 2px solid var(--as-focus);
+  outline-offset: 2px;
+}
+@keyframes moment-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+
+.scene-helper {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, -100%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 190px;
+  padding: 2px 7px;
+  border: 1px dashed #aebbd0;
+  border-radius: 999px;
+  background: #ffffffe6;
+  color: #3e5064;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.scene-helper i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 2px solid #6a7f99;
+}
+.scene-helper:hover,
+.scene-helper:focus-visible {
+  border-style: solid;
+  border-color: #6a7f99;
+}
+.office-labels-none .scene-helper {
+  display: none;
+}
+
+.scene-relay {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 4;
+  display: grid;
+  gap: 5px;
+  max-width: min(760px, calc(100% - 24px));
+  padding: 7px 10px;
+  transform: translateX(-50%);
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: 0 6px 20px #20324a16;
+  backdrop-filter: blur(12px);
+  color: var(--text);
+}
+.scene-relay > strong {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--text-xs);
+}
+.scene-relay > strong span {
+  color: var(--muted);
+  font-weight: 500;
+}
+.scene-relay ol {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: thin;
+}
+.scene-relay li {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+.scene-relay li + li::before {
+  content: "→";
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.scene-relay button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 5px;
+  align-items: center;
+  max-width: 180px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.scene-relay button:disabled {
+  cursor: default;
+}
+.scene-relay button i {
+  grid-row: span 2;
+  font-style: normal;
+  font-weight: 700;
+}
+.scene-relay button > span,
+.scene-relay button > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scene-relay button > small {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.relay-step.is-done button {
+  opacity: 0.72;
+}
+.relay-step.is-done i {
+  color: var(--as-good);
+}
+.relay-step.is-active button {
+  border-color: #7a5cd0;
+  box-shadow: 0 0 0 2px #7a5cd026;
+}
+.relay-step.is-active i {
+  color: #6a4fc0;
+}
+.relay-step.is-blocked button {
+  border-color: #c6a064;
+}
+.relay-step.is-blocked i {
+  color: #9a6a1c;
+}
+.relay-step.is-waiting button {
+  border-style: dashed;
+}
+.scene-relay > em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: var(--text-xs);
+}
+[data-theme="dark"] .scene-moment {
+  background: #fbf9fff5;
+}
+@media (max-width: 700px) {
+  .scene-relay {
+    top: 8px;
+    padding: 5px 8px;
+  }
+  /* Only the step in hand and its neighbours on a phone. */
+  .relay-step.is-done,
+  .relay-step.is-waiting {
+    display: none;
+  }
+  .scene-moment {
+    max-width: 62vw;
+  }
+  .scene-helper {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scene-moment {
+    animation: none;
+  }
+}
+/* The part an agent plays in a moment, always shown while it lasts. */
+.scene-label > .scene-moment-role {
+  display: inline;
+  color: #5d4f8c;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.1px;
+}
+/* Several teams at work: step between their relays. */
+.scene-relay > strong {
+  flex-wrap: wrap;
+}
+.relay-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--muted);
+  font-weight: 500;
+}
+.relay-switch button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.9375rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.relay-switch button:hover {
+  border-color: var(--accent);
+}
+
+/* Conference rooms (office/conference.js): a sign over each room's door
+   names the team and how many sit at the table. Hover or keyboard focus
+   opens what they are doing and the way back to their desks. */
+.scene-room {
+  position: absolute;
+  z-index: 4;
+  transform: translate(-50%, -100%);
+  display: grid;
+  justify-items: stretch;
+  max-width: 260px;
+  border: 1px solid #b9c6d6;
+  border-top: 3px solid var(--room-color, #8868d8);
+  border-radius: 8px;
+  background: #ffffffef;
+  box-shadow: 0 4px 12px #20324a22;
+  color: #26384b;
+  font-size: var(--text-xs);
+  overflow: hidden;
+}
+.scene-room button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.scene-room-look {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 8px;
+  text-align: left;
+}
+.scene-room-look strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #1f3043;
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scene-room-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--room-color, #8868d8) 16%, #ffffff);
+  color: #26384b;
+  font-weight: 600;
+  text-align: center;
+}
+.scene-room-more {
+  display: none;
+  gap: 4px;
+  padding: 0 8px 6px;
+}
+.scene-room:hover .scene-room-more,
+.scene-room:focus-within .scene-room-more {
+  display: grid;
+}
+.scene-room:hover,
+.scene-room:focus-within {
+  z-index: 7;
+}
+.scene-room-more small {
+  color: #4a5c6e;
+  line-height: 1.35;
+}
+.scene-room-leave {
+  justify-self: start;
+  padding: 2px 8px !important;
+  border: 1px solid #c9d5e2 !important;
+  border-radius: 999px;
+  color: #3f6592 !important;
+  font-weight: 600 !important;
+  white-space: nowrap;
+}
+.scene-room-look:hover,
+.scene-room-leave:hover {
+  background: #eef3f9 !important;
+}
+.scene-room button:focus-visible,
+.scene-team.is-control:focus-visible,
+.office-rooms-toggle:focus-visible {
+  outline: 2px solid var(--as-focus);
+  outline-offset: -2px;
+}
+.scene-team.is-control {
+  pointer-events: auto;
+  cursor: pointer;
+  border-style: solid;
+  font-family: inherit;
+}
+.scene-team.is-control:hover:not(:disabled) {
+  border-color: #3f6592;
+  color: #26384b;
+}
+.scene-team.is-control:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+.office-meta .office-rooms-toggle {
+  pointer-events: auto;
+  margin-right: 8px;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+@media (max-width: 700px) {
+  .scene-room {
+    max-width: 46vw;
   }
 }

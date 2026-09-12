@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Shield, Search } from "lucide-react";
 import EmptyState from "./EmptyState.jsx";
 import { apiFetch, useApi } from "../hooks/useApi.js";
+import RoutingRules from "./RoutingRules.jsx";
 
 const FALLBACK_PRESETS = [
   {
@@ -285,6 +286,15 @@ export default function PolicyEditor({ workspaceId, onSaved }) {
           </label>
         </div>
       </section>
+
+      <RoutingRules
+        workspaceId={workspaceId}
+        policy={policy.data?.policy ?? policy.data}
+        onSaved={(result) => {
+          onSaved?.(result);
+          policy.reload();
+        }}
+      />
 
       <section className="as-card as-policy-ops" aria-label="Operations">
         <h4>Retention and the incident stop switch</h4>

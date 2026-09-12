@@ -450,6 +450,100 @@ test("observer errors are caught per observer and reported in status", async (t)
   assert.ok(status.lastPollAt);
 });
 
+test("status exposes detected assistant surfaces without inventing live sessions", (t) => {
+  const antigravityHost = {
+    provider: "gemini",
+    status() {
+      return {
+        installed: false,
+        antigravity: {
+          detected: true,
+          supported: false,
+          note: "Antigravity IDE data detected.",
+        },
+      };
+    },
+    scanSessions() {
+      return [];
+    },
+    readEvents() {
+      return { events: [], offset: 0, ended: false };
+    },
+    isLive() {
+      return false;
+    },
+  };
+  const { service } = setup(t, { observers: [antigravityHost] });
+  const status = service.status();
+  const surface = status.surfaces.find((item) => item.id === "antigravity-ide");
+  assert.ok(surface);
+  assert.equal(surface.provider, "antigravity");
+  assert.equal(surface.detected, true);
+  assert.equal(surface.observable, false);
+  assert.equal(surface.liveSessions, 0);
+  assert.equal(surface.fidelity, "installation-detection");
+});
+
+test("an idle provider with an existing home is detected, not reported missing", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "agent-space-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  // Claude Code, Codex and Copilot observers expose `home` but no status().
+  // Detection must not depend on a session being live at this moment.
+  const idle = (provider, dir) => ({
+    provider,
+    home: dir,
+    scanSessions: () => [],
+    readEvents: () => ({ events: [], offset: 0, ended: false }),
+    isLive: () => false,
+  });
+  const { service } = setup(t, {
+    observers: [
+      idle("codex", home),
+      idle("copilot", join(home, "does-not-exist")),
+    ],
+  });
+  const surfaces = service.status().surfaces;
+  const codex = surfaces.find((item) => item.id === "codex");
+  const copilot = surfaces.find((item) => item.id === "copilot");
+  assert.equal(codex.detected, true);
+  assert.equal(codex.liveSessions, 0);
+  assert.equal(copilot.detected, false);
+  assert.equal(copilot.liveSessions, 0);
+});
+
+test("an observer's own installed verdict wins over a shared home folder", (t) => {
+  // ~/.gemini also exists when only Antigravity is installed. The Gemini
+  // observer says installed:false in that case; the home must not overrule it.
+  const withStatus = (provider, detail) => ({
+    provider,
+    status: () => detail,
+    scanSessions: () => [],
+    readEvents: () => ({ events: [], offset: 0, ended: false }),
+    isLive: () => false,
+  });
+  const { service } = setup(t, {
+    observers: [
+      withStatus("gemini", {
+        homeExists: true,
+        installed: false,
+        unverified: true,
+      }),
+      withStatus("cursor", {
+        homeExists: true,
+        installed: true,
+        experimental: true,
+      }),
+    ],
+  });
+  const surfaces = service.status().surfaces;
+  const gemini = surfaces.find((item) => item.id === "gemini");
+  const cursor = surfaces.find((item) => item.id === "cursor");
+  assert.equal(gemini.detected, false);
+  assert.equal(gemini.fidelity, "unverified-session-files");
+  assert.equal(cursor.detected, true);
+  assert.equal(cursor.fidelity, "conversation-summaries");
+});
+
 test("large backlogs start near the end and record a system notice", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agent-space-observe-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

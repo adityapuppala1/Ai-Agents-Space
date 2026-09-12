@@ -1,6 +1,11 @@
 import React, { useMemo, useState } from "react";
 import { Brain, Trash2, Plus } from "lucide-react";
-import { apiFetch, useApi, formatTime } from "../hooks/useApi.js";
+import {
+  apiFetch,
+  useApi,
+  formatTime,
+  RUN_STATUS_LABELS,
+} from "../hooks/useApi.js";
 import EmptyState from "./EmptyState.jsx";
 
 /** The three scopes and what each one is allowed to hold. */
@@ -39,22 +44,38 @@ function pathFor(scope, { workspaceId, runId }) {
  * Isolation is the point — nothing here is copied between scopes, and the
  * panel says so where a reader might assume otherwise.
  *
+ * The run whose notes are shown is chosen here, from this workspace's runs,
+ * never taken silently from a selection made on another page. Forgetting an
+ * entry takes a second, explicit step.
+ *
  * Routes: GET|POST|DELETE /api/workspaces/:id/memory, /api/memory/user,
  * /api/runs/:id/memory.
  *
- * @param {{ workspaceId?: string|null, runId?: string|null, defaultScope?: 'workspace'|'user'|'run' }} props
+ * @param {{ workspaceId?: string|null, runId?: string|null, runs?: any[], defaultScope?: 'workspace'|'user'|'run' }} props
  */
 export default function MemoryPanel({
   workspaceId = null,
   runId = null,
+  runs = [],
   defaultScope = "workspace",
 }) {
   const [scope, setScope] = useState(defaultScope);
+  const [pickedRun, setPickedRun] = useState(runId ?? "");
+  const [confirmKey, setConfirmKey] = useState(null);
+  const runOptions = useMemo(
+    () =>
+      [...runs]
+        .filter((run) => run?.id)
+        .sort(
+          (a, b) => new Date(b.startedAt ?? 0) - new Date(a.startedAt ?? 0),
+        ),
+    [runs],
+  );
   const [draft, setDraft] = useState({ key: "", value: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const path = pathFor(scope, { workspaceId, runId });
+  const path = pathFor(scope, { workspaceId, runId: pickedRun || null });
   const memory = useApi(path);
 
   const entries = useMemo(() => {
@@ -95,6 +116,7 @@ export default function MemoryPanel({
 
   const forget = async (key) => {
     if (!path) return;
+    setConfirmKey(null);
     setBusy(true);
     setError("");
     try {
@@ -113,9 +135,9 @@ export default function MemoryPanel({
   return (
     <section className="as-memory" aria-label="Scoped memory">
       <header className="as-section-head">
-        <h3>
+        <h2>
           <Brain size={14} aria-hidden="true" /> Memory
-        </h3>
+        </h2>
         <div
           className="as-row as-filters"
           role="group"
@@ -127,12 +149,7 @@ export default function MemoryPanel({
               type="button"
               className={`as-chip ${scope === entry.id ? "active" : ""}`}
               aria-pressed={scope === entry.id}
-              disabled={entry.id === "run" && !runId}
-              title={
-                entry.id === "run" && !runId
-                  ? "Open a run to see its notes"
-                  : entry.detail
-              }
+              title={entry.detail}
               onClick={() => setScope(entry.id)}
             >
               {entry.label}
@@ -141,6 +158,25 @@ export default function MemoryPanel({
         </div>
       </header>
       <p className="as-muted as-small">{scopeMeta?.detail}</p>
+      {scope === "run" ? (
+        <label className="as-inline-label memory-run">
+          <span>Run</span>
+          <select
+            aria-label="Run whose notes to show"
+            value={pickedRun}
+            onChange={(event) => setPickedRun(event.target.value)}
+          >
+            <option value="">Choose a run…</option>
+            {runOptions.map((run) => (
+              <option key={run.id} value={run.id}>
+                {(run.title ?? `Run ${run.id.slice(0, 8)}`).slice(0, 70)} ·{" "}
+                {RUN_STATUS_LABELS[run.status] ?? run.status}
+                {run.startedAt ? ` · ${formatTime(run.startedAt)}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
 
       {message ? (
         <p className="as-feedback" role="status">
@@ -156,10 +192,12 @@ export default function MemoryPanel({
       {!path ? (
         <EmptyState
           compact
-          title="Nothing selected"
+          title={scope === "run" ? "Choose a run" : "Nothing selected"}
           description={
             scope === "run"
-              ? "Open a run to read or write its notes."
+              ? runOptions.length
+                ? "Pick a run above to read or write its notes."
+                : "This workspace has no runs yet, so there are no run notes."
               : "Choose a workspace first."
           }
         />
@@ -195,15 +233,36 @@ export default function MemoryPanel({
                     : ""}
                 </span>
               </div>
-              <button
-                type="button"
-                className="icon-button"
-                disabled={busy}
-                onClick={() => forget(entry.key)}
-                aria-label={`Forget ${entry.key}`}
-              >
-                <Trash2 size={13} />
-              </button>
+              {confirmKey === entry.key ? (
+                <span className="as-row memory-confirm" role="group">
+                  <span className="as-small">Forget this?</span>
+                  <button
+                    type="button"
+                    className="button danger"
+                    disabled={busy}
+                    onClick={() => forget(entry.key)}
+                  >
+                    Forget
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => setConfirmKey(null)}
+                  >
+                    Keep
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="icon-button"
+                  disabled={busy}
+                  onClick={() => setConfirmKey(entry.key)}
+                  aria-label={`Forget ${entry.key}`}
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
             </li>
           ))}
         </ul>

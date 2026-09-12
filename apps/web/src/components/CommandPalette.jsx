@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, CornerDownLeft } from "lucide-react";
 import { fuzzyFilter } from "../hooks/useApi.js";
+import { useDialogFocus } from "../hooks/useDialogFocus.js";
 import { readLocal } from "../hooks/useLocalStorage.js";
 import { RECENT_WORKSPACES_KEY } from "./WorkspaceSwitcher.jsx";
 
@@ -75,6 +76,9 @@ export default function CommandPalette({
   const [index, setIndex] = useState(0);
   const inputRef = useRef(null);
   const listRef = useRef(null);
+  const dialogRef = useRef(null);
+  // Tab stays inside while open; focus goes back to the invoker on close.
+  useDialogFocus(dialogRef, open);
   const id = useId();
 
   useEffect(() => {
@@ -149,9 +153,17 @@ export default function CommandPalette({
     >
       <div
         className="as-palette panel"
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
+        onKeyDown={(event) => {
+          // Escape closes from any control inside, not only the text box.
+          if (event.key === "Escape" && !event.defaultPrevented) {
+            event.preventDefault();
+            onClose();
+          }
+        }}
       >
         <div className="as-palette-input">
           <Search size={15} aria-hidden="true" />

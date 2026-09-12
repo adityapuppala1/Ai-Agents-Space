@@ -20,6 +20,8 @@ import { formatTime } from "../hooks/useApi.js";
  *   label?: React.ReactNode,          // defaults to the event summary
  *   onOpenEvent?: (ref: { runId: string|null, eventId: string|null, event: any }) => void,
  *   showProvenance?: boolean,
+ *   showTime?: boolean,               // false when the label already is the time
+ *   describe?: string,                // what the event is, for the spoken name
  *   size?: 'small'|'normal',
  *   missingText?: string
  * }} props
@@ -31,6 +33,8 @@ export default function EventLink({
   label,
   onOpenEvent,
   showProvenance = true,
+  showTime = true,
+  describe,
   size = "normal",
   missingText = "no recorded event",
 }) {
@@ -61,13 +65,15 @@ export default function EventLink({
       className={`as-eventlink ${size === "small" ? "as-eventlink-small" : ""}`}
       onClick={() => onOpenEvent({ runId: run, eventId: id, event })}
       aria-label={`Open the event behind: ${
-        typeof text === "string" ? text : "this action"
+        describe ?? (typeof text === "string" ? text : "this action")
       }${when ? ` at ${when}` : ""}`}
       title="Open the recorded event behind this"
     >
       <Link2 size={11} aria-hidden="true" />
       <span className="as-eventlink-text">{text}</span>
-      {when ? <span className="as-muted as-small">{when}</span> : null}
+      {when && showTime ? (
+        <span className="as-muted as-small">{when}</span>
+      ) : null}
       {showProvenance && event?.provenance ? (
         <Provenance value={event.provenance} />
       ) : null}

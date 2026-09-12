@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, FileText, Play, Activity, Package, Radio } from "lucide-react";
 import { apiFetch, ApiError, formatTime, maskPath } from "../hooks/useApi.js";
+import { useDialogFocus } from "../hooks/useDialogFocus.js";
 import EmptyState from "./EmptyState.jsx";
 import ProviderBadge from "./ProviderBadge.jsx";
 
@@ -58,6 +59,9 @@ export default function GlobalSearch({
   const [index, setIndex] = useState(0);
   const inputRef = useRef(null);
   const listRef = useRef(null);
+  const dialogRef = useRef(null);
+  // Tab stays inside while open; focus goes back to the invoker on close.
+  useDialogFocus(dialogRef, open);
   const id = useId();
 
   useEffect(() => {
@@ -174,9 +178,17 @@ export default function GlobalSearch({
     >
       <div
         className="as-palette as-search panel"
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Global search"
+        onKeyDown={(event) => {
+          // Escape closes from any control inside, not only the text box.
+          if (event.key === "Escape" && !event.defaultPrevented) {
+            event.preventDefault();
+            onClose();
+          }
+        }}
       >
         <div className="as-palette-input">
           <Search size={15} aria-hidden="true" />

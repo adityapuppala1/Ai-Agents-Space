@@ -16,6 +16,21 @@ import {
 } from "../apps/web/src/hooks/useApi.js";
 import { pushRecent, toggleIn } from "../apps/web/src/hooks/useLocalStorage.js";
 import {
+  ROADMAP_BOARD,
+  roadmapBoardTotals,
+} from "../apps/web/src/components/roadmapBoard.js";
+import {
+  addStepDraft,
+  removeStepDraft,
+  updateStepDraft,
+  addEdgeDraft,
+  removeEdgeDraft,
+  draftEdges,
+  hasEdge,
+  summarizeDraft,
+  blankStep,
+} from "../apps/web/src/hooks/workflowEdit.js";
+import {
   DEFAULT_FILTERS,
   describeFilters,
   filtersAreEmpty,
@@ -56,6 +71,29 @@ test("shared filters narrow tasks, runs and agents by the same criteria", () => 
   assert.deepEqual(
     chips.map((chip) => chip.key),
     ["provider", "query"],
+  );
+  // Chips speak in names, never raw ids.
+  const worded = describeFilters(
+    {
+      provider: "simulated",
+      status: "IN_PROGRESS",
+      runStatus: "waiting_approval",
+      agentId: "3f2a-uuid",
+    },
+    { agentName: (id) => (id === "3f2a-uuid" ? "Nova" : null) },
+  );
+  assert.deepEqual(
+    worded.map((chip) => chip.label),
+    [
+      "Provider: Demo",
+      "Task: In progress",
+      "Run: Needs approval",
+      "Agent: Nova",
+    ],
+  );
+  assert.equal(
+    describeFilters({ agentId: "x" })[0].label,
+    "Agent: selected agent",
   );
 });
 
@@ -382,4 +420,203 @@ test("onboarding starts with the credential-free demo and states the resource as
     SAMPLE_SCOPE.some((line) => /No files are written/i.test(line)),
     "the sample scope states that no repository files are created",
   );
+});
+
+test("roadmap board keeps completed, working and not-started lanes visible", () => {
+  const statuses = new Set(ROADMAP_BOARD.map((row) => row.status));
+  assert.deepEqual([...statuses].sort(), [
+    "completed",
+    "not-started",
+    "working",
+  ]);
+  const totals = roadmapBoardTotals();
+  assert.equal(totals.completed >= 1, true);
+  assert.equal(totals.working >= 1, true);
+  assert.equal(totals["not-started"] >= 1, true);
+  assert.ok(
+    ROADMAP_BOARD.some((row) => /provider/i.test(row.slice)),
+    "provider integration progress stays visible",
+  );
+});
+
+/* ------------------------------------------------------------------ */
+/* Workflow graph editor drafts                                        */
+/* ------------------------------------------------------------------ */
+
+const GRAPH = Object.freeze({
+  roles: [{ key: "dev", name: "Developer" }],
+  steps: [
+    { key: "a", title: "A", role: "dev", dependsOn: [] },
+    { key: "b", title: "B", role: "dev", dependsOn: ["a"] },
+  ],
+});
+
+test("draft graph edits return new definitions and never mutate the loaded one", () => {
+  const before = structuredClone(GRAPH);
+
+  const added = addStepDraft(GRAPH, { ...blankStep(GRAPH.roles), key: "c" });
+  assert.equal(added.steps.length, 3);
+  assert.notEqual(added, GRAPH);
+
+  const linked = addEdgeDraft(added, "b", "c");
+  assert.deepEqual(linked.steps.find((step) => step.key === "c").dependsOn, [
+    "b",
+  ]);
+  assert.equal(hasEdge(linked, "b", "c"), true);
+  assert.equal(hasEdge(added, "b", "c"), false, "the earlier draft is intact");
+
+  // A self link and a duplicate link change nothing.
+  assert.deepEqual(addEdgeDraft(linked, "c", "c"), linked);
+  assert.deepEqual(addEdgeDraft(linked, "b", "c"), linked);
+
+  const unlinked = removeEdgeDraft(linked, "b", "c");
+  assert.deepEqual(
+    unlinked.steps.find((step) => step.key === "c").dependsOn,
+    [],
+  );
+  assert.deepEqual(draftEdges(unlinked), [{ from: "a", to: "b" }]);
+
+  const renamed = updateStepDraft(GRAPH, "a", { title: "Anew" });
+  assert.equal(renamed.steps[0].title, "Anew");
+
+  assert.deepEqual(GRAPH, before, "every helper cloned its input");
+});
+
+test("removing a step needs a cascade while another step waits for it", () => {
+  assert.deepEqual(
+    removeStepDraft(GRAPH, "a"),
+    GRAPH,
+    "refused without cascade",
+  );
+  const cascaded = removeStepDraft(GRAPH, "a", { cascade: true });
+  assert.deepEqual(
+    cascaded.steps.map((step) => step.key),
+    ["b"],
+  );
+  assert.deepEqual(
+    cascaded.steps[0].dependsOn,
+    [],
+    "the dangling link is gone",
+  );
+  assert.deepEqual(draftEdges(cascaded), []);
+  // Nothing waits for "b", so it goes without a cascade.
+  assert.deepEqual(
+    removeStepDraft(GRAPH, "b").steps.map((step) => step.key),
+    ["a"],
+  );
+});
+
+test("a draft summary counts exactly the changes a reviewer would see", () => {
+  const edited = removeEdgeDraft(
+    addEdgeDraft(
+      addStepDraft(GRAPH, { ...blankStep(GRAPH.roles), key: "c" }),
+      "a",
+      "c",
+    ),
+    "a",
+    "b",
+  );
+  const summary = summarizeDraft(GRAPH, edited);
+  assert.deepEqual(summary.added, ["c"]);
+  assert.deepEqual(summary.removed, []);
+  assert.deepEqual(
+    summary.changed,
+    [],
+    "a link change is not also a step change",
+  );
+  assert.equal(summary.edgesAdded, 1);
+  assert.equal(summary.edgesRemoved, 1);
+  assert.equal(summary.changes, 3);
+  assert.equal(summarizeDraft(GRAPH, structuredClone(GRAPH)).changes, 0);
+
+  const retitled = updateStepDraft(GRAPH, "a", { title: "Anew" });
+  assert.deepEqual(summarizeDraft(GRAPH, retitled).changed, ["a"]);
+});
+
+test("a blank step carries the objective acceptance the save path demands", () => {
+  const step = blankStep(GRAPH.roles);
+  assert.equal(step.role, "dev");
+  assert.deepEqual(step.acceptance, ["final-message-non-empty"]);
+  assert.deepEqual(step.contract.completionCriteria, [
+    "final-message-non-empty",
+  ]);
+  assert.equal(step.contract.timeoutMs >= 1000, true);
+  assert.deepEqual(step.contract.allowedTools, []);
+  assert.deepEqual(blankStep().role, "");
+});
+
+test("a day-in-review digest counts what a run did and labels tool-added context", async () => {
+  const { chapterDigest, digestLine, isInjectedPrompt } =
+    await import("../apps/web/src/hooks/viewLogic.js");
+  // Observed on this machine: tool-added blocks were listed as prompts.
+  assert.equal(isInjectedPrompt("<recommended_plugins>\n- x"), true);
+  assert.equal(
+    isInjectedPrompt("# Files mentioned by the user:\n\n## a.png"),
+    true,
+  );
+  assert.equal(
+    isInjectedPrompt(
+      "This session is being continued from a previous conversation",
+    ),
+    true,
+  );
+  assert.equal(isInjectedPrompt("Fix the login page"), false);
+  assert.equal(isInjectedPrompt("Use <b> tags in the header"), false);
+
+  let seq = 0;
+  const beat = (kind, text, extra = {}) => ({
+    id: `b${++seq}`,
+    kind,
+    text,
+    timestamp: seq * 1000,
+    provenance: "provider",
+    event: { id: `b${seq}` },
+    ...extra,
+  });
+  const chapter = {
+    beats: [
+      beat("prompt", "<recommended_plugins>"),
+      beat("prompt", "Build the timeline"),
+      beat("file.edit", "Edit a.js", { file: "C:/w/a.js" }),
+      beat("file.edit", "Edit a.js", { file: "C:/w/a.js" }),
+      beat("file.edit", "Edit b.css", { file: "C:/w/b.css" }),
+      beat("command", "npm run build"),
+      beat("test", "npm test"),
+      beat("error", "stream error"),
+      beat("prompt", "# Files mentioned by the user:"),
+      beat("turn.end", "done"),
+    ],
+  };
+  const digest = chapterDigest(chapter);
+  assert.equal(digest.counts.prompts, 1);
+  assert.equal(digest.counts.injected, 2);
+  assert.deepEqual(
+    digest.files.map((file) => [file.path, file.edits]),
+    [
+      ["C:/w/a.js", 2],
+      ["C:/w/b.css", 1],
+    ],
+  );
+  // Key moments: the first real prompt, then the test and the error, in
+  // recorded order; tool-added context never becomes a key moment.
+  assert.deepEqual(
+    digest.keyMoments.map((moment) => moment.text),
+    ["Build the timeline", "npm test", "stream error"],
+  );
+  assert.equal(
+    digestLine(digest.counts, digest.files),
+    "1 prompt · 2 files edited · 1 command · 1 test run · 1 error",
+  );
+  assert.equal(digest.beats.find((b) => b.injected).label, "Prompt");
+
+  // Many errors: the list stays short and keeps the first prompt.
+  const noisy = {
+    beats: [
+      beat("prompt", "Start"),
+      ...Array.from({ length: 20 }, (_, i) => beat("error", `e${i}`)),
+    ],
+  };
+  const short = chapterDigest(noisy, { keyLimit: 5 });
+  assert.equal(short.keyMoments.length, 5);
+  assert.equal(short.keyMoments[0].text, "Start");
 });

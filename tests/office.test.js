@@ -11,6 +11,8 @@ import {
   reviewChips,
   handoffFor,
   handoffCard,
+  HANDOFF_WINDOW_MS,
+  ageLabel,
   messageFor,
   hostChip,
   roleAccessory,
@@ -40,6 +42,7 @@ import {
   activityOf,
   activityLabel,
   providerLabel,
+  providerGlyph,
   statusTone,
 } from "../apps/web/src/office/data.js";
 
@@ -263,11 +266,40 @@ test("handoffs and messages are only ever what was recorded", () => {
   assert.equal(handoffFor(handoffs, "a").role, "from");
   assert.equal(handoffFor(handoffs, "c").role, "to");
   assert.equal(handoffFor(handoffs, "zz"), null);
-  const card = handoffCard(handoffs, [
+  const people = [
     { id: "b", name: "Sage" },
     { id: "c", name: "Orbit" },
+  ];
+  // The card says how long ago the handoff was.
+  const card = handoffCard(handoffs, people, { now: 9 + 4 * 60_000 });
+  assert.deepEqual(card.lines, [
+    "Handoff · 4m ago",
+    "Sage → Orbit",
+    "Review it",
   ]);
-  assert.deepEqual(card.lines, ["Handoff", "Sage → Orbit", "Review it"]);
+  assert.equal(card.age, "4m ago");
+  // Past the window it is history, not news: no card at all.
+  assert.equal(
+    handoffCard(handoffs, people, { now: 9 + HANDOFF_WINDOW_MS + 1 }),
+    null,
+  );
+  // A handoff with no recorded time has no age to state, so it is not shown.
+  assert.equal(
+    handoffCard([{ ...handoffs[1], timestamp: null }], people, { now: 10 }),
+    null,
+  );
+  // A subagent is named as one, not as an "unknown agent".
+  assert.equal(
+    handoffCard(
+      [{ ...handoffs[1], toAgentId: null, toLabel: "a subagent" }],
+      people,
+      { now: 10 },
+    ).to,
+    "a subagent",
+  );
+  assert.equal(ageLabel(null), null);
+  assert.equal(ageLabel(1000, 1000 + 30_000), "just now");
+  assert.equal(ageLabel(0 + 1, 1 + 3 * 3_600_000), "3h ago");
   assert.equal(handoffCard([], []), null);
 
   assert.equal(messageFor(null, "a"), null);
@@ -297,6 +329,15 @@ test("role accessories are geometry hints, overridable per avatar", () => {
   );
   assert.equal(pronouns({ pronouns: "they/them" }), "they/them");
   assert.equal(pronouns(null), null);
+});
+
+test("provider insignia uses a distinct non-colour shape", () => {
+  assert.equal(providerGlyph("claude-code"), "bars");
+  assert.equal(providerGlyph("codex"), "ring");
+  assert.equal(providerGlyph("copilot"), "cube");
+  assert.equal(providerGlyph("cursor"), "pointer");
+  assert.equal(providerGlyph("gemini"), "diamond");
+  assert.equal(providerGlyph({ provider: "unknown" }), null);
 });
 
 test("label density hides only what it should", () => {
@@ -497,4 +538,57 @@ test("scene labels are pushed apart so an isometric cluster stays readable", () 
     "the same frame produces the same layout",
   );
   assert.equal(spreadLabels([]).size, 0);
+});
+
+test("the camera fits the room's outline, between the overlays on a phone", async () => {
+  const { roomExtents, roomFrustum, overlayInsets } =
+    await import("../apps/web/src/office/data.js");
+  const small = roomExtents({ width: 14.5, depth: 10.7 });
+  const large = roomExtents({ width: 14.5, depth: 17.2 }, [
+    16 * 1.607,
+    16 * 1.607,
+    21 * 1.607,
+  ]);
+  // A deeper room is larger on screen; the walls make it top-heavy.
+  assert.ok(large.halfWidth > small.halfWidth);
+  assert.ok(small.centerY > 0);
+  assert.ok(Math.abs(small.centerX) < 1e-9);
+  const fits = (frustum, extents, width, height) => {
+    const inset = overlayInsets(width);
+    const perPixel = (frustum.top - frustum.bottom) / height;
+    // The free band, in world units, relative to the camera target.
+    const bandTop = frustum.top - inset.top * perPixel;
+    const bandBottom = frustum.bottom + inset.bottom * perPixel;
+    return (
+      extents.centerY + extents.halfHeight <= bandTop + 1e-9 &&
+      extents.centerY - extents.halfHeight >= bandBottom - 1e-9 &&
+      extents.centerX + extents.halfWidth <= frustum.right + 1e-9 &&
+      extents.centerX - extents.halfWidth >= frustum.left - 1e-9
+    );
+  };
+  for (const [width, height] of [
+    [364, 331], // 390 phone
+    [334, 304], // 360 phone
+    [664, 498], // portrait tablet
+    [1155, 630], // 1440 desktop
+    [1627, 812], // 1920 desktop
+  ])
+    for (const extents of [small, large]) {
+      const frustum = roomFrustum(extents, width, height);
+      assert.ok(fits(frustum, extents, width, height), `${width}x${height}`);
+      // Square pixels: world units per pixel are the same both ways.
+      const x = (frustum.right - frustum.left) / width;
+      const y = (frustum.top - frustum.bottom) / height;
+      assert.ok(Math.abs(x - y) < 1e-9);
+    }
+  // On a phone the width decides and the room fills it (7% margin).
+  const phone = roomFrustum(small, 364, 331);
+  assert.ok(
+    small.halfWidth / ((phone.right - phone.left) / 2) > 0.9,
+    "the room fills the phone's width",
+  );
+  // Overlays only cost space on a narrow canvas.
+  assert.deepEqual(overlayInsets(1200), { top: 0, bottom: 0 });
+  assert.equal(overlayInsets(390).bottom > 0, true);
+  assert.equal(roomFrustum(null, 400, 300), null);
 });

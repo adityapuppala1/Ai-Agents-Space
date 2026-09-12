@@ -4,7 +4,7 @@ import { providerLabel } from "../hooks/useApi.js";
 /**
  * Text badge naming the provider. Text, never colour alone (UI vocabulary §6).
  * @param {{ provider?: string|null, mode?: string|null, size?: 'small'|'normal' }} props
- *   provider: "claude-code" | "codex" | "copilot" | "cursor" | "gemini" | "manual" | "simulated"
+ *   provider: "claude-code" | "codex" | "copilot" | "cursor" | "gemini" | "antigravity" | "manual" | "simulated"
  *   mode: optional run mode ("observed" | "managed" | "manual" | "simulated") shown as a suffix.
  */
 export default function ProviderBadge({ provider, mode, size = "normal" }) {

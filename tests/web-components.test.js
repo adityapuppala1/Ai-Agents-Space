@@ -9,6 +9,7 @@ import {
   parseDiff,
   attemptChain,
   maskPath,
+  maskPathsInText,
   basename,
   expiresIn,
   toCsv,
@@ -23,6 +24,9 @@ test("formatElapsed renders seconds, minutes and hours", () => {
   assert.equal(formatElapsed(59_000), "59s");
   assert.equal(formatElapsed(61_000), "1m 01s");
   assert.equal(formatElapsed(3_723_000), "1h 02m 03s");
+  // Past a day, seconds are noise: a session open since yesterday reads in
+  // days, hours and minutes.
+  assert.equal(formatElapsed((40 * 60 + 40) * 60_000 + 5_000), "1d 16h 40m");
 });
 
 test("fuzzy filter matches subsequences and ranks word starts higher", () => {
@@ -125,6 +129,27 @@ test("path helpers mask private paths and handle backslashes", () => {
   assert.equal(basename(null), "");
 });
 
+test("paths inside free text are masked in presentation mode", () => {
+  // Observed on this machine: a doctor finding named the user's home folder.
+  const finding =
+    "Found C:\\Users\\me\\AppData\\Local\\Programs\\cursor\\bin\\cursor.cmd, which is the IDE launcher.";
+  assert.equal(
+    maskPathsInText(finding, true),
+    "Found …/bin/cursor.cmd, which is the IDE launcher.",
+  );
+  assert.equal(maskPathsInText(finding, false), finding);
+  assert.equal(
+    maskPathsInText("Not readable: /Users/me/.codex/sessions.", true),
+    "Not readable: …/.codex/sessions.",
+  );
+  // A home-relative path names no user and stays readable.
+  assert.equal(
+    maskPathsInText("Reads ~/.gemini/projects.json", true),
+    "Reads ~/.gemini/projects.json",
+  );
+  assert.equal(maskPathsInText(null, true), "");
+});
+
 test("expiresIn reports remaining time or expiry", () => {
   const now = 1_000_000;
   assert.equal(expiresIn(null, now), "no expiry");
@@ -143,8 +168,21 @@ test("labels follow the UI vocabulary and never invent providers", () => {
   assert.equal(providerLabel(undefined), "Manual");
   assert.equal(providerLabel("mystery"), "mystery");
   assert.equal(activityLabel("WAITING_APPROVAL"), "Needs approval");
-  assert.equal(activityLabel(null), "Available");
+  assert.equal(activityLabel(null), "Idle");
   assert.equal(isActiveRun({ status: "waiting_approval" }), true);
   assert.equal(isActiveRun({ status: "completed" }), false);
   assert.equal(isActiveRun(null), false);
+});
+
+test("event kinds read as words, and reasoning is only ever named", async () => {
+  const { eventKindLabel, EVENT_KIND_LABELS } =
+    await import("../apps/web/src/hooks/useApi.js");
+  const { EVENT_KINDS } = await import("../packages/core/src/contracts.js");
+  // Every normalized kind has a readable name.
+  for (const kind of EVENT_KINDS)
+    assert.ok(EVENT_KIND_LABELS[kind], `${kind} has a label`);
+  assert.equal(eventKindLabel("tool.start"), "Tool call");
+  assert.equal(eventKindLabel("file.edit"), "Edited file");
+  assert.equal(eventKindLabel("something.new"), "something.new");
+  assert.equal(eventKindLabel(undefined), "Event");
 });

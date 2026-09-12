@@ -49,9 +49,9 @@ export default function ContextManifestView({
   return (
     <section className="as-context" aria-label="Context manifest">
       <header className="as-section-head">
-        <h3>
+        <h2>
           <FileText size={14} aria-hidden="true" /> Context manifest
-        </h3>
+        </h2>
         <button
           type="button"
           className="icon-button"

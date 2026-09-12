@@ -1,5 +1,5 @@
 import OfficeControl, { OFFICE_THEMES } from "./components/OfficeControl.jsx";
-import { agentMatchesFilters } from "./hooks/viewLogic.js";
+import { agentMatchesFilters, buildEventsFrom } from "./hooks/viewLogic.js";
 import React, {
   lazy,
   Suspense,
@@ -11,6 +11,8 @@ import React, {
 } from "react";
 import {
   Box,
+  Building2,
+  CalendarClock,
   LayoutDashboard,
   ListTodo,
   Users,
@@ -42,6 +44,7 @@ import {
   UserPlus,
   Columns3,
   GitBranch,
+  Workflow,
   ChartBar,
   Inbox,
   Antenna,
@@ -58,6 +61,7 @@ import {
   Download,
   Upload,
   Eye,
+  Menu,
 } from "lucide-react";
 import {
   api,
@@ -68,17 +72,24 @@ import {
 } from "./useWorkspace.js";
 // Direct imports on purpose: a barrel re-exports every panel, which pulls the
 // lazily loaded views back into the main bundle and defeats code splitting.
-import "./styles/components.css";
+// Stylesheets are imported once, in cascade order, by main.jsx.
 import RunInspector from "./components/RunInspector.jsx";
 import CommandPalette, {
   buildStandardCommands,
 } from "./components/CommandPalette.jsx";
 import TaskLauncher from "./components/TaskLauncher.jsx";
-import TemplateGallery from "./components/TemplateGallery.jsx";
+import TemplateGallery, { TeamDialog } from "./components/TemplateGallery.jsx";
 import PolicyEditor from "./components/PolicyEditor.jsx";
 import ProviderBadge from "./components/ProviderBadge.jsx";
+import ProviderPulse from "./components/ProviderPulse.jsx";
+import AgentPortrait from "./components/AgentPortrait.jsx";
+import OfficeRoster from "./components/OfficeRoster.jsx";
+import AgentDirectory from "./components/AgentDirectory.jsx";
+import { runningProviderSet } from "./hooks/providerStatus.js";
+import { workflowRelays, relayPresence } from "./office/relay.js";
 import Provenance from "./components/Provenance.jsx";
 import ActivityBadge from "./components/ActivityBadge.jsx";
+import ActivityFeed from "./components/ActivityFeed.jsx";
 import Dialog from "./components/Dialog.jsx";
 import SelectionProvider, {
   FilterChips,
@@ -94,7 +105,7 @@ import Onboarding, {
   ONBOARDING_KEY,
 } from "./components/Onboarding.jsx";
 import { useGlobal } from "./hooks/useGlobal.js";
-import { useApi, apiFetch } from "./hooks/useApi.js";
+import { useApi, apiFetch, useTicker } from "./hooks/useApi.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import BoardView from "./views/BoardView.jsx";
 import {
@@ -154,17 +165,9 @@ const OpsPanel = deferred(
   () => import("./components/OpsPanel.jsx"),
   "operations",
 );
-const MemoryPanel = deferred(
-  () => import("./components/MemoryPanel.jsx"),
-  "memory",
-);
-const KnowledgePanel = deferred(
-  () => import("./components/KnowledgePanel.jsx"),
+const KnowledgeView = deferred(
+  () => import("./components/KnowledgeView.jsx"),
   "knowledge",
-);
-const HandoverBrief = deferred(
-  () => import("./components/HandoverBrief.jsx"),
-  "the handover brief",
 );
 const TimelineView = deferred(
   () => import("./views/TimelineView.jsx"),
@@ -178,6 +181,15 @@ const AnalyticsView = deferred(
   () => import("./views/AnalyticsView.jsx"),
   "analytics",
 );
+const WorkflowEditor = deferred(
+  () => import("./views/WorkflowEditor.jsx"),
+  "the workflow editor",
+);
+const CampusView = deferred(() => import("./views/CampusView.jsx"), "campus");
+const SchedulesView = deferred(
+  () => import("./views/SchedulesView.jsx"),
+  "schedules",
+);
 
 const workingStates = [
   ["CODING", "Coding"],
@@ -185,6 +197,7 @@ const workingStates = [
   ["TESTING", "Testing"],
   ["DEBUGGING", "Debugging"],
   ["RESEARCHING", "Researching"],
+  ["REVIEWING", "Reviewing"],
 ];
 const stateLabels = {
   CODING: "Coding",
@@ -193,7 +206,7 @@ const stateLabels = {
   DEBUGGING: "Debugging",
   RESEARCHING: "Researching",
   BLOCKED: "Blocked",
-  IDLE: "Available",
+  IDLE: "Idle",
 };
 const taskLabels = {
   QUEUE: "Queued",
@@ -208,7 +221,7 @@ const VIRTUALIZE_TASKS_ABOVE = 40;
 const CAMERA_KEY = "agent-space-office-camera";
 const ROOM_KEY = "agent-space-office-room";
 const DEFAULT_PREFS = {
-  graphics: "medium",
+  graphics: "auto",
   reducedMotion: false,
   focusMode: false,
   presentation: false,
@@ -223,7 +236,7 @@ const DEFAULT_PREFS = {
  * by GET /api/settings, which is how they come back here.
  */
 const OFFICE_SETTINGS = {
-  graphics: { key: "ui.graphics", fallback: "medium" },
+  graphics: { key: "ui.graphics", fallback: "auto" },
   labelDensity: { key: "ui.office.labelDensity", fallback: "auto" },
   avatarDetail: { key: "ui.office.avatarDetail", fallback: "auto" },
   ambientSound: { key: "ui.office.ambientSound", fallback: false },
@@ -232,164 +245,199 @@ const OFFICE_SETTINGS = {
 };
 
 /**
- * Rail views. `full` views take the whole width (no spotlight column);
- * `heading`/`blurb` feed the page heading. Labels are part of the e2e
- * contract ("Workspace", "Task board", "Connections").
+ * Destinations. The label is the page title and the accessible name of its
+ * navigation button (the e2e suite drives them by name). `description` is one
+ * factual line under the title. `full` views take the whole width; the others
+ * open a detail pane beside the content only when something is selected.
+ * `primary` destinations stay in the phone bottom bar; the rest move into
+ * "More". `parent` marks a mode of another page: it has no entry of its own.
  */
 const VIEWS = [
   {
     id: "office",
-    group: "Work",
+    group: "Operate",
     label: "Workspace",
     icon: LayoutDashboard,
     key: "w",
-    heading: "Your agents. One shared space.",
-    blurb: "Watch your agents work, connect the dots, and keep things moving.",
+    primary: true,
+    description:
+      "Agents with recorded work in this workspace, placed by what they are doing.",
   },
   {
     id: "tasks",
-    group: "Work",
+    group: "Operate",
     label: "Task board",
     icon: ListTodo,
     key: "t",
-    heading: "Good work starts here.",
-    blurb: "Follow every task from the first idea to the final check.",
+    primary: true,
+    description: "Every task in this workspace, from queued to completed.",
   },
   {
     id: "board",
-    group: "Work",
-    label: "Board",
+    parent: "tasks",
+    label: "Task board",
     icon: Columns3,
     key: "b",
-    heading: "See the flow at a glance.",
-    blurb:
-      "Queued, in progress, blocked, completed. Move cards with the keyboard.",
-  },
-  {
-    id: "agents",
-    group: "Set up",
-    label: "Your agents",
-    icon: Users,
-    key: "y",
-    heading: "Meet your workspace crew.",
-    blurb: "Name them, shape their roles, and keep the roster yours.",
-  },
-  {
-    id: "activity",
-    group: "Watch",
-    label: "Activity",
-    icon: Activity,
-    key: "v",
-    heading: "Every step, in the open.",
-    blurb:
-      "A live record of task updates and workspace activity, each with its provenance.",
-  },
-  {
-    id: "timeline",
-    group: "Watch",
-    label: "Timeline",
-    icon: Clock3,
-    key: "m",
-    full: true,
-    heading: "Runs over time.",
-    blurb: "Bars for every run; replay uses recorded events only.",
-  },
-  {
-    id: "deps",
-    group: "Work",
-    label: "Dependencies",
-    icon: GitBranch,
-    key: "d",
-    heading: "What unblocks what.",
-    blurb: "A dependency map of the tasks in this workspace.",
-  },
-  {
-    id: "analytics",
-    group: "Decide",
-    label: "Analytics",
-    icon: ChartBar,
-    key: "a",
-    full: true,
-    heading: "Numbers with their basis.",
-    blurb: "Every figure is labelled counted, reported, measured or estimated.",
+    description: "Every task in this workspace, from queued to completed.",
   },
   {
     id: "inbox",
-    group: "Decide",
+    group: "Operate",
     label: "Inbox",
     icon: Inbox,
     key: "i",
     full: true,
-    heading: "Decisions waiting for you.",
-    blurb:
-      "Approvals, failed runs and reviews. Policies are enforced server-side.",
+    primary: true,
+    description:
+      "Approvals, questions, failed runs and reviews from every workspace.",
+  },
+  {
+    id: "agents",
+    group: "Operate",
+    label: "Agents",
+    icon: Users,
+    key: "y",
+    primary: true,
+    description:
+      "Your team as it looks in the office: who needs you, who is working, and who is ready for work.",
   },
   {
     id: "sessions",
-    group: "Watch",
+    group: "Observe",
     label: "Live sessions",
     icon: Antenna,
     key: "l",
     full: true,
-    heading: "What is running on this machine.",
-    blurb:
-      "Provider sessions read from the vendors' own session files. Activity derived from tool names is marked inferred.",
+    description:
+      "Provider sessions observed on this machine, read from each vendor's own session files.",
   },
   {
-    id: "connections",
-    group: "Set up",
-    label: "Connections",
-    icon: Cable,
-    key: "c",
+    id: "activity",
+    group: "Observe",
+    label: "Activity",
+    icon: Activity,
+    key: "v",
     full: true,
-    heading: "Providers and the local API.",
-    blurb: "Detect installed CLIs, check capabilities honestly, install hooks.",
+    description:
+      "Recorded events for this workspace, newest first, each with its provenance.",
   },
   {
-    id: "ops",
-    group: "Set up",
-    label: "Operations",
-    icon: HeartPulse,
-    key: "o",
+    id: "timeline",
+    group: "Observe",
+    label: "Timeline",
+    icon: Clock3,
+    key: "m",
     full: true,
-    heading: "How this machine is holding up.",
-    blurb:
-      "Health, queues, retention and the stop-all switch. Stopping interrupts work; it never undoes side effects.",
-  },
-  {
-    id: "knowledge",
-    group: "Set up",
-    label: "Knowledge",
-    icon: BookOpen,
-    key: "k",
-    full: true,
-    heading: "What the team remembers.",
-    blurb:
-      "Shared memory, knowledge collections and the handover brief. Every entry keeps the source it came from.",
+    description: "Runs as bars over time. Replay uses recorded events only.",
   },
   {
     id: "review",
-    group: "Watch",
+    group: "Observe",
     label: "Day in review",
     icon: Film,
     key: "r",
     full: true,
-    heading: "The day, assembled from recorded events.",
-    blurb:
-      "Each beat cites the event it came from. Nothing here is narrated or summarised by a model.",
+    description:
+      "Milestones assembled from recorded events for a date range, each cited to its source.",
+  },
+  {
+    id: "analytics",
+    group: "Observe",
+    label: "Analytics",
+    icon: ChartBar,
+    key: "a",
+    full: true,
+    description:
+      "Counts and durations, each labelled counted, reported, measured or estimated.",
+  },
+  {
+    id: "workflow",
+    group: "Plan",
+    label: "Workflow editor",
+    icon: Workflow,
+    key: "g",
+    full: true,
+    description:
+      "Edit workflow steps and links. Every save is a new, reviewable version.",
+  },
+  {
+    id: "deps",
+    group: "Plan",
+    label: "Dependencies",
+    icon: GitBranch,
+    key: "d",
+    description: "Which tasks wait on which, and what is ready to start.",
+  },
+  {
+    id: "schedules",
+    group: "Plan",
+    label: "Schedules",
+    icon: CalendarClock,
+    full: true,
+    description:
+      "Tasks and workflows that start at set times. Nothing starts on a timer until scheduling is on and the schedule is enabled.",
+  },
+  {
+    id: "campus",
+    group: "Plan",
+    label: "Campus",
+    icon: Building2,
+    full: true,
+    description:
+      "Every workspace as a building. Enter one to change scope; nothing is mixed.",
+  },
+  {
+    id: "connections",
+    group: "System",
+    label: "Connections",
+    icon: Cable,
+    key: "c",
+    full: true,
+    description:
+      "Assistants installed on this machine, what Agent Space can observe or run, and the local API.",
+  },
+  {
+    id: "ops",
+    group: "System",
+    label: "Operations",
+    icon: HeartPulse,
+    key: "o",
+    full: true,
+    description:
+      "Health, queue, backups, retention and the stop-all switch. Stopping never undoes side effects.",
+  },
+  {
+    id: "knowledge",
+    group: "System",
+    label: "Knowledge",
+    icon: BookOpen,
+    key: "k",
+    full: true,
+    description:
+      "Collections, memory and handover notes, each keeping the source it came from.",
   },
 ];
-/** Rail order: four labelled groups instead of fourteen flat icons. */
-const RAIL_GROUP_ORDER = ["Work", "Watch", "Decide", "Set up"];
+/** Rail order: four task-based groups. Modes (`parent`) have no entry. */
+const RAIL_GROUP_ORDER = ["Operate", "Observe", "Plan", "System"];
 export const RAIL_GROUPS = RAIL_GROUP_ORDER.map((name) => [
   name,
-  VIEWS.filter((v) => v.group === name),
+  VIEWS.filter((v) => v.group === name && !v.parent),
 ]).filter(([, items]) => items.length);
-
-/** Views that show the workspace overview strip; others go straight to content. */
-const STATS_VIEWS = new Set(["office", "tasks", "agents"]);
+/** The navigation entry a view belongs to (Board highlights Task board). */
+const navIdFor = (viewId) =>
+  VIEWS.find((v) => v.id === viewId)?.parent ?? viewId;
 
 const VIEW_IDS = new Set(VIEWS.map((v) => v.id));
+/** Views that open Task details beside their content when a task is chosen. */
+const TASK_DETAIL_VIEWS = new Set(["tasks", "board", "deps"]);
+/** Views that read the shared Office/Board/Timeline/Dependency filters. */
+const SHARED_FILTER_VIEWS = new Set([
+  "office",
+  "tasks",
+  "board",
+  "timeline",
+  "deps",
+]);
 
 function readJson(key, fallback) {
   try {
@@ -415,6 +463,13 @@ function readWorkspaceId() {
     return DEFAULT_WORKSPACE;
   }
 }
+function hasSavedWorkspace() {
+  try {
+    return Boolean(localStorage.getItem("agent-space-workspace"));
+  } catch {
+    return false;
+  }
+}
 function readPrefs() {
   return { ...DEFAULT_PREFS, ...readJson(PREFS_KEY, {}) };
 }
@@ -428,15 +483,6 @@ function readSavedUi(prefs) {
 }
 
 /** Per-second re-render while something with elapsed time is on screen. */
-function useTicker(active) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!active) return undefined;
-    const timer = setInterval(() => setTick((v) => v + 1), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-}
-
 /**
  * True when a key press belongs to the element under the cursor rather than to
  * the app-wide shortcuts. Widgets that handle their own keys (the drag-assign
@@ -486,10 +532,17 @@ function enrichAgent(agent, tasks, runs) {
   else if (agent.state === "BLOCKED") activity = "BLOCKED";
   else if (agent.state === "IDLE") activity = "IDLE";
   else if (reviewPending && !run) activity = "REVIEWING";
-  else activity = recordedActivity ?? agent.state;
-  const activityProvenance =
-    agent.activityProvenance ??
-    (providerRun && recordedActivity ? "inferred" : null);
+  else if (recordedActivity) activity = recordedActivity;
+  // A manual task: nothing reports its activity, and the state the server
+  // sends is the profile's working style. Only "in progress" is recorded.
+  else if (task && task.source !== "demo" && runMode !== "simulated")
+    activity = "MANUAL";
+  else activity = agent.state;
+  const manualWork = activity === "MANUAL";
+  const activityProvenance = manualWork
+    ? "user"
+    : (agent.activityProvenance ??
+      (providerRun && recordedActivity ? "inferred" : null));
   const runStatus = agent.runStatus ?? run?.status ?? null;
   const startedAt = run?.startedAt ?? null;
   const elapsedMs =
@@ -510,6 +563,7 @@ function enrichAgent(agent, tasks, runs) {
     provider,
     activity,
     activityProvenance,
+    manualWork,
     currentFile: agent.currentFile ?? run?.currentFile ?? null,
     currentAction: agent.currentAction ?? run?.currentAction ?? null,
     runId: agent.runId ?? run?.id ?? null,
@@ -530,12 +584,6 @@ function enrichAgent(agent, tasks, runs) {
  * scene says so ("no test output yet", "no build events recorded") instead of
  * showing an invented value.
  * ------------------------------------------------------------------------ */
-
-/** Commands that a recorded shell event has to mention to count as a build. */
-const BUILD_COMMAND =
-  /\b(build|rebuild|compile|bundle|webpack|vite|rollup|tsc|make|msbuild|gradle|mvn|cargo build|go build|dotnet build)\b/i;
-const DEPLOY_COMMAND =
-  /\b(deploy|release|publish|ship|rollout|terraform apply|kubectl apply|docker push|helm upgrade)\b/i;
 
 /**
  * Test counts a run actually reported. `run.tests` is written by
@@ -565,57 +613,78 @@ function testResultsFrom(runs = []) {
 }
 
 /**
- * Build/deploy activity for the operations pipeline wall. Two honest sources:
- * recorded command/test events whose command text names a build or deploy, and
- * CI checks a connector read (GET /api/workspaces/:id/checks). Status is what
- * the source said; a recorded command carries no outcome of its own, so it is
- * labelled "recorded" rather than "passed".
+ * Handoffs the office can draw. A `handoff` event is one step of a team
+ * relay passing its result to the next step's agent: both agents are named,
+ * so the office plays the moment (office/episodes.js). A `delegation` event
+ * records that an agent handed work to a subagent; the receiver is not an
+ * agent profile we track, so `toAgentId` stays null and the card says "a
+ * subagent" instead of naming someone. The card itself shows only the last
+ * half hour (handoffCard).
  */
-function buildEventsFrom(events = [], checks = null) {
+function handoffsFrom(events = [], tasks = []) {
+  const titleOf = (id) => tasks.find((task) => task.id === id)?.title ?? null;
   const list = [];
   for (const event of events) {
-    if (event.kind !== "command" && event.kind !== "test") continue;
-    const text = `${event.message ?? ""} ${event.tool ?? ""}`;
-    const deploy = DEPLOY_COMMAND.test(text);
-    const build = BUILD_COMMAND.test(text);
-    if (event.kind !== "test" && !deploy && !build) continue;
-    list.push({
-      id: event.id,
-      kind: deploy ? "deploy" : event.kind === "test" ? "check" : "build",
-      status: "recorded",
-      label: event.message ?? event.tool ?? "command",
-      timestamp: event.timestamp,
-    });
-  }
-  for (const check of checks?.available ? (checks.checks ?? []) : []) {
-    list.push({
-      id: `check:${check.name ?? check.workflow ?? list.length}`,
-      kind: "check",
-      status: String(
-        check.conclusion ?? check.state ?? check.status ?? "unknown",
-      ).toLowerCase(),
-      label: check.name ?? check.workflow ?? "check",
-      timestamp: check.completedAt ?? check.updatedAt ?? null,
-    });
+    if (list.length >= 20) break;
+    if (event.kind === "handoff" && event.handoff) {
+      const handoff = event.handoff;
+      const nextTitle = titleOf(handoff.toTaskId);
+      let detail = "Not started automatically";
+      if (handoff.dispatched) detail = nextTitle ? `Next: ${nextTitle}` : null;
+      list.push({
+        id: event.id,
+        kind: "handoff",
+        fromAgentId: handoff.fromAgentId ?? event.agentId ?? null,
+        toAgentId: handoff.toAgentId ?? event.toAgentId ?? null,
+        toLabel: handoff.toAgentId ? null : "the next step",
+        taskTitle: titleOf(handoff.fromTaskId) ?? event.message ?? null,
+        // What the office writes on the passed document.
+        artifact: handoff.withheld
+          ? "Result withheld: it read like instructions"
+          : (handoff.artifacts?.[0]?.title ?? null),
+        detail,
+        simulated: handoff.simulated === true,
+        timestamp: event.timestamp,
+      });
+    } else if (event.kind === "delegation") {
+      list.push({
+        id: event.id,
+        kind: "delegation",
+        fromAgentId: event.agentId ?? null,
+        toAgentId: null,
+        toLabel: "a subagent",
+        taskTitle: event.message ?? null,
+        timestamp: event.timestamp,
+      });
+    }
   }
   return list.length ? list : undefined;
 }
 
+/** The toast after a team deploy: who is on it, and whether it started. */
+function teamDeployedMessage(workflow, result) {
+  const started = (result?.started ?? []).some((item) => !item.error);
+  const members = (result?.team ?? []).filter(
+    (member) => member.agentId,
+  ).length;
+  if (!members)
+    return `Workflow “${workflow?.name ?? workflow?.templateId ?? "template"}” created`;
+  return `Team of ${members} deployed for “${workflow?.name ?? "the workflow"}”${started ? ": the first step has started" : ""}`;
+}
+
 /**
- * Handoffs the office can draw. A `delegation` event records that an agent
- * handed work to a subagent; the receiver is not an agent profile we track, so
- * `toAgentId` stays null and the scene prints "unknown agent" instead of
- * naming someone.
+ * Recorded team deployments ("team" events): who was put on the team, for
+ * the kickoff huddle the office plays when one is new.
  */
-function handoffsFrom(events = []) {
+function kickoffsFrom(events = []) {
   const list = events
-    .filter((event) => event.kind === "delegation")
-    .slice(0, 20)
+    .filter((event) => event.kind === "team" && event.team?.members?.length)
+    .slice(0, 5)
     .map((event) => ({
       id: event.id,
-      fromAgentId: event.agentId ?? null,
-      toAgentId: null,
-      taskTitle: event.message ?? null,
+      members: event.team.members.map((member) => member.agentId),
+      label: event.message ?? null,
+      simulated: event.team.simulated === true,
       timestamp: event.timestamp,
     }));
   return list.length ? list : undefined;
@@ -631,6 +700,7 @@ function messagesFrom(events = [], agents = []) {
     out[event.agentId] = {
       summary: event.message,
       timestamp: event.timestamp,
+      toAgentId: event.toAgentId ?? null,
       attribution: agent?.provider
         ? `${providerLabel(agent.provider)} message`
         : "recorded message",
@@ -673,16 +743,27 @@ function avatarStylesFrom(agents = []) {
   return Object.keys(out).length ? out : undefined;
 }
 
-function Avatar({ agent, small = false }) {
-  return (
-    <span
-      className={`avatar ${small ? "small" : ""}`}
-      style={{ "--agent-color": agent.color }}
-    >
-      {agent.initials}
-    </span>
-  );
+/** Count shown on a navigation entry: decisions waiting, live sessions. */
+function RailBadge({ id, needsDecision, liveCount }) {
+  if (id === "inbox" && needsDecision > 0)
+    return (
+      <span
+        className="rail-badge"
+        aria-label={`${needsDecision} decisions waiting`}
+        data-testid="inbox-badge"
+      >
+        {needsDecision > 99 ? "99+" : needsDecision}
+      </span>
+    );
+  if (id === "sessions" && liveCount > 0)
+    return (
+      <span className="rail-badge live" aria-hidden="true">
+        {liveCount}
+      </span>
+    );
+  return null;
 }
+
 function Badge({ state }) {
   return (
     <span className={`status status-${String(state).toLowerCase()}`}>
@@ -697,15 +778,6 @@ function Progress({ value, color }) {
       <div style={{ width: `${value}%`, background: color }} />
     </div>
   );
-}
-function RelativeTime({ timestamp }) {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  return <>{seconds < 60 ? "Just now" : `${Math.floor(seconds / 60)}m ago`}</>;
-}
-function eventProvenance(event) {
-  if (event.provenance) return event.provenance;
-  if (event.kind === "system") return "system";
-  return "user";
 }
 
 function Modal({ title, onClose, children, wide = false }) {
@@ -1333,36 +1405,6 @@ function TaskDetails({
   );
 }
 
-function ActivityRow({ event, size = 17 }) {
-  const provenance = eventProvenance(event);
-  const inferredActivity = event.data?.activity ?? null;
-  return (
-    <div className="activity-item">
-      <span
-        className={`event-icon ${event.kind === "complete" ? "green" : ""}`}
-      >
-        {event.kind === "complete" ? (
-          <Check size={size} />
-        ) : (
-          <Activity size={size} />
-        )}
-      </span>
-      <div>
-        <p>{event.message}</p>
-        <time>
-          <RelativeTime timestamp={event.timestamp} />
-        </time>
-        <span className="activity-meta">
-          <Provenance value={provenance} />
-          {inferredActivity ? (
-            <ActivityBadge activity={inferredActivity} inferred />
-          ) : null}
-        </span>
-      </div>
-    </div>
-  );
-}
-
 function SettingSwitch({ title, text, label, checked, onChange, disabled }) {
   return (
     <div className="settings-row">
@@ -1396,6 +1438,7 @@ const SHORTCUTS = [
 ];
 
 export default function App() {
+  const railNavRef = useRef(null);
   const [prefs, setPrefsState] = useState(readPrefs);
   const savedUi = useMemo(() => readSavedUi(prefs), []); // eslint-disable-line react-hooks/exhaustive-deps
   const [workspaceId, setWorkspaceId] = useState(readWorkspaceId);
@@ -1427,9 +1470,19 @@ export default function App() {
   const [visualPresetPreview, setVisualPresetPreview] = useState(null);
   const [visualPresetError, setVisualPresetError] = useState(null);
   const [visualPresetBusy, setVisualPresetBusy] = useState(false);
+  const [settingsTab, setSettingsTab] = useState("workspace");
   const capabilities = useApi("/connections/capabilities", {
     deps: [revision],
   });
+  const observationStatus = useApi("/observation/status", {
+    interval: 5000,
+  });
+  useEffect(() => {
+    if (!window.matchMedia("(max-width: 680px)").matches) return;
+    railNavRef.current
+      ?.querySelector('[aria-current="page"]')
+      ?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [view]);
   // Fallback when the global channel carries no connection rows yet.
   const connectionsApi = useApi("/connections", {
     enabled: !(global.connections?.length > 0),
@@ -1447,14 +1500,42 @@ export default function App() {
   const settingsApi = useApi("/settings", { deps: [revision] });
   const serverSettings = settingsApi.data ?? {};
   const workspaceVisualSettings = workspace?.workspace?.settings?.visual ?? {};
+  // The office this workspace arranged for itself: rooms moved or renamed and
+  // furniture placed (core/visual/OfficeLayout.js).
+  const officeArrangement =
+    workspace?.workspace?.settings?.officeLayout ?? null;
+  // Visual settings are saved as one whole preset. A change made before the
+  // workspace snapshot has caught up with the previous one is kept here, and
+  // saves go out in order, so a second quick change never re-sends a stale
+  // first value (observed: choosing a label density and then a lighting
+  // preset reset the label density).
+  const [pendingVisual, setPendingVisual] = useState({});
+  // The arranger is open over the office.
+  const [arranging, setArranging] = useState(false);
+  const pendingVisualRef = useRef({});
+  const visualSnapshotRef = useRef(workspaceVisualSettings);
+  visualSnapshotRef.current = workspaceVisualSettings;
+  const visualQueue = useRef(Promise.resolve());
+  useEffect(() => {
+    const settled = Object.entries(pendingVisualRef.current).filter(
+      ([key, value]) => workspaceVisualSettings[key] === value,
+    );
+    if (!settled.length) return;
+    const next = { ...pendingVisualRef.current };
+    for (const [key] of settled) delete next[key];
+    pendingVisualRef.current = next;
+    setPendingVisual(next);
+  }, [workspaceVisualSettings]);
   const officeSetting = useCallback(
     (name) => {
       const entry = OFFICE_SETTINGS[name];
       const value =
-        workspaceVisualSettings[entry.key] ?? serverSettings[entry.key];
+        pendingVisual[entry.key] ??
+        workspaceVisualSettings[entry.key] ??
+        serverSettings[entry.key];
       return value === undefined || value === null ? entry.fallback : value;
     },
-    [serverSettings, workspaceVisualSettings],
+    [serverSettings, workspaceVisualSettings, pendingVisual],
   );
   const saveSetting = useCallback(
     async (key, value) => {
@@ -1533,16 +1614,31 @@ export default function App() {
       localStorage.setItem("agent-space-theme", dark ? "dark" : "light");
     } catch {}
   }, [dark]);
+  // The system's "reduce motion" setting counts as much as the app's own:
+  // the office walked every agent across the floor for someone who had
+  // asked their operating system for less motion.
+  const [systemReducedMotion, setSystemReducedMotion] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches),
+  );
   useEffect(() => {
-    document.documentElement.classList.toggle(
-      "reduced-motion",
-      Boolean(prefs.reducedMotion || prefs.focusMode),
-    );
+    const query = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!query) return undefined;
+    const change = () => setSystemReducedMotion(query.matches);
+    query.addEventListener?.("change", change);
+    return () => query.removeEventListener?.("change", change);
+  }, []);
+  const motionReduced = Boolean(
+    prefs.reducedMotion || prefs.focusMode || systemReducedMotion,
+  );
+  useEffect(() => {
+    document.documentElement.classList.toggle("reduced-motion", motionReduced);
     document.documentElement.classList.toggle(
       "presentation-mode",
       Boolean(prefs.presentation),
     );
-  }, [prefs.reducedMotion, prefs.focusMode, prefs.presentation]);
+  }, [motionReduced, prefs.presentation]);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 4500);
@@ -1623,6 +1719,10 @@ export default function App() {
     },
     [workspaceId],
   );
+  const enterWorkspace = useCallback((targetWorkspaceId) => {
+    setWorkspaceId(targetWorkspaceId);
+    setView("office");
+  }, []);
 
   const rawAgents = workspace?.agents ?? [],
     tasks = workspace?.tasks ?? [],
@@ -1630,10 +1730,38 @@ export default function App() {
     workspaces = workspace?.workspaces ?? global.workspaces ?? [],
     isDemo = workspace?.workspace?.kind === "demo",
     events = workspace?.events ?? [];
-  const agents = useMemo(
-    () => rawAgents.map((a) => enrichAgent(a, tasks, runs)),
-    [rawAgents, tasks, runs],
+  // A first visit with no saved choice opens a real workspace instead of the
+  // demo. It happens once: after that, choosing the demo keeps the demo.
+  const autoPickWorkspace = useRef(null);
+  if (autoPickWorkspace.current === null)
+    autoPickWorkspace.current = !hasSavedWorkspace();
+  useEffect(() => {
+    if (!autoPickWorkspace.current || workspaces.length < 2) return;
+    autoPickWorkspace.current = false;
+    if (workspaceId !== DEFAULT_WORKSPACE) return;
+    const realWorkspace = workspaces.find(
+      (candidate) =>
+        candidate.kind !== "demo" &&
+        candidate.id !== DEFAULT_WORKSPACE &&
+        !candidate.archivedAt,
+    );
+    if (realWorkspace) setWorkspaceId(realWorkspace.id);
+  }, [workspaceId, workspaces]);
+  // Team relays: each unfinished multi-step workflow, its steps and who holds
+  // them. A member whose step is queued behind a colleague's live step stands
+  // on the floor waiting (relayPresence); a stalled relay puts nobody there.
+  const relays = useMemo(
+    () => workflowRelays(tasks, rawAgents),
+    [tasks, rawAgents],
   );
+  const agents = useMemo(() => {
+    const waiting = relayPresence(relays);
+    return rawAgents.map((a) => {
+      const enriched = enrichAgent(a, tasks, runs);
+      const relay = enriched.taskId ? null : waiting.get(a.id);
+      return relay ? { ...enriched, relay } : enriched;
+    });
+  }, [rawAgents, tasks, runs, relays]);
   useTicker(agents.some((a) => a.activeProviderRun));
 
   /* ---------------------------------------------------------------- office */
@@ -1700,7 +1828,8 @@ export default function App() {
       artifactsByAgent: Object.keys(artifactsByAgent).length
         ? artifactsByAgent
         : undefined,
-      handoffs: handoffsFrom(events),
+      handoffs: handoffsFrom(events, tasks),
+      kickoffs: kickoffsFrom(events),
       messages: messagesFrom(events, agents),
       teams: teamsFrom(agents),
       avatarStyles: avatarStylesFrom(rawAgents),
@@ -1709,6 +1838,7 @@ export default function App() {
     agents,
     rawAgents,
     runs,
+    tasks,
     events,
     artifactsByRun,
     checksApi.data,
@@ -1733,7 +1863,6 @@ export default function App() {
     [setRoomChoices, workspaceId],
   );
 
-  const completed = tasks.filter((t) => t.status === "COMPLETED");
   const inboxCounts = global.inbox?.counts ?? {};
   const needsDecision =
     inboxCounts.total ??
@@ -1742,10 +1871,15 @@ export default function App() {
       (inboxCounts.reviews ?? 0) +
       (inboxCounts.questions ?? 0);
   const liveSessions = global.liveSessions ?? [];
-  const agent =
-    agents.find((a) => a.id === selectedAgent) ??
-    agents.find((a) => a.name === "Nova") ??
-    agents[0];
+  // Only an explicit selection opens the spotlight. An arbitrary default agent
+  // made unrelated pages (Activity, Task board) show someone nobody chose.
+  const agent = selectedAgent
+    ? (agents.find((a) => a.id === selectedAgent) ?? null)
+    : null;
+  const runningProviders = useMemo(
+    () => runningProviderSet(agents, observationStatus.data?.surfaces ?? []),
+    [agents, observationStatus.data],
+  );
   const task = selectedTask
     ? tasks.find((t) => t.id === selectedTask)
     : tasks.find((t) => t.id === agent?.taskId);
@@ -1781,13 +1915,48 @@ export default function App() {
 
   const current = VIEWS.find((v) => v.id === view) ?? VIEWS[0];
   const fullView = Boolean(current.full);
+  // The detail pane appears only for something the user selected: an agent in
+  // the office, or a task on the task pages. Otherwise content keeps the width.
+  // The Agents page has none: a card opens in place, and the run and the
+  // agent at work have their own views (Open run, In the office).
+  const showDetail =
+    !fullView &&
+    ((view === "office" && Boolean(agent)) ||
+      (TASK_DETAIL_VIEWS.has(view) && Boolean(selectedTask)));
+  // Where the detail pane stacks under a list (narrow screens), bring it into
+  // view when something is chosen; otherwise a tap on a row looked like it did
+  // nothing. The office is left alone: scrolling away from the scene while
+  // someone explores it would be disorienting.
+  const detailRef = useRef(null);
+  useEffect(() => {
+    if (!showDetail || view === "office") return;
+    if (!window.matchMedia("(max-width: 1100px)").matches) return;
+    detailRef.current?.scrollIntoView({
+      block: "start",
+      behavior:
+        prefs.reducedMotion ||
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+    });
+    // Only a new selection moves the page, not every re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAgent, selectedTask]);
   const officeTheme =
     workspace?.workspace?.theme ?? prefs.officeTheme?.[workspaceId] ?? "studio";
   const spotlightRun =
     agent?.activeProviderRun && agent.runId ? agent.runId : null;
+  const focusAgent = agent ?? agents.find((a) => a.activeProviderRun) ?? null;
   const followAgentId =
-    prefs.focusMode && agent?.activeProviderRun ? agent.id : null;
+    prefs.focusMode && focusAgent?.activeProviderRun ? focusAgent.id : null;
   const presentation = Boolean(prefs.presentation);
+  // A stable object: the office restarts its presentation timer whenever this
+  // prop changes identity, so a fresh literal reset it on every render.
+  const largeLabels = Boolean(officeSetting("largeLabels"));
+  const officePresentation = useMemo(
+    () => (presentation ? { enabled: true, largeLabels } : null),
+    [presentation, largeLabels],
+  );
   const capabilityMap = capabilities.data ?? {};
   // First run: nothing but the demo workspace and no provider that is ready to
   // launch. Setup is a panel, never a blocking modal, and "Skip for now"
@@ -1796,9 +1965,16 @@ export default function App() {
     (w) => w.kind !== "demo" && !w.archivedAt,
   );
   const hasReadyConnection = connections.some((c) => c.status === "ready");
+  // Once a person has started the steps, setup stays until they finish or
+  // skip it. (It used to vanish mid-flow: creating the sample workspace made
+  // "no project workspace" false and hid the remaining steps.)
+  const setupStarted =
+    (Array.isArray(onboarding?.done) && onboarding.done.length > 0) ||
+    Number(onboarding?.step) > 0;
   const showSetup =
     setupOpen ||
-    (!onboarding?.dismissed && !hasProjectWorkspace && !hasReadyConnection);
+    (!onboarding?.dismissed &&
+      (setupStarted || (!hasProjectWorkspace && !hasReadyConnection)));
 
   async function setOfficeTheme(theme) {
     try {
@@ -1813,19 +1989,59 @@ export default function App() {
     }
   }
 
-  async function saveVisualSetting(key, value) {
+  function saveVisualSetting(key, value) {
+    pendingVisualRef.current = { ...pendingVisualRef.current, [key]: value };
+    setPendingVisual(pendingVisualRef.current);
+    const name = `${workspace?.workspace?.name ?? "Workspace"} visual preset`;
+    const theme = officeTheme;
+    const target = base;
+    const send = async () => {
+      // Built when this save runs, not when it was queued: the latest
+      // snapshot plus every change still waiting for it.
+      const preset = {
+        kind: "agent-space-visual-preset",
+        version: 1,
+        name,
+        theme,
+        settings: { ...visualSnapshotRef.current, ...pendingVisualRef.current },
+      };
+      try {
+        await api(`${target}/visual-preset/apply`, "POST", { preset });
+      } catch (error) {
+        const next = { ...pendingVisualRef.current };
+        delete next[key];
+        pendingVisualRef.current = next;
+        setPendingVisual(next);
+        setToast({
+          message: `Visual setting not saved: ${error.message}`,
+          error: true,
+        });
+      }
+    };
+    visualQueue.current = visualQueue.current.then(send, send);
+    return visualQueue.current;
+  }
+
+  /**
+   * Saves the office a workspace arranged. It travels in the same portable
+   * preset as the theme, so exporting the environment carries the layout.
+   */
+  async function saveOfficeLayout(layout) {
     const preset = {
       kind: "agent-space-visual-preset",
-      version: 1,
+      version: 2,
       name: `${workspace?.workspace?.name ?? "Workspace"} visual preset`,
       theme: officeTheme,
-      settings: { ...workspaceVisualSettings, [key]: value },
+      settings: { ...visualSnapshotRef.current, ...pendingVisualRef.current },
+      layout,
     };
     try {
       await api(`${base}/visual-preset/apply`, "POST", { preset });
+      setArranging(false);
+      setToast({ message: "The office is arranged" });
     } catch (error) {
       setToast({
-        message: `Visual setting not saved: ${error.message}`,
+        message: `Office not saved: ${error.message}`,
         error: true,
       });
     }
@@ -1916,7 +2132,7 @@ export default function App() {
   }, [palette, modal, runModal, tokenPrompt, connected]);
 
   const commands = useMemo(() => {
-    const list = VIEWS.map((v) => ({
+    const list = VIEWS.filter((v) => !v.parent).map((v) => ({
       id: `view:${v.id}`,
       group: "Go to",
       label: v.label,
@@ -1924,6 +2140,14 @@ export default function App() {
       keywords: `${v.id} view navigate`,
       run: () => setView(v.id),
     }));
+    list.push({
+      id: "view:board",
+      group: "Go to",
+      label: "Task board as columns",
+      hint: "B",
+      keywords: "board kanban columns tasks",
+      run: () => setView("board"),
+    });
     for (const w of workspaces)
       list.push({
         id: `workspace:${w.id}`,
@@ -2019,111 +2243,32 @@ export default function App() {
     updatePref,
   ]);
 
-  const renderAgentCard = (a) => (
-    <button
-      key={a.id}
-      className={`agent-card ${agent?.id === a.id ? "selected" : ""}`}
-      onClick={() => selectAgent(a.id)}
-      style={{ "--agent-color": a.color }}
-    >
-      <div className="agent-card-top">
-        <Avatar agent={a} />
-        <i
-          className={`dot ${
-            a.state === "BLOCKED" ||
-            ["waiting_approval", "blocked", "stale"].includes(a.runStatus)
-              ? "amber"
-              : a.state === "IDLE"
-                ? "gray"
-                : "green"
-          }`}
-        />
-      </div>
-      <h3>
-        {a.name}
-        {a.autoCreated ? (
-          <span
-            className="auto-tag"
-            title="Created automatically from a session"
-          >
-            auto
-          </span>
-        ) : null}
-      </h3>
-      <p>{a.role}</p>
-      <span className="agent-meta">
-        <ProviderBadge provider={a.provider} size="small" />
-        <span className="agent-state">
-          {a.activity === "IDLE" ? (
-            <Coffee size={12} />
-          ) : (
-            <Activity size={12} />
-          )}{" "}
-          {activityLabel(a.activity)}
-          {a.activityProvenance === "inferred" ? (
-            <em className="as-inferred">inferred</em>
-          ) : null}
-        </span>
-      </span>
-      {a.currentFile ? (
-        <span
-          className="agent-file as-mono"
-          title={presentation ? undefined : a.currentFile}
-        >
-          {basename(a.currentFile)}
-        </span>
-      ) : null}
-      {a.activeProviderRun && a.elapsedMs !== null ? (
-        <span className="agent-elapsed">
-          <Timer size={11} aria-hidden="true" /> {formatElapsed(a.elapsedMs)}
-        </span>
-      ) : null}
-      {view === "agents" && (
-        <div className="agent-extra">
-          {a.specialty || "No specialty set"}
-          <br />
-          {a.completed} tasks completed
-        </div>
-      )}
-    </button>
-  );
-
   const taskPanel = (
     <section className="panel task-board">
       <div className="board-tools">
         <h2>
-          Task board <span>{tasks.length}</span>
+          Tasks <span>{tasks.length}</span>
         </h2>
-        <div
-          className="view-tabs board-modes"
-          role="group"
-          aria-label="Board layout"
-        >
+        <div className="segmented" role="group" aria-label="Task layout">
           <button
-            className={view === "tasks" ? "active" : ""}
+            type="button"
+            aria-pressed={view === "tasks"}
             onClick={() => setView("tasks")}
           >
-            <ListTodo size={15} />
+            <ListTodo size={15} aria-hidden="true" />
             List
           </button>
           <button
-            className={view === "board" ? "active" : ""}
+            type="button"
+            aria-pressed={view === "board"}
             onClick={() => setView("board")}
           >
-            <Columns3 size={15} />
-            Kanban
+            <Columns3 size={15} aria-hidden="true" />
+            Board
           </button>
         </div>
-        <button
-          className="button"
-          aria-pressed={showTemplates}
-          onClick={() => setShowTemplates((v) => !v)}
-        >
-          <Sparkles size={14} />
-          Use a template
-        </button>
         <label className="search-box">
-          <Search size={15} />
+          <Search size={15} aria-hidden="true" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -2131,16 +2276,29 @@ export default function App() {
             aria-label="Search tasks"
           />
         </label>
+        <button
+          className="button"
+          aria-pressed={showTemplates}
+          onClick={() => setShowTemplates((v) => !v)}
+        >
+          <Sparkles size={14} aria-hidden="true" />
+          Use a template
+        </button>
       </div>
       {showTemplates && (
         <div className="template-drawer">
           <TemplateGallery
             workspaceId={workspaceId}
-            onInstantiated={(workflow) => {
+            agents={agents}
+            connections={connections}
+            capabilities={capabilityMap}
+            onEnvironment={setOfficeTheme}
+            onInstantiated={(workflow, result) => {
               setShowTemplates(false);
-              setToast({
-                message: `Workflow “${workflow?.name ?? workflow?.templateId ?? "template"}” created`,
-              });
+              setToast({ message: teamDeployedMessage(workflow, result) });
+              // A team at work is what the office is for.
+              if ((result?.started ?? []).some((item) => !item.error))
+                setView("office");
             }}
           />
         </div>
@@ -2150,6 +2308,7 @@ export default function App() {
           <BoardView
             tasks={shownTasks}
             agents={agents}
+            runs={runs}
             selectedId={selectedTask}
             presentation={presentation}
             onCreateTask={() => setModal("task")}
@@ -2163,17 +2322,33 @@ export default function App() {
               )
             }
           />
-          <DragAssign
-            tasks={tasks}
-            agents={agents}
-            presentation={presentation}
-            onAssign={(taskId, agentId) =>
-              apiFetch(`/workspaces/${workspaceId}/tasks/${taskId}/assign`, {
-                method: "POST",
-                body: { agentId },
-              })
-            }
-          />
+          {/* Assignment lists the same tasks again, so it stays folded away
+              until someone wants to assign work. */}
+          <details className="assign-disclosure">
+            <summary>
+              <UserPlus size={15} aria-hidden="true" />
+              <span>Assign tasks to agents</span>
+              <small>
+                {
+                  tasks.filter(
+                    (t) => t.status !== "COMPLETED" && !t.assignedAgentId,
+                  ).length
+                }{" "}
+                unassigned
+              </small>
+            </summary>
+            <DragAssign
+              tasks={tasks}
+              agents={agents}
+              presentation={presentation}
+              onAssign={(taskId, agentId) =>
+                apiFetch(`/workspaces/${workspaceId}/tasks/${taskId}/assign`, {
+                  method: "POST",
+                  body: { agentId },
+                })
+              }
+            />
+          </details>
         </div>
       ) : (
         <>
@@ -2229,22 +2404,35 @@ export default function App() {
         runs.find((r) => r.taskId === t.id && !r.endedAt) ??
         runs.find((r) => r.taskId === t.id);
       const providerRun = taskRun && PROVIDER_MODES.has(taskRun.mode);
+      const providerId = t.provider ?? taskRun?.provider ?? null;
+      const ownerName = owner?.name ?? "Unassigned";
+      // An agent created from a session is named after its provider; the
+      // badge already says so, so the name is not repeated beside it.
+      const showOwner = !(
+        providerId && ownerName === providerLabel(providerId)
+      );
       return (
         <button
           className={`task-row ${selectedTask === t.id ? "selected" : ""}`}
           key={t.id}
+          aria-current={selectedTask === t.id ? "true" : undefined}
           onClick={() => setSelectedTask(t.id)}
         >
           <span
             className={`task-check ${t.status === "COMPLETED" ? "done" : ""}`}
+            aria-hidden="true"
           >
-            {t.status === "COMPLETED" ? <Check size={13} /> : <span />}
+            {t.status === "COMPLETED" ? <Check size={13} /> : null}
           </span>
           <div>
             <h3>{maskText(t.title, presentation)}</h3>
             <p>
-              {owner?.name ?? "Unassigned"}
-              <span>·</span>
+              {showOwner ? (
+                <>
+                  {ownerName}
+                  <span aria-hidden="true">·</span>
+                </>
+              ) : null}
               {t.source === "demo"
                 ? "Demo task"
                 : t.source === "observed"
@@ -2252,18 +2440,25 @@ export default function App() {
                   : t.source === "workflow"
                     ? "Workflow step"
                     : "Manual task"}
-              {t.provider || taskRun?.provider ? (
+              {providerId ? (
                 <>
-                  <span>·</span>
-                  <ProviderBadge
-                    provider={t.provider ?? taskRun?.provider}
-                    size="small"
-                  />
+                  <span aria-hidden="true">·</span>
+                  <ProviderBadge provider={providerId} size="small" />
                 </>
               ) : null}
             </p>
           </div>
-          <Badge state={t.status} />
+          {providerRun ? (
+            <span
+              className={`status as-run-status as-run-${taskRun.status}`}
+              title="Status of the provider run behind this task"
+            >
+              <i className="dot" aria-hidden="true" />
+              {RUN_STATUS_LABELS[taskRun.status] ?? taskRun.status}
+            </span>
+          ) : (
+            <Badge state={t.status} />
+          )}
           <span className="row-progress">
             {providerRun
               ? taskRun.startedAt
@@ -2299,65 +2494,81 @@ export default function App() {
       <div
         className={`app-shell ${prefs.focusMode ? "focus-mode" : ""} ${presentation ? "presentation" : ""}`}
       >
-        <aside className="rail">
+        <a className="skip-link" href="#main-content">
+          Skip to content
+        </a>
+        <aside className="rail" aria-label="Sidebar">
           <a className="brand-mark" href="/" title="Agent Space home">
-            <Box size={25} strokeWidth={1.7} />
+            <Box size={22} strokeWidth={1.8} />
+            <span className="brand-mark-text">
+              agent<b>space</b>
+            </span>
           </a>
-          <nav aria-label="Main navigation">
+          <nav aria-label="Main navigation" ref={railNavRef}>
             {RAIL_GROUPS.map(([groupName, items]) => (
               <div className="rail-group" key={groupName}>
                 <h2 className="rail-group-label" aria-hidden="true">
                   {groupName}
                 </h2>
-                {items.map(({ icon: Icon, id, label }) => (
+                {items.map(({ icon: Icon, id, label, primary }) => (
                   <button
                     key={id}
-                    title={label}
                     aria-label={label}
-                    aria-current={view === id ? "page" : undefined}
-                    className={view === id ? "active" : ""}
+                    aria-current={navIdFor(view) === id ? "page" : undefined}
+                    className={navIdFor(view) === id ? "active" : ""}
+                    data-primary={primary ? "" : undefined}
                     onClick={() => setView(id)}
                   >
-                    <Icon size={19} />
+                    <Icon size={18} aria-hidden="true" />
                     <span className="rail-text">{label}</span>
-                    {id === "inbox" && needsDecision > 0 ? (
-                      <span
-                        className="rail-badge"
-                        aria-label={`${needsDecision} decisions waiting`}
-                        data-testid="inbox-badge"
-                      >
-                        {needsDecision > 99 ? "99+" : needsDecision}
-                      </span>
-                    ) : null}
-                    {id === "sessions" && liveSessions.length > 0 ? (
-                      <span className="rail-badge live" aria-hidden="true">
-                        {liveSessions.length}
-                      </span>
-                    ) : null}
-                    <span className="rail-tooltip">{label}</span>
+                    <RailBadge
+                      id={id}
+                      needsDecision={needsDecision}
+                      liveCount={liveSessions.length}
+                    />
+                    <span className="rail-tooltip" aria-hidden="true">
+                      {label}
+                    </span>
                   </button>
                 ))}
               </div>
             ))}
+            <button
+              type="button"
+              className={`rail-more ${
+                VIEWS.some((v) => !v.primary && navIdFor(view) === v.id)
+                  ? "active"
+                  : ""
+              }`}
+              aria-haspopup="dialog"
+              aria-label="More destinations"
+              onClick={() => setModal("more")}
+            >
+              <Menu size={18} aria-hidden="true" />
+              <span className="rail-text">More</span>
+              {liveSessions.length > 0 ? (
+                <span className="rail-badge live" aria-hidden="true">
+                  {liveSessions.length}
+                </span>
+              ) : null}
+            </button>
           </nav>
           <div className="rail-bottom">
             <button
-              title="Workspace settings"
               aria-label="Workspace settings"
               onClick={() => setModal("settings")}
             >
-              <Settings2 size={20} />
+              <Settings2 size={18} aria-hidden="true" />
+              <span className="rail-text">Settings</span>
+              <span className="rail-tooltip" aria-hidden="true">
+                Settings
+              </span>
             </button>
-            <span className="user-avatar" title="Local workspace">
-              {presentation ? "··" : "YO"}
-            </span>
           </div>
         </aside>
         <div className="app-main">
           <header className="topbar">
             <div className="brand-name">
-              agent<span>space</span>
-              <span className="brand-divider" />
               <WorkspaceSwitcher
                 currentId={workspaceId}
                 onSelect={setWorkspaceId}
@@ -2402,53 +2613,104 @@ export default function App() {
               </label>
             </div>
             <div className="topbar-right">
-              <span className={`connection ${connected ? "" : "offline"}`}>
-                <i className="dot" />
-                {connected ? "Live connection" : "Reconnecting…"}
+              <ProviderPulse
+                connections={connections}
+                runningProviders={runningProviders}
+                onOpen={() => setView("connections")}
+              />
+              <span
+                className={`connection ${connected ? "" : "offline"}`}
+                role="status"
+              >
+                <i className="dot" aria-hidden="true" />
+                <span className="connection-text">
+                  {connected ? "Live connection" : "Reconnecting…"}
+                </span>
               </span>
-              <span className="topbar-divider" />
-              <button
-                className="icon-button"
-                aria-label="Command palette"
-                title="Command palette (Ctrl+K)"
-                onClick={() => setPalette(true)}
-              >
-                <Command size={18} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label="Help"
-                onClick={() => setModal("help")}
-              >
-                <CircleHelp size={19} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label={dark ? "Use light theme" : "Use dark theme"}
-                onClick={() => setDark(!dark)}
-              >
-                {dark ? <Sun size={19} /> : <Moon size={18} />}
-              </button>
-            </div>
-          </header>
-          <main>
-            <section className="page-heading">
-              <div>
-                <div className="eyebrow">
-                  {prefs.focusMode ? "FOCUS MODE" : "YOUR TEAM, IN VIEW"}
-                </div>
-                <h1>{current.heading}</h1>
-                <p>{current.blurb}</p>
-              </div>
+              <span className="topbar-tools">
+                <button
+                  className="icon-button"
+                  aria-label="Command palette"
+                  title="Command palette (Ctrl+K)"
+                  onClick={() => setPalette(true)}
+                >
+                  <Command size={17} aria-hidden="true" />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="Help"
+                  title="Help and keyboard shortcuts (?)"
+                  onClick={() => setModal("help")}
+                >
+                  <CircleHelp size={18} aria-hidden="true" />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label={dark ? "Use light theme" : "Use dark theme"}
+                  title={dark ? "Use light theme" : "Use dark theme"}
+                  onClick={() => setDark(!dark)}
+                >
+                  {dark ? (
+                    <Sun size={18} aria-hidden="true" />
+                  ) : (
+                    <Moon size={17} aria-hidden="true" />
+                  )}
+                </button>
+                <button
+                  className="icon-button mobile-settings"
+                  aria-label="Workspace settings"
+                  title="Workspace settings"
+                  onClick={() => setModal("settings")}
+                >
+                  <Settings2 size={17} aria-hidden="true" />
+                </button>
+              </span>
               <button
                 className="button primary new-task"
+                aria-label="New task"
+                title="New task (N)"
                 onClick={() => setModal("task")}
                 disabled={!connected}
               >
-                <Plus size={17} />
-                New task
+                <Plus size={16} aria-hidden="true" />
+                <span className="new-task-text">New task</span>
               </button>
-            </section>
+            </div>
+          </header>
+          <main id="main-content" tabIndex={-1}>
+            <header className="page-heading">
+              <div className="page-heading-copy">
+                <h1>
+                  {current.label}
+                  {prefs.focusMode ? (
+                    <span className="page-mode-chip">Focus mode</span>
+                  ) : null}
+                  {presentation ? (
+                    <span className="page-mode-chip">Presentation</span>
+                  ) : null}
+                </h1>
+                <p>{current.description}</p>
+              </div>
+              {view === "agents" ? (
+                <div className="page-actions">
+                  <button
+                    className="text-button"
+                    aria-pressed={showArchived}
+                    onClick={() => setShowArchived(!showArchived)}
+                  >
+                    {showArchived ? "Hide archived" : "Show archived"}
+                  </button>
+                  <button
+                    className="button"
+                    disabled={!connected}
+                    onClick={() => setModal("agent-new")}
+                  >
+                    <UserPlus size={15} aria-hidden="true" />
+                    Add agent
+                  </button>
+                </div>
+              ) : null}
+            </header>
             {showSetup && (
               <div className="setup-slot">
                 <Onboarding
@@ -2462,8 +2724,9 @@ export default function App() {
                     }));
                   }}
                   onOpenWorkspace={(id) => {
+                    // Switch to the new workspace and keep the remaining
+                    // steps on screen; only Skip or Finish closes setup.
                     setWorkspaceId(id);
-                    setSetupOpen(false);
                   }}
                   onOpenConnections={() => setView("connections")}
                   onOpenTemplates={() => {
@@ -2500,118 +2763,49 @@ export default function App() {
               </div>
             ) : (
               <>
-                {/* The overview strip belongs on the workspace overview. Repeating it on
-                    every page pushed each page's real content below the fold. */}
-                {STATS_VIEWS.has(view) ? (
-                  <section className="stats" aria-label="Workspace statistics">
-                    {[
-                      [
-                        Users,
-                        `${agents.filter((a) => a.taskId).length}`,
-                        `/ ${agents.length}`,
-                        "Agents on task",
-                        "blue",
-                      ],
-                      [
-                        Antenna,
-                        liveSessions.length,
-                        "",
-                        "Live sessions",
-                        "violet",
-                      ],
-                      [Inbox, needsDecision, "", "Needs decision", "amber"],
-                      [
-                        CheckCheck,
-                        completed.length,
-                        "",
-                        "Tasks completed",
-                        "green",
-                      ],
-                    ].map(([Icon, number, suffix, label, color]) => (
-                      <div className="stat" key={label}>
-                        <span className={`stat-icon ${color}`}>
-                          <Icon size={20} />
-                        </span>
-                        <div>
-                          <strong>
-                            {number}
-                            <span>{suffix}</span>
-                          </strong>
-                          <p>{label}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </section>
+                {SHARED_FILTER_VIEWS.has(view) ? (
+                  <FilterChips agents={agents} />
                 ) : null}
-                <FilterChips />
-                {view === "office" && (
-                  <OfficeControl
-                    agents={agents}
-                    visibleCount={officeAgents.length}
-                    filters={selectionFilters}
-                    onFilters={setSelectionFilters}
-                    theme={officeTheme}
-                    onTheme={setOfficeTheme}
-                    isDemo={isDemo}
-                    onConnections={() => setView("connections")}
-                    onSelectAgent={selectAgent}
-                  />
-                )}
                 <div
-                  className={`workspace-layout ${view !== "office" ? "alternate-view" : ""} ${fullView ? "full-view" : ""}`}
+                  className={`workspace-layout ${view !== "office" ? "alternate-view" : "office-stage"} ${fullView ? "full-view" : ""} ${showDetail ? "has-detail" : ""}`}
                 >
                   <div className="workspace-left">
                     {view === "office" && (
                       <section className="panel office-panel">
-                        <div className="panel-header">
-                          <div className="view-tabs">
-                            <button className="active">
-                              <Box size={16} />
-                              Office view
-                            </button>
-                            <button onClick={() => setView("tasks")}>
-                              <ListTodo size={16} />
-                              Task board
-                            </button>
-                          </div>
-                          <div className="demo-controls">
-                            <span className="demo-label">
-                              {isDemo ? "DEMO WORKSPACE" : "PROJECT WORKSPACE"}
-                            </span>
-                            {isDemo && (
-                              <button
-                                className="icon-button"
-                                aria-label={
-                                  workspace.demoRunning
-                                    ? "Pause demo"
-                                    : "Resume demo"
-                                }
-                                title={
-                                  workspace.demoRunning
-                                    ? "Pause demo"
-                                    : "Resume demo"
-                                }
-                                disabled={!connected || busy}
-                                onClick={() =>
-                                  action(
-                                    `${base}/demo`,
-                                    "POST",
-                                    { running: !workspace.demoRunning },
-                                    workspace.demoRunning
-                                      ? "Demo paused"
-                                      : "Demo resumed",
-                                  )
-                                }
-                              >
-                                {workspace.demoRunning ? (
-                                  <Pause size={15} />
-                                ) : (
-                                  <Play size={15} />
-                                )}
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                        <OfficeControl
+                          onArrange={() => setArranging(true)}
+                          agents={agents}
+                          visibleCount={officeAgents.length}
+                          filters={selectionFilters}
+                          onFilters={setSelectionFilters}
+                          theme={officeTheme}
+                          onTheme={setOfficeTheme}
+                          isDemo={isDemo}
+                          demoRunning={Boolean(workspace.demoRunning)}
+                          demoDisabled={!connected || busy}
+                          onToggleDemo={() =>
+                            action(
+                              `${base}/demo`,
+                              "POST",
+                              { running: !workspace.demoRunning },
+                              workspace.demoRunning
+                                ? "Demo paused"
+                                : "Demo resumed",
+                            )
+                          }
+                          decisions={needsDecision}
+                          liveSessions={liveSessions.length}
+                          onOpenInbox={() => setView("inbox")}
+                          onOpenSessions={() => setView("sessions")}
+                          onConnections={() => setView("connections")}
+                          // The demo is simulated and never mixes with real
+                          // work, so a real team is deployed only elsewhere.
+                          onDeployTeam={
+                            isDemo || !connected
+                              ? undefined
+                              : () => setModal("team")
+                          }
+                        />
                         <Suspense
                           fallback={
                             <div className="scene-loading">
@@ -2622,19 +2816,27 @@ export default function App() {
                           <Office
                             key={workspaceId}
                             agents={officeAgents}
-                            selected={agent?.id}
+                            providerSurfaces={
+                              observationStatus.data?.surfaces ?? []
+                            }
+                            onOpenProviders={() => setView("connections")}
+                            selected={selectedAgent ?? undefined}
                             onSelect={selectAgent}
                             running={!isDemo || workspace.demoRunning}
                             theme={officeTheme}
                             graphics={officeSetting("graphics")}
-                            reducedMotion={
-                              prefs.reducedMotion || prefs.focusMode
-                            }
+                            reducedMotion={motionReduced}
+                            officeLayout={officeArrangement}
+                            arranging={arranging}
+                            onArrangeClose={() => setArranging(false)}
+                            onArrangeSave={saveOfficeLayout}
                             followAgentId={followAgentId}
                             testResults={officeData.testResults}
                             buildEvents={officeData.buildEvents}
                             artifactsByAgent={officeData.artifactsByAgent}
                             handoffs={officeData.handoffs}
+                            kickoffs={officeData.kickoffs}
+                            relays={relays}
                             messages={officeData.messages}
                             teams={officeData.teams}
                             avatarStyles={officeData.avatarStyles}
@@ -2666,16 +2868,7 @@ export default function App() {
                               if (event?.runId) openRun(event.runId);
                               else setView("activity");
                             }}
-                            presentation={
-                              presentation
-                                ? {
-                                    enabled: true,
-                                    largeLabels: Boolean(
-                                      officeSetting("largeLabels"),
-                                    ),
-                                  }
-                                : null
-                            }
+                            presentation={officePresentation}
                             labelDensity={
                               officeSetting("labelDensity") === "auto"
                                 ? null
@@ -2694,157 +2887,183 @@ export default function App() {
                         </Suspense>
                         <div className="scene-legend">
                           <span>
-                            <i className="dot green" />
+                            <i className="dot green" aria-hidden="true" />
                             Working
                           </span>
                           <span>
-                            <i className="dot amber" />
-                            Blocked / needs approval
+                            <i className="dot amber" aria-hidden="true" />
+                            Needs approval, blocked or stale
                           </span>
                           <span>
-                            <i className="dot gray" />
-                            Available
+                            <i className="dot red" aria-hidden="true" />
+                            Failed
                           </span>
                           <span className="scene-caption">
                             {prefs.focusMode
                               ? "Focus mode: ambient motion paused, active run pinned."
-                              : "Activity derived from tool names is marked inferred."}
+                              : "Only agents with recorded work stand on the floor. Activity worked out from tool names is labelled inferred."}
                           </span>
                         </div>
                       </section>
                     )}
-                    {(view === "office" || view === "agents") && (
-                      <section
-                        className={`team-section ${view === "agents" ? "expanded" : ""}`}
-                      >
-                        <div className="section-title">
-                          <h2>
-                            Your agents <span>{agents.length}</span>
-                          </h2>
-                          {view === "agents" ? (
-                            <span className="agent-toolbar">
-                              <button
-                                className="button"
-                                disabled={!connected}
-                                onClick={() => setModal("agent-new")}
-                              >
-                                <UserPlus size={14} />
-                                Add agent
-                              </button>
-                              <button
-                                className="text-button"
-                                aria-pressed={showArchived}
-                                onClick={() => setShowArchived(!showArchived)}
-                              >
-                                {showArchived
-                                  ? "Hide archived"
-                                  : "Show archived"}
-                              </button>
-                            </span>
-                          ) : (
-                            <span>
-                              Click an agent to look closer
-                              <ArrowUpRight size={13} />
-                            </span>
-                          )}
-                        </div>
-                        <div className="agent-grid">
-                          {agents.map(renderAgentCard)}
-                          {!agents.length && (
-                            <EmptyState
-                              icon={<Users size={26} />}
-                              title="No active agents"
-                              description="Add an agent, or restore one you archived earlier."
-                              actions={[
-                                {
-                                  label: "Add agent",
-                                  primary: true,
-                                  disabled: !connected,
-                                  onClick: () => setModal("agent-new"),
+                    {view === "office" && (
+                      <div className="pinned-strip">
+                        <PinnedRuns
+                          runs={runs}
+                          hideWhenEmpty
+                          onOpenRun={(runId, targetWorkspaceId) =>
+                            openRun(runId, targetWorkspaceId)
+                          }
+                        />
+                      </div>
+                    )}
+                    {view === "office" &&
+                      (agents.length ? (
+                        <OfficeRoster
+                          agents={agents}
+                          selectedId={agent?.id ?? null}
+                          onSelect={selectAgent}
+                          onOpenDirectory={() => setView("agents")}
+                        />
+                      ) : (
+                        <section className="team-section roster">
+                          <EmptyState
+                            icon={<Users size={26} />}
+                            title="No active agents"
+                            description="Add an agent, or restore one you archived earlier."
+                            actions={[
+                              {
+                                label: "Add agent",
+                                primary: true,
+                                disabled: !connected,
+                                onClick: () => setModal("agent-new"),
+                              },
+                              {
+                                label: "Show archived",
+                                onClick: () => {
+                                  setView("agents");
+                                  setShowArchived(true);
                                 },
-                                {
-                                  label: "Show archived",
-                                  onClick: () => {
-                                    setView("agents");
-                                    setShowArchived(true);
-                                  },
-                                },
-                              ]}
-                            />
-                          )}
-                        </div>
-                        {view === "agents" && showArchived && (
-                          <div
-                            className="archived-list"
-                            aria-label="Archived agents"
+                              },
+                            ]}
+                          />
+                        </section>
+                      ))}
+                    {view === "agents" && (
+                      <>
+                        <AgentDirectory
+                          agents={agents}
+                          selectedId={agent?.id ?? null}
+                          presentation={presentation}
+                          disabled={!connected || busy}
+                          avatarStyles={officeData.avatarStyles}
+                          reducedMotion={motionReduced}
+                          dark={dark}
+                          onOpenRun={(runId) => openRun(runId)}
+                          onSelect={(id) =>
+                            id ? selectAgent(id) : setSelectedAgent(null)
+                          }
+                          onEdit={(target) => {
+                            selectAgent(target.id);
+                            setModal("agent-edit");
+                          }}
+                          onDuplicate={(target) =>
+                            action(
+                              `${base}/agents/${target.id}/duplicate`,
+                              "POST",
+                              {},
+                              `${target.name} duplicated`,
+                            )
+                          }
+                          onArchive={(target) => {
+                            if (selectedAgent === target.id)
+                              setSelectedAgent(null);
+                            action(
+                              `${base}/agents/${target.id}/archive`,
+                              "POST",
+                              {},
+                              `${target.name} archived`,
+                            );
+                          }}
+                          onShowInOffice={(id) => {
+                            selectAgent(id);
+                            setView("office");
+                          }}
+                        />
+                        {showArchived && (
+                          <section
+                            className="panel archived-list"
+                            aria-labelledby="archived-agents-title"
                           >
-                            <h3>Archived agents</h3>
+                            <h3 id="archived-agents-title">Archived agents</h3>
                             {archivedAgents.length ? (
-                              archivedAgents.map((a) => (
-                                <div className="archived-row" key={a.id}>
-                                  <Avatar agent={a} small />
-                                  <span>
-                                    <strong>{a.name}</strong> · {a.role}
-                                  </span>
-                                  <button
-                                    className="button"
-                                    disabled={!connected || busy}
-                                    onClick={() =>
-                                      action(
-                                        `${base}/agents/${a.id}/restore`,
-                                        "POST",
-                                        {},
-                                        `${a.name} restored`,
-                                      )
-                                    }
+                              <ul>
+                                {archivedAgents.map((a) => (
+                                  <li
+                                    className="archived-row"
+                                    key={a.id}
+                                    style={{ "--agent-color": a.color }}
                                   >
-                                    <ArchiveRestore size={14} />
-                                    Restore
-                                  </button>
-                                </div>
-                              ))
+                                    <span className="dir-tile">
+                                      <AgentPortrait agent={a} size="sm" />
+                                    </span>
+                                    <span className="dir-name">
+                                      <strong>{a.name}</strong>
+                                      <span>{a.role}</span>
+                                    </span>
+                                    <button
+                                      className="button"
+                                      disabled={!connected || busy}
+                                      onClick={() =>
+                                        action(
+                                          `${base}/agents/${a.id}/restore`,
+                                          "POST",
+                                          {},
+                                          `${a.name} restored`,
+                                        )
+                                      }
+                                    >
+                                      <ArchiveRestore
+                                        size={14}
+                                        aria-hidden="true"
+                                      />
+                                      Restore
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
                             ) : (
-                              <p>Nothing archived in this workspace.</p>
+                              <p className="as-muted">
+                                Nothing archived in this workspace.
+                              </p>
                             )}
-                          </div>
+                          </section>
                         )}
-                      </section>
+                      </>
                     )}
                     {(view === "tasks" || view === "board") && taskPanel}
+                    {view === "campus" && (
+                      <section className="panel view-panel campus-panel">
+                        <CampusView
+                          workspaces={workspaces}
+                          currentWorkspaceId={workspaceId}
+                          onSelectWorkspace={enterWorkspace}
+                          presentation={presentation}
+                        />
+                      </section>
+                    )}
                     {view === "activity" && (
-                      <section className="panel activity-page">
-                        <div className="panel-header">
-                          <h2>Workspace activity</h2>
-                          <span className="live-pill">
-                            <i className="dot green" />
-                            Live
-                          </span>
-                        </div>
-                        <div className="activity-list">
-                          {events.length > VIRTUALIZE_TASKS_ABOVE ? (
-                            <VirtualList
-                              items={events}
-                              itemHeight={72}
-                              height={560}
-                              label="Workspace activity"
-                              getKey={(event) => event.id}
-                              renderItem={(event) => (
-                                <ActivityRow event={event} />
-                              )}
-                            />
-                          ) : (
-                            events.map((event) => (
-                              <ActivityRow key={event.id} event={event} />
-                            ))
-                          )}
-                          {!events.length && (
-                            <EmptyState
-                              icon={<Activity size={26} />}
-                              title="Nothing recorded yet"
-                              description="Task updates and run events land here as soon as they are recorded, each with its provenance."
-                            />
-                          )}
-                        </div>
+                      <section
+                        className="panel activity-page"
+                        aria-label="Workspace activity"
+                      >
+                        <ActivityFeed
+                          events={events}
+                          workspaceId={workspaceId}
+                          agents={agents}
+                          presentation={presentation}
+                          onOpenRun={(runId) => openRun(runId)}
+                        />
                       </section>
                     )}
                     {view === "timeline" && (
@@ -2866,6 +3085,22 @@ export default function App() {
                         />
                       </section>
                     )}
+                    {view === "schedules" && (
+                      <section className="panel view-panel">
+                        <SchedulesView
+                          workspaceId={workspaceId}
+                          onOpenRun={(runId) => openRun(runId)}
+                        />
+                      </section>
+                    )}
+                    {view === "workflow" && (
+                      <section className="panel view-panel">
+                        <WorkflowEditor
+                          workspaceId={workspaceId}
+                          onOpenTask={openTask}
+                        />
+                      </section>
+                    )}
                     {view === "analytics" && (
                       <section className="panel view-panel">
                         <AnalyticsView
@@ -2882,18 +3117,11 @@ export default function App() {
                     )}
                     {view === "knowledge" && (
                       <section className="panel view-panel knowledge-stack">
-                        <KnowledgePanel
+                        <KnowledgeView
                           workspaceId={workspaceId}
                           presentation={presentation}
-                        />
-                        <MemoryPanel
-                          workspaceId={workspaceId}
-                          runId={agent?.runId ?? null}
-                        />
-                        <HandoverBrief
-                          workspaceId={workspaceId}
-                          taskId={selectedTask ?? null}
-                          runId={agent?.runId ?? null}
+                          tasks={tasks}
+                          runs={runs}
                         />
                       </section>
                     )}
@@ -2935,25 +3163,41 @@ export default function App() {
                     )}
                     {view === "connections" && (
                       <>
-                        <section className="panel api-card">
+                        <section className="panel view-panel">
+                          <ConnectionsPanel
+                            presentation={presentation}
+                            workspace={{
+                              ...(workspace?.workspace ?? {}),
+                              id: workspaceId,
+                              tasks,
+                            }}
+                            agents={agents}
+                            onLaunched={(run) => {
+                              setToast({ message: "Sandbox task launched" });
+                              if (run?.id) openRun(run.id, run.workspaceId);
+                            }}
+                          />
+                        </section>
+                        <section
+                          className="panel api-card"
+                          aria-labelledby="local-api-title"
+                        >
                           <div className="integration-banner">
-                            <Cable size={24} />
+                            <Cable size={22} aria-hidden="true" />
                             <div>
-                              <h3>Local task API</h3>
+                              <h2 id="local-api-title">Local task API</h2>
                               <p>
-                                Ready to receive tasks from your scripts and the
-                                agent-space CLI.
+                                Scripts and the agent-space CLI can add tasks to{" "}
+                                <strong>
+                                  {workspace?.workspace?.name ??
+                                    "this workspace"}
+                                </strong>{" "}
+                                over HTTP. New tasks appear in every open tab.
                               </p>
                             </div>
-                            <Badge state="IDLE" />
                           </div>
-                          <p className="modal-intro">
-                            Send a task to this workspace using the local HTTP
-                            API. The office updates immediately in every
-                            connected tab.
-                          </p>
                           <pre>
-                            {`curl -X POST ${presentation ? "http://127.0.0.1:<port>" : location.origin}${base}/tasks \\\n  -H "Content-Type: application/json" \\\n  -d '{"title":"Review my project","priority":"high"}'`}
+                            {`curl -X POST ${presentation ? "http://127.0.0.1:<port>" : location.origin}${base}/tasks \\\n${readToken() ? '  -H "Authorization: Bearer <your AGENT_SPACE_TOKEN>" \\\n' : ""}  -H "Content-Type: application/json" \\\n  -d '{"title":"Review my project","priority":"high"}'`}
                           </pre>
                           <button
                             className="button"
@@ -2972,61 +3216,65 @@ export default function App() {
                               }
                             }}
                           >
-                            <Copy size={14} />
+                            <Copy size={14} aria-hidden="true" />
                             Copy API URL
                           </button>
-                        </section>
-                        <section className="panel view-panel">
-                          <ConnectionsPanel
-                            presentation={presentation}
-                            workspace={{
-                              ...(workspace?.workspace ?? {}),
-                              id: workspaceId,
-                              tasks,
-                            }}
-                            agents={agents}
-                            onLaunched={(run) => {
-                              setToast({ message: "Sandbox task launched" });
-                              if (run?.id) openRun(run.id, run.workspaceId);
-                            }}
-                          />
                         </section>
                       </>
                     )}
                   </div>
-                  {!fullView && (
-                    <aside className="inspector">
+                  {showDetail && (
+                    <aside
+                      ref={detailRef}
+                      className={`inspector ${view === "office" ? "office-inspector" : ""}`}
+                      aria-label={
+                        selectedTask ? "Task details" : "Agent spotlight"
+                      }
+                    >
                       <section className="panel inspector-main">
                         <div className="panel-header">
                           <h2>
                             {selectedTask ? "Task details" : "Agent spotlight"}
                           </h2>
-                          {spotlightRun && !selectedTask ? (
-                            <span className="live-pill">
-                              <i className="dot green" />
-                              Run
-                            </span>
-                          ) : (
-                            <span className="inspector-dots">•••</span>
-                          )}
+                          <span className="inspector-head-actions">
+                            {spotlightRun && !selectedTask ? (
+                              <span className="live-pill">
+                                <i className="dot green" aria-hidden="true" />
+                                Run active
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label="Close details"
+                              title="Close details"
+                              onClick={() => {
+                                setSelectedTask(null);
+                                setSelectedAgent(null);
+                              }}
+                            >
+                              <X size={16} aria-hidden="true" />
+                            </button>
+                          </span>
                         </div>
                         {agent && !selectedTask && (
                           <div className="agent-identity">
-                            <Avatar agent={agent} />
+                            <AgentPortrait agent={agent} />
                             <div>
-                              <h2>
-                                {agent.name}
-                                <span className="agent-id">
-                                  {agent.id.toUpperCase()}
-                                </span>
-                              </h2>
+                              <h2>{agent.name}</h2>
                               <p>{agent.role}</p>
                               <span className="identity-badges">
-                                <ProviderBadge
-                                  provider={agent.provider}
-                                  mode={agent.runMode ?? undefined}
-                                  size="small"
-                                />
+                                {agent.provider || agent.runMode ? (
+                                  <ProviderBadge
+                                    provider={agent.provider}
+                                    mode={agent.runMode ?? undefined}
+                                    size="small"
+                                  />
+                                ) : (
+                                  <span className="as-tag">
+                                    No provider chosen
+                                  </span>
+                                )}
                                 <ActivityBadge
                                   activity={agent.activity}
                                   inferred={
@@ -3174,8 +3422,9 @@ export default function App() {
                                 </span>
                                 <h3>Ready for what’s next.</h3>
                                 <p>
-                                  {agent?.name ?? "Your agent"} is available.
-                                  Choose a queued task or create something new.
+                                  {agent?.name ?? "This agent"} has no recorded
+                                  work right now. Assign a queued task or create
+                                  one.
                                 </p>
                                 <button
                                   className="button wide"
@@ -3214,73 +3463,11 @@ export default function App() {
                           </div>
                         )}
                       </section>
-                      <section className="panel pinned-panel">
-                        <PinnedRuns
-                          runs={runs}
-                          onOpenRun={(runId, targetWorkspaceId) =>
-                            openRun(runId, targetWorkspaceId)
-                          }
-                        />
-                      </section>
-                      <section className="panel activity-preview">
-                        <div className="panel-header">
-                          <h2>Latest activity</h2>
-                          <button
-                            className="text-button"
-                            onClick={() => setView("activity")}
-                          >
-                            View all
-                            <ArrowUpRight size={13} />
-                          </button>
-                        </div>
-                        <div className="activity-list">
-                          {events.slice(0, 3).map((event) => (
-                            <ActivityRow
-                              key={event.id}
-                              event={event}
-                              size={14}
-                            />
-                          ))}
-                        </div>
-                      </section>
-                      <div className="demo-note">
-                        <span className="demo-note-icon">
-                          <Box size={18} />
-                        </span>
-                        <p>
-                          {isDemo ? (
-                            <>
-                              <strong>A preview of what’s possible</strong>This
-                              office uses simulated agents. Your manually
-                              created tasks are controlled by you.
-                            </>
-                          ) : (
-                            <>
-                              <strong>Your project workspace</strong>Provider
-                              runs and observed sessions land here with their
-                              provenance. Tasks and profiles are saved locally
-                              and never mixed with the demo.
-                            </>
-                          )}
-                        </p>
-                      </div>
                     </aside>
                   )}
                 </div>
               </>
             )}
-            <footer>
-              <span>
-                <i className={`dot ${connected ? "green" : "amber"}`} />
-                {connected ? "Workspace connected" : "Connection interrupted"}
-                <span className="footer-separator">/</span>Saved locally in
-                SQLite
-              </span>
-              <span>
-                Built for minds that work together.
-                <Box size={13} />
-              </span>
-            </footer>
           </main>
         </div>
         <CommandPalette
@@ -3349,6 +3536,23 @@ export default function App() {
             onSaved={(saved, message) => setToast({ message })}
           />
         )}
+        {modal === "team" && workspace && (
+          <TeamDialog
+            workspaceId={workspaceId}
+            agents={agents}
+            connections={connections}
+            capabilities={capabilityMap}
+            onEnvironment={setOfficeTheme}
+            onClose={() => setModal(null)}
+            onDeployed={(result) => {
+              setModal(null);
+              setToast({
+                message: teamDeployedMessage(result?.workflow, result),
+              });
+              setView("office");
+            }}
+          />
+        )}
         {modal === "task" && workspace && (
           <TaskLauncher
             simple
@@ -3386,431 +3590,557 @@ export default function App() {
           </Dialog>
         )}
         {modal === "settings" && (
-          <Modal title="Workspace settings" onClose={() => setModal(null)}>
-            <div className="settings-row">
-              <div>
-                <h3>{workspace?.workspace?.name ?? "Workspace"}</h3>
-                <p>
-                  {isDemo
-                    ? "The demo workspace keeps simulated sample work."
-                    : maskPath(workspace?.workspace?.rootPath, presentation) ||
-                      "No project folder set."}
-                </p>
-              </div>
-              {isDemo ? (
+          <Modal title="Workspace settings" onClose={() => setModal(null)} wide>
+            <nav className="settings-tabs" aria-label="Settings sections">
+              {[
+                ["workspace", Box, "Workspace", "Identity and execution"],
+                ["environment", Sparkles, "Environment", "Space and display"],
+                ["controls", Shield, "Controls", "Privacy and operations"],
+              ].map(([id, Icon, label, description]) => (
                 <button
-                  className="button"
-                  onClick={() => setModal("workspace-new")}
-                >
-                  <FolderPlus size={14} />
-                  New workspace
-                </button>
-              ) : (
-                <span className="settings-buttons">
-                  <button
-                    className="button"
-                    onClick={() => setModal("workspace-edit")}
-                  >
-                    <Pencil size={14} />
-                    Rename
-                  </button>
-                  <button
-                    className="button"
-                    disabled={!connected || busy}
-                    onClick={async () => {
-                      await action(
-                        `/api/workspaces/${workspaceId}/archive`,
-                        "POST",
-                        {},
-                        "Workspace archived",
-                      );
-                      setWorkspaceId(DEFAULT_WORKSPACE);
-                      setModal(null);
-                    }}
-                  >
-                    <Archive size={14} />
-                    Archive
-                  </button>
-                </span>
-              )}
-            </div>
-            {!isDemo && (
-              <div className="settings-row">
-                <div>
-                  <h3>Execution policy</h3>
-                  <p>
-                    {workspace?.workspace?.policy?.autonomy
-                      ? `Preset: ${workspace.workspace.policy.autonomy}`
-                      : "Autonomy preset, allowed folders, denied commands."}
-                  </p>
-                </div>
-                <button className="button" onClick={() => setModal("policy")}>
-                  <Shield size={14} />
-                  Edit policy
-                </button>
-              </div>
-            )}
-            <SettingSwitch
-              title="Dark appearance"
-              text="A quieter view for late sessions."
-              label="Dark appearance"
-              checked={dark}
-              onChange={setDark}
-            />
-            <div className="settings-row">
-              <div>
-                <h3>Office theme</h3>
-                <p>
-                  Five palettes for focused work, from daylight to midnight.
-                </p>
-              </div>
-              <select
-                aria-label="Office theme"
-                value={officeTheme}
-                onChange={(e) => setOfficeTheme(e.target.value)}
-              >
-                {OFFICE_THEMES.map(([id, label]) => (
-                  <option key={id} value={id}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="settings-row visual-preset-row">
-              <div>
-                <h3>Portable visual preset</h3>
-                <p>
-                  Move this office’s appearance between workspaces. A preview
-                  lists every change before anything is saved.
-                </p>
-              </div>
-              <span className="settings-buttons visual-preset-actions">
-                <button
-                  className="button"
+                  key={id}
                   type="button"
-                  onClick={exportVisualPreset}
+                  aria-current={settingsTab === id ? "page" : undefined}
+                  onClick={() => setSettingsTab(id)}
                 >
-                  <Download size={14} /> Export preset
-                </button>
-                <label className="button visual-preset-import">
-                  <Upload size={14} /> Import preset
-                  <input
-                    aria-label="Import visual preset"
-                    type="file"
-                    accept="application/json,.json"
-                    onChange={previewVisualPreset}
-                  />
-                </label>
-              </span>
-            </div>
-            {visualPresetError ? (
-              <p className="visual-preset-error" role="alert">
-                {visualPresetError}
-              </p>
-            ) : null}
-            {visualPresetPreview ? (
-              <section
-                className="visual-preset-preview"
-                aria-label="Visual preset preview"
-                role="status"
-              >
-                <div>
-                  <span className="visual-preset-icon">
-                    <Eye size={16} />
+                  <Icon size={16} aria-hidden="true" />
+                  <span>
+                    <strong>{label}</strong>
+                    <small>{description}</small>
                   </span>
-                  <p>
-                    <strong>{visualPresetPreview.preset.name}</strong>
-                    <br />
-                    Review these workspace-only appearance changes.
-                  </p>
-                </div>
-                <ul>
-                  {visualPresetPreview.changes.length ? (
-                    visualPresetPreview.changes.map((change) => (
-                      <li key={change.key}>
-                        <b>
-                          {{
-                            theme: "Theme",
-                            "ui.graphics": "Graphics",
-                            "ui.office.labelDensity": "Label density",
-                            "ui.office.avatarDetail": "Avatar detail",
-                            "ui.office.lighting": "Lighting",
-                            "ui.office.ambientSound": "Ambient room tone",
-                          }[change.key] ?? change.key}
-                        </b>
-                        <span>
-                          {String(change.from ?? "default")} →{" "}
-                          {String(change.to)}
-                        </span>
-                      </li>
-                    ))
-                  ) : (
-                    <li>No visual changes are needed.</li>
-                  )}
-                </ul>
-                <span className="settings-buttons">
-                  <button
-                    className="text-button"
-                    type="button"
-                    onClick={() => setVisualPresetPreview(null)}
-                  >
-                    Discard
-                  </button>
-                  <button
-                    className="button primary"
-                    type="button"
-                    disabled={visualPresetBusy}
-                    onClick={applyVisualPreset}
-                  >
-                    Apply preset
-                  </button>
-                </span>
-              </section>
-            ) : null}
-            <div className="settings-row">
-              <div>
-                <h3>Graphics</h3>
-                <p>
-                  Low disables shadows and particles; high uses full detail.
-                </p>
-              </div>
-              <select
-                aria-label="Graphics preset"
-                value={officeSetting("graphics")}
-                onChange={(e) =>
-                  saveVisualSetting(
-                    OFFICE_SETTINGS.graphics.key,
-                    e.target.value,
-                  )
-                }
-              >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
-            </div>
-            <SettingSwitch
-              title="Reduced motion"
-              text="No walking tweens, bobbing or particles in the office."
-              label="Reduced motion"
-              checked={Boolean(prefs.reducedMotion)}
-              onChange={(v) => updatePref("reducedMotion", v)}
-            />
-            <SettingSwitch
-              title="Focus mode"
-              text="Hides decorative motion and pins the active run in the spotlight."
-              label="Focus mode"
-              checked={Boolean(prefs.focusMode)}
-              onChange={(v) => updatePref("focusMode", v)}
-            />
-            <SettingSwitch
-              title="Presentation mode"
-              text="Masks private folder paths and account labels on screen."
-              label="Presentation mode"
-              checked={Boolean(prefs.presentation)}
-              onChange={(v) => updatePref("presentation", v)}
-            />
-            <SettingSwitch
-              title="Large labels in presentation mode"
-              text="Bigger name plates in the office while you are presenting."
-              label="Large labels in presentation mode"
-              checked={Boolean(officeSetting("largeLabels"))}
-              disabled={!presentation}
-              onChange={(v) =>
-                saveSetting(OFFICE_SETTINGS.largeLabels.key, Boolean(v))
-              }
-            />
-            <div className="settings-row">
-              <div>
-                <h3>Label density</h3>
-                <p>How many name plates the office draws at once.</p>
-              </div>
-              <select
-                aria-label="Label density"
-                value={officeSetting("labelDensity")}
-                onChange={(e) =>
-                  saveVisualSetting(
-                    OFFICE_SETTINGS.labelDensity.key,
-                    e.target.value,
-                  )
-                }
-              >
-                <option value="auto">Follow graphics preset</option>
-                <option value="all">Every agent</option>
-                <option value="active">Working agents only</option>
-                <option value="none">None</option>
-              </select>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>Avatar detail</h3>
-                <p>Low drops accessories and hair; high draws every part.</p>
-              </div>
-              <select
-                aria-label="Avatar detail"
-                value={officeSetting("avatarDetail")}
-                onChange={(e) =>
-                  saveVisualSetting(
-                    OFFICE_SETTINGS.avatarDetail.key,
-                    e.target.value,
-                  )
-                }
-              >
-                <option value="auto">Follow graphics preset</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>Lighting</h3>
-                <p>Day, evening or a focused pool of light on the desks.</p>
-              </div>
-              <select
-                aria-label="Office lighting"
-                value={officeSetting("lighting")}
-                onChange={(e) =>
-                  saveVisualSetting(
-                    OFFICE_SETTINGS.lighting.key,
-                    e.target.value,
-                  )
-                }
-              >
-                <option value="day">Day</option>
-                <option value="evening">Evening</option>
-                <option value="focus">Focus</option>
-              </select>
-            </div>
-            <SettingSwitch
-              title="Ambient room tone"
-              text="A very quiet synthesized room tone in the office. Off by default, and never played with reduced motion on."
-              label="Ambient room tone"
-              checked={Boolean(officeSetting("ambientSound"))}
-              onChange={(v) =>
-                saveVisualSetting(OFFICE_SETTINGS.ambientSound.key, Boolean(v))
-              }
-            />
-            <SettingSwitch
-              title="Share personal memory with runs"
-              text="Lets a run's context include your user-scope notes. Workspace and run notes are always included."
-              label="Share personal memory with runs"
-              checked={serverSettings["memory.shareUserScope"] !== false}
-              onChange={(v) => saveSetting("memory.shareUserScope", Boolean(v))}
-            />
-            <SettingSwitch
-              title="Let MCP clients decide approvals"
-              text="Off by default. When on, an MCP client may approve or deny a pending approval; every decision is recorded with the actor “mcp”."
-              label="Let MCP clients decide approvals"
-              checked={serverSettings["mcp.allowDecisions"] === true}
-              onChange={(v) => saveSetting("mcp.allowDecisions", Boolean(v))}
-            />
-            <div className="settings-row">
-              <div>
-                <h3>Operations and retention</h3>
-                <p>
-                  Health, queues, backups and how long events and artifacts are
-                  kept.
-                </p>
-              </div>
-              <span className="settings-buttons">
-                <button
-                  className="button"
-                  onClick={() => {
-                    setModal(null);
-                    setView("ops");
-                  }}
-                >
-                  <HeartPulse size={14} />
-                  Open operations
                 </button>
-              </span>
-            </div>
-            <div className="settings-row">
-              <div>
-                <h3>Setup</h3>
+              ))}
+            </nav>
+            <section
+              className="settings-pane"
+              aria-labelledby={`settings-${settingsTab}`}
+            >
+              <header className="settings-pane-head">
+                <span className="as-tag">Workspace only</span>
+                <h3 id={`settings-${settingsTab}`}>
+                  {
+                    {
+                      workspace: "Workspace identity and execution",
+                      environment: "Compose the working environment",
+                      controls: "Privacy, operations and product behavior",
+                    }[settingsTab]
+                  }
+                </h3>
                 <p>
-                  The first-run checklist: demo, connections, a sample workspace
-                  and a starter workflow.
+                  {
+                    {
+                      workspace:
+                        "Manage this project and the policy that controls agent work.",
+                      environment:
+                        "Choose the floor plan, rendering quality and information density for this workspace.",
+                      controls:
+                        "Choose what is shared, remembered and available to external control surfaces.",
+                    }[settingsTab]
+                  }
                 </p>
-              </div>
-              <SetupEntry
-                onOpen={() => {
-                  setModal(null);
-                  setSetupOpen(true);
-                }}
-              />
-            </div>
-            <SettingSwitch
-              title="Remember views"
-              text="Reopen the last view, filter and workspace next time."
-              label="Remember views"
-              checked={Boolean(prefs.rememberViews)}
-              onChange={(v) => {
-                updatePref("rememberViews", v);
-                if (!v) {
-                  try {
-                    localStorage.removeItem(UI_KEY);
-                  } catch {}
-                }
-              }}
-            />
-            {isDemo && (
-              <>
-                <div className="settings-row">
-                  <div>
-                    <h3>Demo simulation</h3>
-                    <p>Move sample tasks forward automatically.</p>
+              </header>
+              {settingsTab === "workspace" ? (
+                <>
+                  <div className="settings-row">
+                    <div>
+                      <h3>{workspace?.workspace?.name ?? "Workspace"}</h3>
+                      <p>
+                        {isDemo
+                          ? "The demo workspace keeps simulated sample work."
+                          : maskPath(
+                              workspace?.workspace?.rootPath,
+                              presentation,
+                            ) || "No project folder set."}
+                      </p>
+                    </div>
+                    {isDemo ? (
+                      <button
+                        className="button"
+                        onClick={() => setModal("workspace-new")}
+                      >
+                        <FolderPlus size={14} />
+                        New workspace
+                      </button>
+                    ) : (
+                      <span className="settings-buttons">
+                        <button
+                          className="button"
+                          onClick={() => setModal("workspace-edit")}
+                        >
+                          <Pencil size={14} />
+                          Rename
+                        </button>
+                        <button
+                          className="button"
+                          disabled={!connected || busy}
+                          onClick={async () => {
+                            await action(
+                              `/api/workspaces/${workspaceId}/archive`,
+                              "POST",
+                              {},
+                              "Workspace archived",
+                            );
+                            setWorkspaceId(DEFAULT_WORKSPACE);
+                            setModal(null);
+                          }}
+                        >
+                          <Archive size={14} />
+                          Archive
+                        </button>
+                      </span>
+                    )}
                   </div>
-                  <button
-                    className="button"
-                    disabled={!connected || busy}
-                    onClick={() =>
-                      action(`${base}/demo`, "POST", {
-                        running: !workspace?.demoRunning,
-                      })
+                  {!isDemo && (
+                    <div className="settings-row">
+                      <div>
+                        <h3>Execution policy</h3>
+                        <p>
+                          {workspace?.workspace?.policy?.autonomy
+                            ? `Preset: ${workspace.workspace.policy.autonomy}`
+                            : "Autonomy, folders and commands, and where each kind of work may go."}
+                        </p>
+                      </div>
+                      <button
+                        className="button"
+                        onClick={() => setModal("policy")}
+                      >
+                        <Shield size={14} />
+                        Edit policy
+                      </button>
+                    </div>
+                  )}
+                  <div className="settings-row">
+                    <div>
+                      <h3>Setup</h3>
+                      <p>
+                        The first-run checklist: demo, connections, a sample
+                        workspace and a starter workflow.
+                      </p>
+                    </div>
+                    <SetupEntry
+                      onOpen={() => {
+                        setModal(null);
+                        setSetupOpen(true);
+                      }}
+                    />
+                  </div>
+                </>
+              ) : null}
+              {settingsTab === "environment" ? (
+                <>
+                  <SettingSwitch
+                    title="Dark appearance"
+                    text="A quieter view for late sessions."
+                    label="Dark appearance"
+                    checked={dark}
+                    onChange={setDark}
+                  />
+                  <div className="settings-row settings-environment-row">
+                    <div className="settings-row-copy">
+                      <h3>Office theme</h3>
+                      <p>
+                        Eight environments with distinct palettes and floor
+                        plans.
+                      </p>
+                    </div>
+                    <div
+                      className="environment-picker"
+                      aria-label="Office theme"
+                    >
+                      {OFFICE_THEMES.map(([id, label, color]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          aria-pressed={officeTheme === id}
+                          onClick={() => setOfficeTheme(id)}
+                        >
+                          <i style={{ background: color }} aria-hidden="true" />
+                          <span>{label}</span>
+                          {officeTheme === id ? <Check size={13} /> : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="settings-row visual-preset-row">
+                    <div>
+                      <h3>Portable visual preset</h3>
+                      <p>
+                        Move this office’s appearance between workspaces. A
+                        preview lists every change before anything is saved.
+                      </p>
+                    </div>
+                    <span className="settings-buttons visual-preset-actions">
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={exportVisualPreset}
+                      >
+                        <Download size={14} /> Export preset
+                      </button>
+                      <label className="button visual-preset-import">
+                        <Upload size={14} /> Import preset
+                        <input
+                          aria-label="Import visual preset"
+                          type="file"
+                          accept="application/json,.json"
+                          onChange={previewVisualPreset}
+                        />
+                      </label>
+                    </span>
+                  </div>
+                  {visualPresetError ? (
+                    <p className="visual-preset-error" role="alert">
+                      {visualPresetError}
+                    </p>
+                  ) : null}
+                  {visualPresetPreview ? (
+                    <section
+                      className="visual-preset-preview"
+                      aria-label="Visual preset preview"
+                      role="status"
+                    >
+                      <div>
+                        <span className="visual-preset-icon">
+                          <Eye size={16} />
+                        </span>
+                        <p>
+                          <strong>{visualPresetPreview.preset.name}</strong>
+                          <br />
+                          Review these workspace-only appearance changes.
+                        </p>
+                      </div>
+                      <ul>
+                        {visualPresetPreview.changes.length ? (
+                          visualPresetPreview.changes.map((change) => (
+                            <li key={change.key}>
+                              <b>
+                                {{
+                                  theme: "Theme",
+                                  "ui.graphics": "Graphics",
+                                  "ui.office.labelDensity": "Label density",
+                                  "ui.office.avatarDetail": "Avatar detail",
+                                  "ui.office.lighting": "Lighting",
+                                  "ui.office.ambientSound": "Ambient room tone",
+                                }[change.key] ?? change.key}
+                              </b>
+                              <span>
+                                {String(change.from ?? "default")} →{" "}
+                                {String(change.to)}
+                              </span>
+                            </li>
+                          ))
+                        ) : (
+                          <li>No visual changes are needed.</li>
+                        )}
+                      </ul>
+                      <span className="settings-buttons">
+                        <button
+                          className="text-button"
+                          type="button"
+                          onClick={() => setVisualPresetPreview(null)}
+                        >
+                          Discard
+                        </button>
+                        <button
+                          className="button primary"
+                          type="button"
+                          disabled={visualPresetBusy}
+                          onClick={applyVisualPreset}
+                        >
+                          Apply preset
+                        </button>
+                      </span>
+                    </section>
+                  ) : null}
+                  <div className="settings-row">
+                    <div>
+                      <h3>Graphics</h3>
+                      <p>
+                        Auto adapts detail to the screen and sustained frame
+                        rate.
+                      </p>
+                    </div>
+                    <select
+                      aria-label="Graphics preset"
+                      value={officeSetting("graphics")}
+                      onChange={(e) =>
+                        saveVisualSetting(
+                          OFFICE_SETTINGS.graphics.key,
+                          e.target.value,
+                        )
+                      }
+                    >
+                      <option value="auto">Auto (recommended)</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <SettingSwitch
+                    title="Reduced motion"
+                    text={
+                      systemReducedMotion
+                        ? "On, because your system asks for less motion: no walking, bobbing or particles in the office."
+                        : "No walking tweens, bobbing or particles in the office."
                     }
-                  >
-                    {workspace?.demoRunning ? "Pause" : "Resume"}
-                  </button>
-                </div>
-                <div className="settings-row">
-                  <div>
-                    <h3>Restart demo</h3>
-                    <p>Reload sample tasks. Manual tasks are kept.</p>
+                    label="Reduced motion"
+                    checked={Boolean(prefs.reducedMotion) || systemReducedMotion}
+                    disabled={systemReducedMotion}
+                    onChange={(v) => updatePref("reducedMotion", v)}
+                  />
+                  <SettingSwitch
+                    title="Focus mode"
+                    text="Hides decorative motion and pins the active run in the spotlight."
+                    label="Focus mode"
+                    checked={Boolean(prefs.focusMode)}
+                    onChange={(v) => updatePref("focusMode", v)}
+                  />
+                  <SettingSwitch
+                    title="Presentation mode"
+                    text="Masks private folder paths and account labels on screen."
+                    label="Presentation mode"
+                    checked={Boolean(prefs.presentation)}
+                    onChange={(v) => updatePref("presentation", v)}
+                  />
+                  <SettingSwitch
+                    title="Large labels in presentation mode"
+                    text="Bigger name plates in the office while you are presenting."
+                    label="Large labels in presentation mode"
+                    checked={Boolean(officeSetting("largeLabels"))}
+                    disabled={!presentation}
+                    onChange={(v) =>
+                      saveSetting(OFFICE_SETTINGS.largeLabels.key, Boolean(v))
+                    }
+                  />
+                  <div className="settings-row">
+                    <div>
+                      <h3>Label density</h3>
+                      <p>How many name plates the office draws at once.</p>
+                    </div>
+                    <select
+                      aria-label="Label density"
+                      value={officeSetting("labelDensity")}
+                      onChange={(e) =>
+                        saveVisualSetting(
+                          OFFICE_SETTINGS.labelDensity.key,
+                          e.target.value,
+                        )
+                      }
+                    >
+                      <option value="auto">Follow graphics preset</option>
+                      <option value="all">Every agent</option>
+                      <option value="active">Working agents only</option>
+                      <option value="none">None</option>
+                    </select>
                   </div>
-                  <button
-                    className="button"
-                    disabled={!connected || busy}
-                    onClick={() =>
-                      action(
-                        `${base}/demo`,
-                        "POST",
-                        { action: "reset" },
-                        "Demo restarted",
+                  <div className="settings-row">
+                    <div>
+                      <h3>Avatar detail</h3>
+                      <p>
+                        Low drops accessories and hair; high draws every part.
+                      </p>
+                    </div>
+                    <select
+                      aria-label="Avatar detail"
+                      value={officeSetting("avatarDetail")}
+                      onChange={(e) =>
+                        saveVisualSetting(
+                          OFFICE_SETTINGS.avatarDetail.key,
+                          e.target.value,
+                        )
+                      }
+                    >
+                      <option value="auto">Follow graphics preset</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <div>
+                      <h3>Lighting</h3>
+                      <p>
+                        Day, evening or a focused pool of light on the desks.
+                      </p>
+                    </div>
+                    <select
+                      aria-label="Office lighting"
+                      value={officeSetting("lighting")}
+                      onChange={(e) =>
+                        saveVisualSetting(
+                          OFFICE_SETTINGS.lighting.key,
+                          e.target.value,
+                        )
+                      }
+                    >
+                      <option value="day">Day</option>
+                      <option value="evening">Evening</option>
+                      <option value="focus">Focus</option>
+                    </select>
+                  </div>
+                  <SettingSwitch
+                    title="Ambient room tone"
+                    text="A very quiet synthesized room tone in the office. Off by default, and never played with reduced motion on."
+                    label="Ambient room tone"
+                    checked={Boolean(officeSetting("ambientSound"))}
+                    onChange={(v) =>
+                      saveVisualSetting(
+                        OFFICE_SETTINGS.ambientSound.key,
+                        Boolean(v),
                       )
                     }
-                  >
-                    <RotateCcw size={14} />
-                    Restart
-                  </button>
-                </div>
-              </>
-            )}
-            <div className="settings-row">
-              <div>
-                <h3>Keyboard shortcuts</h3>
-                <p>Ctrl / ⌘ + K opens the command palette.</p>
-              </div>
-              <button className="button" onClick={() => setModal("help")}>
-                <Keyboard size={14} />
-                Show all
-              </button>
-            </div>
-            <p className="form-note">
-              Workspaces, agents, tasks, and runs are saved in a local SQLite
-              database and survive server restarts.
-            </p>
+                  />
+                </>
+              ) : null}
+              {settingsTab === "controls" ? (
+                <>
+                  <SettingSwitch
+                    title="Share personal memory with runs"
+                    text="Lets a run's context include your user-scope notes. Workspace and run notes are always included."
+                    label="Share personal memory with runs"
+                    checked={serverSettings["memory.shareUserScope"] !== false}
+                    onChange={(v) =>
+                      saveSetting("memory.shareUserScope", Boolean(v))
+                    }
+                  />
+                  <SettingSwitch
+                    title="Let MCP clients decide approvals"
+                    text="Off by default. When on, an MCP client may approve or deny a pending approval; every decision is recorded with the actor “mcp”."
+                    label="Let MCP clients decide approvals"
+                    checked={serverSettings["mcp.allowDecisions"] === true}
+                    onChange={(v) =>
+                      saveSetting("mcp.allowDecisions", Boolean(v))
+                    }
+                  />
+                  <div className="settings-row">
+                    <div>
+                      <h3>Operations and retention</h3>
+                      <p>
+                        Health, queues, backups and how long events and
+                        artifacts are kept.
+                      </p>
+                    </div>
+                    <span className="settings-buttons">
+                      <button
+                        className="button"
+                        onClick={() => {
+                          setModal(null);
+                          setView("ops");
+                        }}
+                      >
+                        <HeartPulse size={14} />
+                        Open operations
+                      </button>
+                    </span>
+                  </div>
+                  <SettingSwitch
+                    title="Remember views"
+                    text="Reopen the last view, filter and workspace next time."
+                    label="Remember views"
+                    checked={Boolean(prefs.rememberViews)}
+                    onChange={(v) => {
+                      updatePref("rememberViews", v);
+                      if (!v) {
+                        try {
+                          localStorage.removeItem(UI_KEY);
+                        } catch {}
+                      }
+                    }}
+                  />
+                  {isDemo && (
+                    <>
+                      <div className="settings-row">
+                        <div>
+                          <h3>Demo simulation</h3>
+                          <p>Move sample tasks forward automatically.</p>
+                        </div>
+                        <button
+                          className="button"
+                          disabled={!connected || busy}
+                          onClick={() =>
+                            action(`${base}/demo`, "POST", {
+                              running: !workspace?.demoRunning,
+                            })
+                          }
+                        >
+                          {workspace?.demoRunning ? "Pause" : "Resume"}
+                        </button>
+                      </div>
+                      <div className="settings-row">
+                        <div>
+                          <h3>Restart demo</h3>
+                          <p>Reload sample tasks. Manual tasks are kept.</p>
+                        </div>
+                        <button
+                          className="button"
+                          disabled={!connected || busy}
+                          onClick={() =>
+                            action(
+                              `${base}/demo`,
+                              "POST",
+                              { action: "reset" },
+                              "Demo restarted",
+                            )
+                          }
+                        >
+                          <RotateCcw size={14} />
+                          Restart
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  <div className="settings-row">
+                    <div>
+                      <h3>Keyboard shortcuts</h3>
+                      <p>Ctrl / ⌘ + K opens the command palette.</p>
+                    </div>
+                    <button className="button" onClick={() => setModal("help")}>
+                      <Keyboard size={14} />
+                      Show all
+                    </button>
+                  </div>
+                  <p className="form-note">
+                    Workspaces, agents, tasks, and runs are saved in a local
+                    SQLite database and survive server restarts.
+                  </p>
+                </>
+              ) : null}
+            </section>
+          </Modal>
+        )}
+        {modal === "more" && (
+          <Modal title="All destinations" onClose={() => setModal(null)}>
+            <nav className="more-nav" aria-label="All destinations">
+              {RAIL_GROUPS.map(([groupName, items]) => (
+                <section key={groupName} className="more-group">
+                  <h3>{groupName}</h3>
+                  <div className="more-grid">
+                    {items.map(({ icon: Icon, id, label }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-label={label}
+                        aria-current={
+                          navIdFor(view) === id ? "page" : undefined
+                        }
+                        onClick={() => {
+                          setView(id);
+                          setModal(null);
+                        }}
+                      >
+                        <Icon size={18} aria-hidden="true" />
+                        <span>{label}</span>
+                        <RailBadge
+                          id={id}
+                          needsDecision={needsDecision}
+                          liveCount={liveSessions.length}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </nav>
           </Modal>
         )}
         {modal === "help" && (

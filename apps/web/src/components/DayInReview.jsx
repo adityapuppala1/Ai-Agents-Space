@@ -22,16 +22,71 @@ import {
   maskText,
   maskArtifact,
   basename,
+  providerLabel,
   RUN_STATUS_LABELS,
 } from "../hooks/useApi.js";
-import ProviderBadge from "./ProviderBadge.jsx";
 import Provenance from "./Provenance.jsx";
 import EmptyState from "./EmptyState.jsx";
 import EventLink from "./EventLink.jsx";
-import { buildChapter } from "../hooks/viewLogic.js";
+import { buildChapter, chapterDigest, digestLine } from "../hooks/viewLogic.js";
 
 /* Chapter assembly is in ../hooks/viewLogic.js (covered by node:test). */
 export { buildChapter };
+
+/** Runs read per assembly; the page says when a range holds more. */
+const CHAPTER_LIMIT = 40;
+/** Events read per run, in pages; a longer run says it was cut. */
+const EVENT_PAGE = 5000;
+const EVENT_LIMIT = 20000;
+
+/**
+ * One milestone row. The time is the citation: it opens the recorded event.
+ * Provenance is shown only where it differs from the run's own source, and
+ * context the tool added is labelled and kept to one line.
+ */
+function BeatRow({
+  beat,
+  runId,
+  runProvenance,
+  isCurrent,
+  presentation,
+  onOpenEvent,
+}) {
+  const text = maskText(beat.text, presentation, 6);
+  return (
+    <li
+      className={`dr-beat${isCurrent ? " current" : ""}${beat.injected ? " is-injected" : ""}`}
+      aria-current={isCurrent ? "step" : undefined}
+    >
+      <EventLink
+        size="small"
+        event={beat.event}
+        runId={runId}
+        label={formatTime(beat.timestamp)}
+        describe={`${beat.label}: ${String(text).slice(0, 80)}`}
+        showTime={false}
+        showProvenance={false}
+        onOpenEvent={onOpenEvent}
+      />
+      <span className="dr-kind">
+        {beat.injected ? "Added by the tool" : beat.label}
+      </span>
+      <span className="dr-text">
+        {text}
+        {beat.file ? (
+          <code className="dr-file">
+            {presentation ? basename(beat.file) : maskPath(beat.file, false)}
+          </code>
+        ) : null}
+      </span>
+      {beat.provenance && beat.provenance !== runProvenance ? (
+        <Provenance value={beat.provenance} />
+      ) : (
+        <span aria-hidden="true" />
+      )}
+    </li>
+  );
+}
 
 function startOfDay(date) {
   const value = new Date(date);
@@ -46,11 +101,17 @@ function toDateInput(ms) {
 }
 
 /**
- * "Day in review": a playback assembled from recorded events for a date range.
+ * "Day in review": what each run in a date range did, assembled from recorded
+ * events. Each run shows counts of its milestones (prompts, files edited,
+ * commands, tests, approvals, errors), the files it touched and a few key
+ * moments; the full milestone list is one click away. Playback steps through
+ * the key moments.
  *
  * Honesty rules this component follows:
- *  - Every beat is a stored event and links to it; there is no narration, no
- *    generated summary, and no invented progress.
+ *  - Every moment is a stored event and links to it; the digest is counts of
+ *    recorded events, never narration, a generated summary or progress.
+ *  - Text a tool added to the conversation (attachment lists, reminders) is
+ *    labelled "Added by the tool" instead of passing as the person's prompt.
  *  - Artifacts are cited by their real id and opened through the inspector.
  *  - Runs whose events were removed by retention say so instead of showing an
  *    empty chapter.
@@ -133,16 +194,31 @@ export default function DayInReview({
     setError(null);
     try {
       const built = [];
-      for (const run of inRange.slice(0, 40)) {
+      for (const run of inRange.slice(0, CHAPTER_LIMIT)) {
         try {
-          const detail = await apiFetch(`/runs/${encodeURIComponent(run.id)}`);
-          built.push(
-            buildChapter(
+          const id = encodeURIComponent(run.id);
+          const detail = await apiFetch(`/runs/${id}`);
+          // The run detail carries only its first 1000 events; read the rest
+          // page by page so the counts describe the whole run.
+          const events = [...(detail?.events ?? [])];
+          let more = events.length >= 1000;
+          while (more && events.length < EVENT_LIMIT) {
+            const after = events.at(-1)?.sequence ?? 0;
+            const page = await apiFetch(
+              `/runs/${id}/events?after=${after}&limit=${EVENT_PAGE}`,
+            );
+            const list = page?.events ?? [];
+            events.push(...list);
+            more = list.length === EVENT_PAGE;
+          }
+          built.push({
+            ...buildChapter(
               detail?.run ?? run,
-              detail?.events ?? [],
+              events,
               detail?.artifacts ?? [],
             ),
-          );
+            truncated: more,
+          });
         } catch (err) {
           built.push({
             ...buildChapter(run, [], []),
@@ -164,13 +240,33 @@ export default function DayInReview({
     setPlaying(false);
   }, [from, to, workspaceId]);
 
-  const flat = useMemo(
+  const digests = useMemo(
     () =>
-      chapters.flatMap((chapter) =>
-        chapter.beats.map((beat) => ({ chapter, beat })),
+      new Map(
+        chapters.map((chapter) => [chapter.runId, chapterDigest(chapter)]),
       ),
     [chapters],
   );
+  // Playback steps through the key moments, not every recorded milestone:
+  // hundreds of beats cannot be followed one at a time.
+  const flat = useMemo(
+    () =>
+      chapters.flatMap((chapter) =>
+        (digests.get(chapter.runId)?.keyMoments ?? []).map((beat) => ({
+          chapter,
+          beat,
+        })),
+      ),
+    [chapters, digests],
+  );
+  const [openAll, setOpenAll] = useState(() => new Set());
+  const toggleAll = (runId, open) =>
+    setOpenAll((current) => {
+      const next = new Set(current);
+      if (open) next.add(runId);
+      else next.delete(runId);
+      return next;
+    });
 
   useEffect(() => {
     if (!playing || flat.length === 0) return undefined;
@@ -195,51 +291,68 @@ export default function DayInReview({
     (sum, chapter) => sum + chapter.eventCount,
     0,
   );
+  const dayTotals = useMemo(() => {
+    const counts = {
+      prompts: 0,
+      commands: 0,
+      tests: 0,
+      approvals: 0,
+      delegations: 0,
+      errors: 0,
+    };
+    const files = new Set();
+    for (const digest of digests.values()) {
+      for (const key of Object.keys(counts)) counts[key] += digest.counts[key];
+      for (const file of digest.files) files.add(file.path);
+    }
+    return digestLine(counts, [...files]);
+  }, [digests]);
 
   return (
-    <section className="as-dayreview" aria-label="Day in review">
-      <header className="as-section-head">
-        <h3>
-          <CalendarDays size={14} aria-hidden="true" /> Day in review
-        </h3>
-        <span className="as-tag">assembled from recorded events</span>
+    <section className="as-dayreview dr" aria-label="Day in review">
+      <header className="dr-head">
+        <p className="dr-lead">
+          <CalendarDays size={15} aria-hidden="true" /> What each run did,
+          assembled from recorded events. Every moment links to the event it
+          came from; Agent Space adds no narration.
+        </p>
+        <div className="dr-range">
+          <label className="as-inline-label">
+            From
+            <input
+              type="date"
+              value={from}
+              max={to}
+              onChange={(event) => setFrom(event.target.value)}
+            />
+          </label>
+          <label className="as-inline-label">
+            To
+            <input
+              type="date"
+              value={to}
+              min={from}
+              onChange={(event) => setTo(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="button primary"
+            onClick={assemble}
+            disabled={loading || inRange.length === 0}
+          >
+            {loading
+              ? "Assembling…"
+              : `Assemble ${Math.min(inRange.length, CHAPTER_LIMIT)} run${Math.min(inRange.length, CHAPTER_LIMIT) === 1 ? "" : "s"}`}
+          </button>
+        </div>
+        {inRange.length > CHAPTER_LIMIT ? (
+          <p className="as-muted as-small">
+            {inRange.length} runs started in this range; the first{" "}
+            {CHAPTER_LIMIT} are assembled. Narrow the range to see the rest.
+          </p>
+        ) : null}
       </header>
-      <p className="as-muted as-small">
-        Every beat below is a stored event, shown in the order it was recorded,
-        with a link to the event and to the artifact it produced. Agent Space
-        writes no narration and adds no commentary.
-      </p>
-
-      <div className="as-row as-wrap as-dayreview-range">
-        <label className="as-inline-label">
-          From
-          <input
-            type="date"
-            value={from}
-            max={to}
-            onChange={(event) => setFrom(event.target.value)}
-          />
-        </label>
-        <label className="as-inline-label">
-          To
-          <input
-            type="date"
-            value={to}
-            min={from}
-            onChange={(event) => setTo(event.target.value)}
-          />
-        </label>
-        <button
-          type="button"
-          className="button primary"
-          onClick={assemble}
-          disabled={loading || inRange.length === 0}
-        >
-          {loading
-            ? "Assembling…"
-            : `Assemble ${inRange.length} run${inRange.length === 1 ? "" : "s"}`}
-        </button>
-      </div>
 
       {fetched.error ? (
         <EmptyState
@@ -266,8 +379,23 @@ export default function DayInReview({
 
       {chapters.length ? (
         <>
+          <div className="dr-summary">
+            <p>
+              <strong>
+                {chapters.length} run{chapters.length === 1 ? "" : "s"}
+              </strong>
+              {dayTotals ? ` · ${dayTotals}` : ""}
+            </p>
+            <p className="as-muted as-small">
+              From {totalEvents.toLocaleString()} recorded events
+              {chapters.some((chapter) => chapter.truncated)
+                ? `; runs longer than ${EVENT_LIMIT.toLocaleString()} events are counted up to that point`
+                : ""}
+              .
+            </p>
+          </div>
           <div
-            className="as-row as-wrap as-dayreview-controls"
+            className="dr-controls"
             role="group"
             aria-label="Playback controls"
           >
@@ -276,7 +404,7 @@ export default function DayInReview({
               className="icon-button"
               onClick={() => setIndex((value) => Math.max(0, value - 1))}
               disabled={index === 0}
-              aria-label="Previous beat"
+              aria-label="Previous moment"
             >
               <SkipBack size={14} />
             </button>
@@ -285,7 +413,7 @@ export default function DayInReview({
               className="button"
               onClick={() => setPlaying((value) => !value)}
               aria-pressed={playing}
-              disabled={reducedMotion.current}
+              disabled={reducedMotion.current || flat.length === 0}
               title={
                 reducedMotion.current
                   ? "Auto-advance is off because this browser asks for reduced motion. Step with the arrows."
@@ -293,7 +421,7 @@ export default function DayInReview({
               }
             >
               {playing ? <Pause size={12} /> : <Play size={12} />}{" "}
-              {playing ? "Pause" : "Play"}
+              {playing ? "Pause" : "Play key moments"}
             </button>
             <button
               type="button"
@@ -302,12 +430,12 @@ export default function DayInReview({
                 setIndex((value) => Math.min(flat.length - 1, value + 1))
               }
               disabled={index >= flat.length - 1}
-              aria-label="Next beat"
+              aria-label="Next moment"
             >
               <SkipForward size={14} />
             </button>
-            <label className="as-scrubber as-dayreview-scrubber">
-              Beat {flat.length ? index + 1 : 0} of {flat.length}
+            <label className="as-scrubber dr-scrubber">
+              Moment {flat.length ? index + 1 : 0} of {flat.length}
               <input
                 type="range"
                 min={0}
@@ -318,40 +446,57 @@ export default function DayInReview({
                 aria-valuetext={
                   current
                     ? `${formatTime(current.beat.timestamp)} ${current.beat.text}`
-                    : "no beats"
+                    : "no moments"
                 }
               />
             </label>
-            <span className="as-muted as-small">
-              {chapters.length} run{chapters.length === 1 ? "" : "s"} ·{" "}
-              {totalEvents} recorded events · {flat.length} milestones
-            </span>
           </div>
 
-          <ol className="as-dayreview-list" aria-label="Recorded chapters">
+          <ol
+            className="as-dayreview-list dr-list"
+            aria-label="Recorded chapters"
+          >
             {chapters.map((chapter) => {
+              const digest = digests.get(chapter.runId);
               const containsCurrent = current?.chapter.runId === chapter.runId;
+              const provider =
+                chapter.provider && chapter.provider !== "manual"
+                  ? providerLabel(chapter.provider)
+                  : null;
+              // A provider run's events come from the provider; only an event
+              // with a different source (a person's decision, the system)
+              // carries its own provenance chip.
+              const runProvenance =
+                chapter.mode === "observed" || chapter.mode === "managed"
+                  ? "provider"
+                  : null;
+              const line = digest
+                ? digestLine(digest.counts, digest.files)
+                : "";
+              const showAll = openAll.has(chapter.runId);
+              const timing = `${formatTime(chapter.startedAt)}${
+                chapter.endedAt
+                  ? ` · ${formatElapsed(new Date(chapter.endedAt) - new Date(chapter.startedAt))}`
+                  : " · still running"
+              }`;
               return (
                 <li
                   key={chapter.runId}
-                  className={`as-dayreview-chapter ${containsCurrent ? "active" : ""}`}
+                  className={`as-dayreview-chapter dr-chapter ${containsCurrent ? "active" : ""}`}
                 >
-                  <header className="as-row as-wrap">
-                    <ProviderBadge
-                      provider={chapter.provider}
-                      mode={chapter.mode}
-                      size="small"
-                    />
-                    <strong>{maskText(chapter.title, presentation)}</strong>
-                    <span className="as-tag">
-                      {RUN_STATUS_LABELS[chapter.status] ?? chapter.status}
-                    </span>
-                    <span className="as-muted as-small">
-                      {formatTime(chapter.startedAt)}
-                      {chapter.endedAt
-                        ? ` · ${formatElapsed(new Date(chapter.endedAt) - new Date(chapter.startedAt))}`
-                        : " · still running"}
-                    </span>
+                  <header className="dr-chapter-head">
+                    <div className="dr-chapter-title">
+                      <strong>{maskText(chapter.title, presentation)}</strong>
+                      <span className="as-muted as-small">
+                        {[
+                          provider,
+                          RUN_STATUS_LABELS[chapter.status] ?? chapter.status,
+                          timing,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    </div>
                     {onOpenRun ? (
                       <button
                         type="button"
@@ -366,6 +511,12 @@ export default function DayInReview({
                   {chapter.unavailable ? (
                     <p className="as-error-text">{chapter.unavailable}</p>
                   ) : null}
+                  {chapter.truncated ? (
+                    <p className="as-muted as-small">
+                      Counted from the first {EVENT_LIMIT.toLocaleString()}{" "}
+                      events; this run recorded more. Open the run for the rest.
+                    </p>
+                  ) : null}
                   {!chapter.unavailable && chapter.beats.length === 0 ? (
                     <p className="as-muted as-small">
                       No milestone events are retained for this run
@@ -375,45 +526,72 @@ export default function DayInReview({
                     </p>
                   ) : null}
 
-                  <ol className="as-dayreview-beats">
-                    {chapter.beats.map((beat) => {
-                      const isCurrent =
-                        containsCurrent && current?.beat.id === beat.id;
-                      return (
-                        <li
-                          key={beat.id}
-                          className={`as-dayreview-beat ${isCurrent ? "current" : ""}`}
-                          aria-current={isCurrent ? "step" : undefined}
-                        >
-                          <time
-                            dateTime={new Date(beat.timestamp).toISOString()}
-                          >
-                            {formatTime(beat.timestamp)}
-                          </time>
-                          <span className="as-event-kind">{beat.kind}</span>
-                          <span className="as-event-msg">
-                            {maskText(beat.text, presentation, 6)}
-                          </span>
-                          {beat.file ? (
-                            <code className="as-mono as-small">
-                              {presentation
-                                ? basename(beat.file)
-                                : maskPath(beat.file, false)}
-                            </code>
-                          ) : null}
-                          <Provenance value={beat.provenance} />
-                          <EventLink
-                            size="small"
-                            event={beat.event}
+                  {line ? <p className="dr-digest">{line}</p> : null}
+                  {digest?.files.length ? (
+                    <p className="dr-files">
+                      <span className="as-muted">Files: </span>
+                      {digest.files
+                        .slice(0, 6)
+                        .map((file) => basename(file.path))
+                        .join(", ")}
+                      {digest.files.length > 6
+                        ? ` and ${digest.files.length - 6} more`
+                        : ""}
+                    </p>
+                  ) : null}
+
+                  {digest?.keyMoments.length ? (
+                    <>
+                      <h4 className="dr-subhead">Key moments</h4>
+                      <ol className="dr-beats">
+                        {digest.keyMoments.map((beat) => (
+                          <BeatRow
+                            key={beat.id}
+                            beat={beat}
                             runId={chapter.runId}
-                            label="cite"
-                            showProvenance={false}
+                            runProvenance={runProvenance}
+                            isCurrent={
+                              containsCurrent && current?.beat.id === beat.id
+                            }
+                            presentation={presentation}
                             onOpenEvent={onOpenEvent}
                           />
-                        </li>
-                      );
-                    })}
-                  </ol>
+                        ))}
+                      </ol>
+                    </>
+                  ) : null}
+
+                  {digest && digest.beats.length > digest.keyMoments.length ? (
+                    <details
+                      className="dr-all"
+                      open={showAll}
+                      onToggle={(event) =>
+                        toggleAll(chapter.runId, event.currentTarget.open)
+                      }
+                    >
+                      <summary>
+                        All {digest.beats.length} recorded milestones
+                        {digest.counts.injected
+                          ? ` (${digest.counts.injected} added by the tool)`
+                          : ""}
+                      </summary>
+                      {showAll ? (
+                        <ol className="dr-beats">
+                          {digest.beats.map((beat) => (
+                            <BeatRow
+                              key={beat.id}
+                              beat={beat}
+                              runId={chapter.runId}
+                              runProvenance={runProvenance}
+                              isCurrent={false}
+                              presentation={presentation}
+                              onOpenEvent={onOpenEvent}
+                            />
+                          ))}
+                        </ol>
+                      ) : null}
+                    </details>
+                  ) : null}
 
                   {chapter.artifacts.length ? (
                     <div className="as-row as-wrap as-dayreview-artifacts">

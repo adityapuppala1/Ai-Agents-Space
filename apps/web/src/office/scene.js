@@ -4,7 +4,14 @@
 import * as THREE from "three";
 import { lightingFor } from "./data.js";
 
-/** Graphics presets. `frameMs` is the minimum time between rendered frames. */
+/**
+ * Graphics presets. `frameMs` is the minimum time between rendered frames.
+ * `screenBudget` caps how many desks keep an individual monitor texture and
+ * `crowd` how many figures keep articulated limbs — both scale caps, so a
+ * large team costs the same as the preset promises rather than growing with
+ * the roster. They come from the ui.graphics setting the workspace already
+ * stores; there is no separate setting for them.
+ */
 export const GRAPHICS = {
   low: {
     shadows: false,
@@ -15,6 +22,8 @@ export const GRAPHICS = {
     avatarDetail: "low",
     labelDensity: "active",
     animationRate: 0.5,
+    screenBudget: 6,
+    crowd: 12,
   },
   medium: {
     shadows: true,
@@ -25,6 +34,8 @@ export const GRAPHICS = {
     avatarDetail: "medium",
     labelDensity: "all",
     animationRate: 1,
+    screenBudget: 16,
+    crowd: 24,
   },
   high: {
     shadows: true,
@@ -35,11 +46,49 @@ export const GRAPHICS = {
     avatarDetail: "high",
     labelDensity: "all",
     animationRate: 1,
+    screenBudget: 32,
+    crowd: 48,
   },
 };
 
 export function graphicsPreset(name) {
   return GRAPHICS[name] ?? GRAPHICS.medium;
+}
+
+export function adaptiveGraphics({
+  width = 1280,
+  devicePixelRatio = 1,
+  hardwareConcurrency = 8,
+  deviceMemory = 8,
+  reducedMotion = false,
+} = {}) {
+  if (reducedMotion)
+    return { preset: "low", reason: "reduced motion preference" };
+  if (width < 720) return { preset: "low", reason: "compact viewport" };
+  if (deviceMemory <= 4 || hardwareConcurrency <= 4)
+    return { preset: "low", reason: "device capability" };
+  if (
+    width >= 1280 &&
+    deviceMemory >= 8 &&
+    hardwareConcurrency >= 8 &&
+    devicePixelRatio <= 2
+  )
+    return { preset: "high", reason: "device capability" };
+  return { preset: "medium", reason: "balanced for this screen" };
+}
+
+export function resolveGraphics(name, environment, runtimeCap = null) {
+  if (name !== "auto")
+    return { preset: name in GRAPHICS ? name : "medium", reason: "manual" };
+  const result = adaptiveGraphics(environment);
+  const order = ["low", "medium", "high"];
+  if (runtimeCap && order.indexOf(runtimeCap) < order.indexOf(result.preset))
+    return { preset: runtimeCap, reason: "adjusted for frame rate" };
+  return result;
+}
+
+export function lowerGraphics(name) {
+  return name === "high" ? "medium" : "low";
 }
 
 /**
@@ -267,10 +316,11 @@ export function createRenderer(container) {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.setClearColor("#000000", 0);
   container.prepend(renderer.domElement);
-  renderer.domElement.setAttribute(
-    "aria-label",
-    "Interactive 3D office. Use the agent buttons to inspect tasks.",
-  );
+  // The drawing itself carries no fact of its own: every agent, room and
+  // state above it is a named control in the same group, and the roster
+  // repeats the floor in text. A labelled canvas node only gave a screen
+  // reader something to announce that it could not use.
+  renderer.domElement.setAttribute("aria-hidden", "true");
   return renderer;
 }
 

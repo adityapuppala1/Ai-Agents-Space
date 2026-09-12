@@ -131,6 +131,10 @@ export const PROVIDER_LABELS = {
   copilot: "Copilot",
   cursor: "Cursor",
   gemini: "Gemini",
+  antigravity: "Antigravity",
+  opencode: "OpenCode",
+  aider: "Aider",
+  windsurf: "Windsurf",
   manual: "Manual",
   simulated: "Demo",
   demo: "Demo",
@@ -142,7 +146,7 @@ export function providerLabel(provider) {
 }
 
 export const ACTIVITY_LABELS = {
-  IDLE: "Available",
+  IDLE: "Idle",
   ANALYZING: "Planning",
   CODING: "Coding",
   RESEARCHING: "Researching",
@@ -156,11 +160,54 @@ export const ACTIVITY_LABELS = {
   BLOCKED: "Blocked",
   ERROR: "Error",
   STALE: "Stale",
+  // Presentation only: a manual task, whose one recorded fact is its status.
+  MANUAL: "In progress",
 };
 
+/** Why a manual task shows no activity (tooltips and screen readers). */
+export const MANUAL_ACTIVITY_NOTE =
+  "A manual task: nothing reports what this agent is doing, so only the task's status is shown.";
+
 export function activityLabel(activity) {
-  if (!activity) return "Available";
+  if (!activity) return "Idle";
   return ACTIVITY_LABELS[activity] ?? String(activity);
+}
+
+/** Readable names for the normalized event kinds (core/contracts.js). */
+export const EVENT_KIND_LABELS = {
+  "session.start": "Session started",
+  "session.end": "Session ended",
+  "turn.start": "Turn started",
+  "turn.end": "Turn ended",
+  prompt: "Prompt",
+  message: "Message",
+  // Only the fact of reasoning is recorded; its content is never stored.
+  reasoning: "Reasoning",
+  "tool.start": "Tool call",
+  "tool.end": "Tool finished",
+  "file.read": "Read file",
+  "file.edit": "Edited file",
+  "file.write": "Wrote file",
+  search: "Search",
+  web: "Web",
+  command: "Command",
+  test: "Test",
+  "approval.request": "Approval asked",
+  "approval.decision": "Decision",
+  delegation: "Delegated",
+  usage: "Usage",
+  error: "Error",
+  status: "Status",
+  "run.status": "Status",
+  system: "System",
+  task: "Task",
+  complete: "Completed",
+  handoff: "Handoff",
+  team: "Team",
+};
+
+export function eventKindLabel(kind) {
+  return EVENT_KIND_LABELS[kind] ?? String(kind ?? "Event");
 }
 
 export const RUN_STATUS_LABELS = {
@@ -194,10 +241,41 @@ export function formatElapsed(ms) {
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
+  if (h >= 24)
+    return `${Math.floor(h / 24)}d ${h % 24}h ${String(m).padStart(2, "0")}m`;
   if (h > 0)
     return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
   if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
   return `${s}s`;
+}
+
+/**
+ * Re-renders the caller every `intervalMs` while `active`, so elapsed times
+ * and "4m ago" labels stay true between snapshots. One timer per caller.
+ */
+export function useTicker(active = true, intervalMs = 1000) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!active) return undefined;
+    const timer = setInterval(() => setTick((value) => value + 1), intervalMs);
+    return () => clearInterval(timer);
+  }, [active, intervalMs]);
+}
+
+/**
+ * "just now", "4m ago", "2h ago", "3d ago" for a recorded time (epoch ms or
+ * an ISO string); null when there is no usable time.
+ */
+export function timeAgo(timestamp, now = Date.now()) {
+  const at =
+    typeof timestamp === "number" ? timestamp : Date.parse(timestamp ?? "");
+  if (!Number.isFinite(at) || at <= 0) return null;
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function formatTime(timestamp) {
@@ -227,6 +305,22 @@ export function maskPath(path, masked = true) {
     .filter(Boolean);
   if (parts.length <= 2) return parts.join("/");
   return `…/${parts.slice(-2).join("/")}`;
+}
+
+/**
+ * Masks absolute paths inside free text (doctor findings, CLI errors) the way
+ * maskPath masks a path field, so presentation mode does not leak a user name
+ * through a sentence. `~/…` paths name no user and are left alone. A sentence
+ * full stop after a path stays outside the mask.
+ */
+const ABSOLUTE_PATH =
+  /(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|root)\/)[^\s"'`,;()<>]+/g;
+export function maskPathsInText(text, masked = true) {
+  if (!text || !masked) return text ?? "";
+  return String(text).replace(ABSOLUTE_PATH, (match) => {
+    const stop = /[.:]+$/.exec(match)?.[0] ?? "";
+    return maskPath(match.slice(0, match.length - stop.length), true) + stop;
+  });
 }
 
 export function basename(path) {

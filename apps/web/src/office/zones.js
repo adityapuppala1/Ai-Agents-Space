@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { builders, textTexture, swapTexture } from "./scene.js";
 import { basename, maskPrivate } from "./data.js";
 import { themeMaterials } from "./themes.js";
+import { buildDeskField } from "./instancing.js";
 
 /** One honest line about the artifacts on the review table. */
 function artifactLine(chips) {
@@ -15,7 +16,14 @@ function artifactLine(chips) {
 
 export const ZONE_IDS = ["research", "qa", "review", "meeting", "breakArea"];
 
-/** Activity → zone. Anything not listed keeps the agent at its own desk. */
+/**
+ * What a room is for. A room serves the function it is named after unless the
+ * workspace gave it another one (core/visual/OfficeLayout.js); "none" means
+ * the office has no room for that work and it happens at the agent's desk.
+ */
+export const ROOM_FUNCTIONS = [...ZONE_IDS];
+
+/** Activity → room function. Anything not listed keeps the agent at its desk. */
 export const ZONE_FOR_ACTIVITY = {
   CODING: "desk",
   COMMANDING: "desk",
@@ -33,8 +41,22 @@ export const ZONE_FOR_ACTIVITY = {
   IDLE: "desk",
 };
 
-export function zoneForActivity(activity) {
-  return ZONE_FOR_ACTIVITY[activity] ?? "desk";
+/**
+ * Where an activity takes place: the room serving that function in this
+ * layout, or "desk" when the office has no such room. Without a layout each
+ * room serves its own function, which is the office's own arrangement.
+ */
+export function zoneForActivity(activity, layout = null) {
+  const wanted = ZONE_FOR_ACTIVITY[activity] ?? "desk";
+  if (wanted === "desk") return "desk";
+  if (!layout?.functionAt) return wanted;
+  return layout.functionAt[wanted] ?? "desk";
+}
+
+/** The room serving `fn` in this layout, or null when none does. */
+export function roomFor(layout, fn) {
+  const id = layout?.functionAt?.[fn] ?? (layout?.zones?.[fn] ? fn : null);
+  return id ? (layout.zones[id] ?? null) : null;
 }
 
 const DESK_PITCH_X = 2.3;
@@ -46,7 +68,54 @@ const SHARED_ROW = 3.3; // depth reserved for the shared zone row
  * agents. Coordinates: x across the room, z toward the viewer; the back
  * wall is at -depth/2.
  */
-export function computeLayout(count) {
+export const LAYOUT_PROFILES = new Set([
+  "studio",
+  "command",
+  "courtyard",
+  "spine",
+  "stacks",
+  "gallery",
+]);
+
+const PROFILE_ANCHORS = {
+  command: [
+    [-0.72, -0.54],
+    [-0.38, -0.7],
+    [0, -0.78],
+    [0.38, -0.7],
+    [0.72, -0.54],
+  ],
+  courtyard: [
+    [-0.75, -0.62],
+    [-0.75, -0.18],
+    [0, -0.72],
+    [0.75, -0.18],
+    [0.75, -0.62],
+  ],
+  spine: [
+    [-0.72, -0.68],
+    [-0.36, -0.68],
+    [0, -0.68],
+    [0.36, -0.68],
+    [0.72, -0.68],
+  ],
+  stacks: [
+    [-0.76, -0.66],
+    [-0.4, -0.66],
+    [-0.04, -0.66],
+    [0.32, -0.66],
+    [0.68, -0.66],
+  ],
+  gallery: [
+    [-0.72, -0.7],
+    [-0.36, -0.58],
+    [0, -0.46],
+    [0.36, -0.58],
+    [0.72, -0.7],
+  ],
+};
+
+export function computeLayout(count, profile = "studio", arranged = null) {
   const n = Math.max(count, 1);
   const cols = Math.min(6, Math.max(3, Math.ceil(Math.sqrt(n))));
   const rows = Math.max(2, Math.ceil(n / cols));
@@ -66,28 +135,60 @@ export function computeLayout(count) {
   }
   const zones = {};
   ZONE_IDS.forEach((id, i) => {
-    const x = -width / 2 + (width * (i + 0.5)) / ZONE_IDS.length;
+    // A workspace that arranged its own office (core/visual/OfficeLayout.js)
+    // places the room itself; otherwise the theme's layout profile does.
+    const placed = arranged?.zones?.[id] ?? null;
+    const anchor = PROFILE_ANCHORS[profile]?.[i] ?? null;
+    const x = placed
+      ? placed.x * (width / 2 - 0.7)
+      : anchor
+        ? anchor[0] * (width / 2 - 0.7)
+        : -width / 2 + (width * (i + 0.5)) / ZONE_IDS.length;
+    const centerZ = placed
+      ? placed.z * (depth / 2 - 0.6)
+      : anchor
+        ? anchor[1] * (depth / 2 - 0.6)
+        : zoneZ;
     const slots = [];
     for (let s = 0; s < 8; s++) {
       const angle = Math.PI * 0.15 + (Math.PI * 0.7 * s) / 7;
       const sx = x + Math.cos(angle) * 1.15;
-      const sz = zoneZ + 0.35 + Math.sin(angle) * 0.9;
+      const sz = centerZ + 0.35 + Math.sin(angle) * 0.9;
       // Yaw that points the figure at the zone centre (yaw 0 = facing -z).
       slots.push({
         x: sx,
         z: sz,
-        facing: Math.atan2(-(x - sx), -(zoneZ - sz)),
+        facing: Math.atan2(-(x - sx), -(centerZ - sz)),
       });
     }
     zones[id] = {
       id,
       x,
-      z: zoneZ,
+      z: centerZ,
       w: width / ZONE_IDS.length - 0.3,
       d: SHARED_ROW - 0.6,
       slots,
+      // The name this workspace gave the room, if it gave it one, and what
+      // it is for: its own function unless the workspace changed it.
+      label: placed?.label ?? null,
+      placed: Boolean(placed),
+      does: placed?.does ?? id,
     };
   });
+  // Function → the room serving it. A function no room serves is absent, and
+  // the work happens at the agent's desk.
+  const functionAt = {};
+  for (const id of ZONE_IDS) {
+    const does = zones[id].does;
+    if (does !== "none" && !functionAt[does]) functionAt[does] = id;
+  }
+  // Furniture the workspace placed, in world units.
+  const props = (arranged?.props ?? []).map((prop, index) => ({
+    ...prop,
+    index,
+    x: prop.x * (width / 2 - 0.6),
+    z: prop.z * (depth / 2 - 0.6),
+  }));
   return {
     width,
     depth,
@@ -95,76 +196,78 @@ export function computeLayout(count) {
     rows,
     desks,
     zones,
+    functionAt,
+    props,
+    arranged:
+      props.length > 0 ||
+      ZONE_IDS.some((id) => zones[id].placed || zones[id].does !== id),
+    profile: LAYOUT_PROFILES.has(profile) ? profile : "studio",
     scale: Math.max(width / 14.5, depth / 10.7),
   };
+}
+
+/** Room names for a theme, with the names this workspace gave its rooms. */
+export function roomNames(theme, layout) {
+  const out = { ...(theme?.rooms ?? {}) };
+  for (const id of ZONE_IDS) {
+    const zone = layout?.zones?.[id] ?? null;
+    const does = zone?.does ?? id;
+    // A room that took another function is called after that function,
+    // unless this workspace gave it a name of its own.
+    if (does !== id && does !== "none") out[id] = theme?.rooms?.[does] ?? does;
+    if (does === "none") out[id] = "Open space";
+    if (zone?.label) out[id] = zone.label;
+  }
+  return out;
 }
 
 /**
  * Builds zone furniture into `group`. Returns handles used to update the
  * monitors and status screens without rebuilding geometry.
+ *
+ * `options.liveScreens` is the set of agent ids whose desk keeps an individual
+ * monitor with its own canvas texture; every other desk shares one instanced
+ * dim screen. Omitting it gives every agent a live screen, which is what the
+ * scene did before the screen budget existed.
  */
-export function buildZones(group, theme, layout, agents, res) {
+export function buildZones(group, theme, layout, agents, res, options = {}) {
+  // Each room is called after the function it serves, under the name this
+  // workspace gave it (roomNames); the sign over it says so.
+  const names = roomNames(theme, layout);
   const p = theme.palette;
   const mat = themeMaterials(theme, res);
   const { box, cylinder, sphere, plane } = builders(res);
-  const monitors = new Map();
   const screenMaterial = (texture) =>
     res.track(new THREE.MeshBasicMaterial({ map: texture }));
 
-  // Personal desks (one per agent, index-aligned).
-  agents.forEach((agent, i) => {
-    const d = layout.desks[i];
-    if (!d) return;
-    const g = new THREE.Group();
-    g.position.set(d.x, 0.08, d.z);
-    group.add(g);
-    box(2.1, 0.025, 2.2, mat.mat, 0, 0.005, 0.2, g);
-    box(1.9, 0.11, 0.95, mat.wood, 0, 0.94, -0.35, g);
-    for (const dx of [-0.85, 0.85])
-      for (const dz of [-0.72, -0.02])
-        box(0.06, 0.89, 0.06, mat.base, dx, 0.43, dz, g);
-    box(0.6, 0.04, 0.26, mat.metal, -0.1, 1.02, -0.6, g);
-    box(0.05, 0.25, 0.05, mat.metal, -0.1, 1.16, -0.63, g);
-    const frame = box(1.05, 0.64, 0.06, mat.dark, -0.1, 1.5, -0.63, g);
-    frame.userData.monitorAgentId = agent.id;
-    const texture = textTexture(res, {
-      lines: [agent.name ?? "", "no file"],
-      bg: p.screenBg,
-      fg: p.screenFg,
-      accent: agent.color,
-    });
-    const screen = plane(
-      0.96,
-      0.55,
-      screenMaterial(texture),
-      -0.1,
-      1.5,
-      -0.595,
-      g,
-    );
-    screen.userData.monitorAgentId = agent.id;
-    box(0.62, 0.03, 0.22, mat.base, -0.1, 1.01, -0.1, g);
-    cylinder(
-      0.075,
-      0.065,
-      0.14,
-      res.material(agent.color ?? p.accent),
-      0.7,
-      1.06,
-      -0.45,
-      g,
-    );
-    // Chair.
-    const accent = res.material(agent.color ?? p.accent);
-    box(0.6, 0.13, 0.58, accent, 0, 0.59, 0.75, g);
-    box(0.64, 0.6, 0.12, accent, 0, 0.93, 1.05, g);
-    cylinder(0.05, 0.05, 0.36, mat.metal, 0, 0.33, 0.75, g);
-    box(0.62, 0.05, 0.08, mat.metal, 0, 0.15, 0.75, g);
-    box(0.08, 0.05, 0.62, mat.metal, 0, 0.15, 0.75, g);
-    monitors.set(agent.id, { screen, texture, key: "" });
+  // Personal desks: 13 repeated shapes per agent, drawn as instanced parts so
+  // the draw-object count grows by chunk rather than by agent.
+  const desks = buildDeskField(group, {
+    layout,
+    agents,
+    res,
+    mat,
+    palette: p,
+    liveScreens: options.liveScreens ?? null,
+    screenMaterial: (agent) => {
+      const texture = textTexture(res, {
+        lines: [agent.name ?? "", "no file"],
+        bg: p.screenBg,
+        fg: p.screenFg,
+        accent: agent.color,
+      });
+      return { material: screenMaterial(texture), texture };
+    },
   });
+  const monitors = desks.monitors;
 
-  const z = layout.zones;
+  // Each function is built in the room that serves it; a function no room
+  // serves is not built at all, and its work happens at the desks.
+  const z = {};
+  for (const fn of ROOM_FUNCTIONS) {
+    const id = layout.functionAt?.[fn] ?? (layout.zones[fn] ? fn : null);
+    z[fn] = id ? layout.zones[id] : null;
+  }
   const label = (zone, text) => {
     const t = textTexture(res, {
       lines: [text],
@@ -187,9 +290,9 @@ export function buildZones(group, theme, layout, agents, res) {
   };
 
   // Research desk / library shelf.
-  {
+  if (z.research) {
     const zone = z.research;
-    label(zone, theme.rooms.research);
+    label(zone, names.research);
     box(2.2, 0.12, 0.9, mat.wood, zone.x, 0.9, zone.z - 0.6, group);
     for (const dx of [-1, 1])
       box(0.06, 0.85, 0.06, mat.base, zone.x + dx, 0.45, zone.z - 0.6, group);
@@ -234,7 +337,8 @@ export function buildZones(group, theme, layout, agents, res) {
   // QA station with status screen.
   const qa = (() => {
     const zone = z.qa;
-    label(zone, theme.rooms.qa);
+    if (!zone) return null;
+    label(zone, names.qa);
     box(2.0, 0.12, 0.8, mat.metal, zone.x, 0.9, zone.z - 0.6, group);
     for (const dx of [-0.9, 0.9])
       box(0.06, 0.85, 0.06, mat.base, zone.x + dx, 0.45, zone.z - 0.6, group);
@@ -249,7 +353,7 @@ export function buildZones(group, theme, layout, agents, res) {
       group,
     );
     const texture = textTexture(res, {
-      lines: [theme.rooms.qa, "idle"],
+      lines: [names.qa, "idle"],
       bg: p.screenBg,
       fg: p.screenFg,
       w: 384,
@@ -281,12 +385,13 @@ export function buildZones(group, theme, layout, agents, res) {
   // Review table with whiteboard.
   const review = (() => {
     const zone = z.review;
-    label(zone, theme.rooms.review);
+    if (!zone) return null;
+    label(zone, names.review);
     cylinder(0.9, 0.9, 0.08, mat.wood, zone.x, 0.9, zone.z - 0.2, group, 24);
     cylinder(0.08, 0.14, 0.86, mat.metal, zone.x, 0.45, zone.z - 0.2, group);
     box(2.4, 1.2, 0.08, mat.base, zone.x, 1.9, -layout.depth / 2 + 0.12, group);
     const texture = textTexture(res, {
-      lines: [theme.rooms.review, "nothing under review"],
+      lines: [names.review, "nothing under review"],
       bg: "#f7f7f2",
       fg: "#41556a",
       w: 384,
@@ -331,7 +436,8 @@ export function buildZones(group, theme, layout, agents, res) {
   // Meeting area: round table, chairs and the task handoff card.
   const handoff = (() => {
     const zone = z.meeting;
-    label(zone, theme.rooms.meeting);
+    if (!zone) return null;
+    label(zone, names.meeting);
     cylinder(1.0, 1.0, 0.08, mat.wood, zone.x, 0.82, zone.z - 0.1, group, 28);
     cylinder(0.1, 0.18, 0.78, mat.metal, zone.x, 0.41, zone.z - 0.1, group);
     for (let i = 0; i < 5; i++) {
@@ -373,7 +479,8 @@ export function buildZones(group, theme, layout, agents, res) {
   // Break area: sofa, coffee table and the cluster marker.
   const cluster = (() => {
     const zone = z.breakArea;
-    label(zone, theme.rooms.breakArea);
+    if (!zone) return null;
+    label(zone, names.breakArea);
     box(
       1.9,
       0.5,
@@ -410,11 +517,16 @@ export function buildZones(group, theme, layout, agents, res) {
 
   return {
     monitors,
+    deskField: desks.field,
     qa,
     review,
     handoff,
     cluster,
     theme,
+    /** Frees the instance buffers; Resources still owns geometry and materials. */
+    dispose() {
+      desks.dispose();
+    },
     /**
      * Redraws a monitor when its content key changed. `preview` holds already
      * sanitized artifact lines (masked by the caller under presentation mode).
@@ -464,9 +576,10 @@ export function buildZones(group, theme, layout, agents, res) {
      * explicit "no test output yet" when nothing was recorded.
      */
     updateQa(screen) {
+      if (!qa) return;
       const lines = screen?.lines?.length
         ? screen.lines
-        : [theme.rooms.qa, "no test output yet"];
+        : [names.qa, "no test output yet"];
       const key = `${screen?.tone ?? "none"}|${lines.join(",")}`;
       if (key === qa.key) return;
       qa.key = key;
@@ -478,6 +591,7 @@ export function buildZones(group, theme, layout, agents, res) {
     },
     /** Whiteboard names plus up to three clickable artifact chips. */
     updateReview(names, chips = []) {
+      if (!review) return;
       const list = Array.isArray(chips) ? chips.slice(0, 3) : [];
       const key = `${names.join(",")}|${list.map((c) => c.id).join(",")}`;
       if (key !== review.key) {
@@ -485,8 +599,8 @@ export function buildZones(group, theme, layout, agents, res) {
         let lines;
         if (names.length)
           lines = ["reviewing", ...names.slice(0, 3), artifactLine(list)];
-        else if (list.length) lines = [theme.rooms.review, artifactLine(list)];
-        else lines = [theme.rooms.review, "nothing under review"];
+        else if (list.length) lines = [names.review, artifactLine(list)];
+        else lines = [names.review, "nothing under review"];
         swapTexture(res, review, {
           lines,
           bg: "#f7f7f2",
@@ -516,6 +630,7 @@ export function buildZones(group, theme, layout, agents, res) {
     },
     /** Task handoff card above the meeting table; hidden when none recorded. */
     updateHandoff(card) {
+      if (!handoff) return;
       handoff.screen.visible = !!card;
       const key = card ? card.lines.join("|") : "";
       if (key === handoff.key) return;
@@ -532,6 +647,7 @@ export function buildZones(group, theme, layout, agents, res) {
       });
     },
     updateCluster(count) {
+      if (!cluster) return;
       cluster.screen.visible = count > 0;
       const key = String(count);
       if (key === cluster.key) return;

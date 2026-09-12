@@ -45,7 +45,7 @@ export { SAMPLE_SCOPE };
 function StepShell({ title, children, note }) {
   return (
     <div className="as-onboard-step">
-      <h4>{title}</h4>
+      <h3>{title}</h3>
       {children}
       {note ? <p className="as-muted as-small">{note}</p> : null}
     </div>
@@ -93,6 +93,7 @@ export default function Onboarding({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [picked, setPicked] = useState(null); // { id, values }
   const [sample, setSample] = useState({
     name: "Sample (disposable)",
     rootPath: "",
@@ -149,7 +150,9 @@ export default function Onboarding({
     }
   };
 
-  const startWorkflow = async (templateId) => {
+  // A template's steps name inputs ({{client}}); they are asked for here, so
+  // no task is ever created with a placeholder in its title.
+  const startWorkflow = async (templateId, inputs = {}) => {
     if (!workspaceId) {
       setError("Choose a workspace first.");
       return;
@@ -160,8 +163,9 @@ export default function Onboarding({
     try {
       const result = await apiFetch(
         `/workspaces/${encodeURIComponent(workspaceId)}/workflows`,
-        { method: "POST", body: { templateId } },
+        { method: "POST", body: { templateId, inputs } },
       );
+      setPicked(null);
       const count = result?.tasks?.length ?? result?.taskIds?.length ?? 0;
       setMessage(
         `Created ${count || "the"} task${count === 1 ? "" : "s"} from the template. Nothing has been dispatched: start a run when you are ready.`,
@@ -177,7 +181,7 @@ export default function Onboarding({
   return (
     <section className="as-onboard" aria-label="Setup">
       <header className="as-section-head">
-        <h3>Set up Agent Space</h3>
+        <h2>Set up Agent Space</h2>
         <div className="as-row">
           <button
             type="button"
@@ -350,7 +354,7 @@ export default function Onboarding({
           title="A disposable sample workspace"
           note="Agent Space has no server route that scaffolds a repository on disk, so it does not pretend to create one: point this workspace at a scratch folder you already have (a fresh `git init` folder works well)."
         >
-          <h5>Scope and resource assumptions</h5>
+          <h4>Scope and resource assumptions</h4>
           <ul className="as-onboard-scope">
             {SAMPLE_SCOPE.map((line) => (
               <li key={line}>{line}</li>
@@ -430,14 +434,82 @@ export default function Onboarding({
                       </p>
                     ) : null}
                   </div>
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={busy || !workspaceId}
-                    onClick={() => startWorkflow(template.id)}
-                  >
-                    Create tasks
-                  </button>
+                  {picked?.id === template.id ? null : (
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={busy || !workspaceId}
+                      onClick={() => {
+                        const keys = template.inputKeys ?? [];
+                        if (keys.length)
+                          setPicked({
+                            id: template.id,
+                            values: Object.fromEntries(
+                              keys.map((key) => [key, ""]),
+                            ),
+                          });
+                        else startWorkflow(template.id);
+                      }}
+                    >
+                      Create tasks
+                    </button>
+                  )}
+                  {picked?.id === template.id ? (
+                    <form
+                      className="as-onboard-inputs"
+                      aria-label={`Inputs for ${template.name}`}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        startWorkflow(template.id, picked.values);
+                      }}
+                    >
+                      {Object.keys(picked.values).map((key, index) => (
+                        <label key={key}>
+                          {key.charAt(0).toUpperCase() + key.slice(1)}
+                          <input
+                            required
+                            autoFocus={index === 0}
+                            value={picked.values[key]}
+                            placeholder={
+                              template.sampleInputs?.[key]
+                                ? `For example: ${String(template.sampleInputs[key]).slice(0, 80)}`
+                                : ""
+                            }
+                            onChange={(event) =>
+                              setPicked({
+                                ...picked,
+                                values: {
+                                  ...picked.values,
+                                  [key]: event.target.value,
+                                },
+                              })
+                            }
+                          />
+                        </label>
+                      ))}
+                      <div className="as-row as-wrap">
+                        <button
+                          type="submit"
+                          className="button primary"
+                          disabled={
+                            busy ||
+                            Object.values(picked.values).some(
+                              (value) => !value.trim(),
+                            )
+                          }
+                        >
+                          Create {template.steps?.length ?? ""} tasks
+                        </button>
+                        <button
+                          type="button"
+                          className="button"
+                          onClick={() => setPicked(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  ) : null}
                 </li>
               ))}
           </ul>

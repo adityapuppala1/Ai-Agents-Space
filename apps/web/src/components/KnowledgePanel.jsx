@@ -107,9 +107,9 @@ export default function KnowledgePanel({ workspaceId, presentation = false }) {
   return (
     <section className="as-knowledge" aria-label="Knowledge collections">
       <header className="as-section-head">
-        <h3>
+        <h2>
           <Library size={14} aria-hidden="true" /> Knowledge
-        </h3>
+        </h2>
         <button
           type="button"
           className="button"

@@ -35,16 +35,44 @@ import {
   RUN_STATUS_LABELS,
   maskPath,
   basename,
+  eventKindLabel,
+  useTicker,
 } from "../hooks/useApi.js";
 import ProviderBadge from "./ProviderBadge.jsx";
 import Provenance from "./Provenance.jsx";
 import ActivityBadge from "./ActivityBadge.jsx";
+import { actionMessage } from "../hooks/viewLogic.js";
 import Tabs from "./Tabs.jsx";
 import RunLineage from "./RunLineage.jsx";
 import { PinToggle } from "./PinnedRuns.jsx";
 
 /** How many events the inspector keeps in memory for one run. */
 const MAX_RETAINED_EVENTS = 5000;
+/** The run detail carries at most this many events; more are paged in. */
+const DETAIL_EVENT_CAP = 1000;
+/** Events drawn at once in Live activity; earlier ones on request. */
+const ACTIVITY_PAGE = 200;
+
+const TASK_STATUS_TEXT = {
+  QUEUE: "Queued",
+  IN_PROGRESS: "In progress",
+  BLOCKED: "Blocked",
+  COMPLETED: "Completed",
+};
+const APPROVAL_STATUS_TEXT = {
+  pending: "Pending",
+  approved: "Approved",
+  denied: "Declined",
+  expired: "Expired",
+};
+const USAGE_LABELS = {
+  input_tokens: "Input tokens",
+  output_tokens: "Output tokens",
+  cache_read_input_tokens: "Cache read tokens",
+  cache_creation_input_tokens: "Cache write tokens",
+  reasoning_output_tokens: "Reasoning tokens",
+  total_tokens: "Total tokens",
+};
 
 const TABS = [
   { id: "overview", label: "Overview", icon: <Info size={13} /> },
@@ -64,15 +92,6 @@ const CONTROL_REASON = {
   experimental: "Experimental for this provider; disabled until verified.",
 };
 
-function useTicker(active) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!active) return undefined;
-    const timer = setInterval(() => setTick((value) => value + 1), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-}
-
 function Row({ label, children, mono = false }) {
   return (
     <>
@@ -82,19 +101,33 @@ function Row({ label, children, mono = false }) {
   );
 }
 
-function Control({ icon, label, capability, onClick, busy }) {
+/**
+ * One run control. It is enabled only when the provider supports the action
+ * AND the run is in a state where it applies (`unavailable` says why not).
+ */
+function Control({
+  icon,
+  label,
+  capability,
+  onClick,
+  busy,
+  unavailable = null,
+}) {
   const verified = capability === "verified";
-  const title = verified
-    ? label
-    : `${label} unavailable: ${CONTROL_REASON[capability] ?? "capability not verified for this provider."}`;
+  const usable = verified && !unavailable;
+  const title = !verified
+    ? `${label} unavailable: ${CONTROL_REASON[capability] ?? "capability not verified for this provider."}`
+    : unavailable
+      ? `${label} unavailable: ${unavailable}`
+      : label;
   return (
     <button
       type="button"
       className="button as-control"
-      disabled={!verified || busy}
+      disabled={!usable || busy}
       title={title}
-      aria-label={label}
-      aria-disabled={!verified}
+      aria-label={usable ? label : title}
+      aria-disabled={!usable}
       onClick={onClick}
     >
       {icon}
@@ -142,17 +175,55 @@ export default function RunInspector({
   useTicker(active);
   const lastSequence = useRef(0);
   const seenIds = useRef(new Set());
+  // True when older events were left out to stay within the retention cap.
+  const [trimmed, setTrimmed] = useState(false);
 
   useEffect(() => {
     const initial = Array.isArray(detail.data?.events)
       ? detail.data.events
       : [];
     setEvents(initial);
+    setTrimmed(false);
     seenIds.current = new Set(initial.map((e) => e.id));
     lastSequence.current = initial.reduce(
       (max, e) => Math.max(max, e.sequence ?? 0),
       0,
     );
+    // The run detail stops at its first 1000 events. Page forward to the
+    // newest, so a long finished run does not show its first thousand as
+    // "newest last" and never its end.
+    if (!runId || externalEvents || initial.length < DETAIL_EVENT_CAP)
+      return undefined;
+    let stopped = false;
+    (async () => {
+      let collected = [...initial];
+      let dropped = false;
+      for (let page = 0; page < 20 && !stopped; page += 1) {
+        const result = await apiFetch(
+          `/runs/${encodeURIComponent(runId)}/events?after=${lastSequence.current}&limit=5000`,
+        ).catch(() => null);
+        const fresh = Array.isArray(result) ? result : (result?.events ?? []);
+        if (!fresh.length) break;
+        for (const event of fresh) seenIds.current.add(event.id);
+        lastSequence.current = fresh.reduce(
+          (max, e) => Math.max(max, e.sequence ?? 0),
+          lastSequence.current,
+        );
+        collected = collected.concat(fresh);
+        if (collected.length > MAX_RETAINED_EVENTS) {
+          collected = collected.slice(-MAX_RETAINED_EVENTS);
+          dropped = true;
+        }
+        if (fresh.length < 5000) break;
+      }
+      if (stopped) return;
+      setEvents(collected);
+      setTrimmed(dropped);
+    })();
+    return () => {
+      stopped = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail.data]);
 
   useEffect(() => {
@@ -180,10 +251,10 @@ export default function RunInspector({
             const merged = [...current, ...added];
             // Retention cap: each event carries up to 4 KB of data, and a long
             // managed run would otherwise hold tens of megabytes in state. The
-            // list is virtualized, so trimming the oldest is invisible.
-            return merged.length > MAX_RETAINED_EVENTS
-              ? merged.slice(-MAX_RETAINED_EVENTS)
-              : merged;
+            // oldest are dropped and the Live activity tab says so.
+            if (merged.length <= MAX_RETAINED_EVENTS) return merged;
+            setTrimmed(true);
+            return merged.slice(-MAX_RETAINED_EVENTS);
           });
         if (
           fresh.some((e) =>
@@ -231,7 +302,8 @@ export default function RunInspector({
           { method: "POST", body },
         );
         onAction?.(action, result);
-        setMessage(`${action} accepted.`);
+        // "<action> accepted." read "review accepted." after a rejection.
+        setMessage(actionMessage(action, body, result));
         detail.reload();
       } catch (error) {
         setMessage(error.message);
@@ -251,6 +323,9 @@ export default function RunInspector({
     );
   if (!run) return <p className="as-muted">Loading run…</p>;
 
+  // Only a run Agent Space launched can be cancelled, retried or resumed
+  // from here (the server refuses the rest).
+  const managed = run.mode === "managed";
   const started = run.startedAt ? new Date(run.startedAt).getTime() : null;
   const ended = run.endedAt ? new Date(run.endedAt).getTime() : null;
   const elapsed = started ? (ended ?? Date.now()) - started : 0;
@@ -293,40 +368,65 @@ export default function RunInspector({
         </div>
         <div className="as-controls" role="group" aria-label="Run controls">
           <PinToggle runId={run.id} title="this run" />
-          <Control
-            icon={<Square size={12} />}
-            label="Cancel"
-            capability={active ? caps.interrupt : "unsupported"}
-            busy={busy === "cancel"}
-            onClick={() => call("cancel")}
-          />
-          <Control
-            icon={<RotateCcw size={12} />}
-            label="Retry"
-            capability={caps.launch}
-            busy={busy === "retry"}
-            onClick={() => call("retry")}
-          />
-          <Control
-            icon={<MessageSquare size={12} />}
-            label="Provide input"
-            capability={caps.resume}
-            busy={busy === "input"}
-            onClick={() => setShowInput((v) => !v)}
-          />
-          <Control
-            icon={<Play size={12} />}
-            label="Resume"
-            capability={caps.resume}
-            busy={busy === "resume"}
-            onClick={() => call("input", { text: "", resume: true })}
-          />
+          {managed ? (
+            <>
+              <Control
+                icon={<Square size={12} />}
+                label="Cancel"
+                capability={caps.interrupt}
+                unavailable={active ? null : "the run is not running."}
+                busy={busy === "cancel"}
+                onClick={() => call("cancel")}
+              />
+              <Control
+                icon={<RotateCcw size={12} />}
+                label="Retry"
+                capability={caps.launch}
+                unavailable={
+                  active
+                    ? "cancel the run or wait for it to finish first."
+                    : null
+                }
+                busy={busy === "retry"}
+                onClick={() => call("retry")}
+              />
+              <Control
+                icon={<MessageSquare size={12} />}
+                label="Provide input"
+                capability={caps.resume}
+                unavailable={
+                  active
+                    ? "input is accepted between attempts, not while the run executes."
+                    : null
+                }
+                busy={busy === "input"}
+                onClick={() => setShowInput((v) => !v)}
+              />
+              <Control
+                icon={<Play size={12} />}
+                label="Resume"
+                capability={caps.resume}
+                unavailable={active ? "the run is still executing." : null}
+                busy={busy === "resume"}
+                onClick={() => call("input", { text: "", resume: true })}
+              />
+            </>
+          ) : null}
         </div>
       </header>
-      <p className="as-note">
-        <TriangleAlert size={12} aria-hidden="true" /> Interrupting does not
-        undo side effects already made by the provider.
-      </p>
+      {managed ? (
+        <p className="as-note">
+          <TriangleAlert size={12} aria-hidden="true" /> Interrupting does not
+          undo side effects already made by the provider.
+        </p>
+      ) : (
+        <p className="as-note as-note-info">
+          <Info size={12} aria-hidden="true" />{" "}
+          {run.mode === "observed"
+            ? "This session was started outside Agent Space. It is recorded here, not controlled: stop, retry or answer it where it runs."
+            : "This run is not controlled by Agent Space; it is recorded here only."}
+        </p>
+      )}
       {showInput ? (
         <form
           className="as-input-form"
@@ -388,7 +488,16 @@ export default function RunInspector({
           />
         )}
         {tab === "activity" && (
-          <LiveActivity events={allEvents} presentation={presentation} />
+          <LiveActivity
+            events={allEvents}
+            presentation={presentation}
+            trimmed={trimmed}
+            baseProvenance={
+              run.mode === "observed" || run.mode === "managed"
+                ? "provider"
+                : null
+            }
+          />
         )}
         {tab === "files" && (
           <Files
@@ -397,6 +506,7 @@ export default function RunInspector({
             presentation={presentation}
             busy={busy}
             onReview={(decision, note) => call("review", { decision, note })}
+            onChanged={() => detail.reload()}
           />
         )}
         {tab === "tools" && (
@@ -512,31 +622,69 @@ function Overview({ run, elapsed, presentation, context }) {
   );
 }
 
-function LiveActivity({ events, presentation }) {
+/**
+ * The run's events, newest last. Only the latest page is drawn (a run can
+ * hold thousands); earlier events are added on request, and the tab says
+ * when the oldest were dropped to stay within the retention cap.
+ */
+function LiveActivity({
+  events,
+  presentation,
+  trimmed = false,
+  baseProvenance = null,
+}) {
   const listRef = useRef(null);
   const [follow, setFollow] = useState(true);
+  const [shown, setShown] = useState(ACTIVITY_PAGE);
   useEffect(() => {
     if (follow && listRef.current)
       listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [events.length, follow]);
   if (events.length === 0)
     return <p className="as-muted">No events recorded yet.</p>;
+  const visible = events.slice(-shown);
+  const hidden = events.length - visible.length;
   return (
-    <div>
-      <label className="as-check">
-        <input
-          type="checkbox"
-          checked={follow}
-          onChange={(e) => setFollow(e.target.checked)}
-        />{" "}
-        Follow newest
-      </label>
+    <div className="as-live-activity">
+      <div className="as-row as-wrap">
+        <label className="as-check">
+          <input
+            type="checkbox"
+            checked={follow}
+            onChange={(e) => setFollow(e.target.checked)}
+          />{" "}
+          Follow newest
+        </label>
+        <span className="as-muted as-small">
+          {baseProvenance === "provider"
+            ? "Recorded by the provider unless marked. "
+            : ""}
+          Showing the latest {formatNumber(visible.length)} of{" "}
+          {formatNumber(events.length)} loaded events
+          {trimmed
+            ? `; older events beyond the latest ${formatNumber(MAX_RETAINED_EVENTS)} are not loaded here`
+            : ""}
+          .
+        </span>
+      </div>
+      {hidden > 0 ? (
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => {
+            setFollow(false);
+            setShown((value) => value + ACTIVITY_PAGE);
+          }}
+        >
+          Show {formatNumber(Math.min(ACTIVITY_PAGE, hidden))} earlier events
+        </button>
+      ) : null}
       <ol
         className="as-events"
         ref={listRef}
         aria-label="Run events, newest last"
       >
-        {events.map((event) => (
+        {visible.map((event) => (
           <li
             key={event.id ?? `${event.sequence}-${event.timestamp}`}
             className={`as-event as-event-${String(event.kind).replace(".", "-")}`}
@@ -544,7 +692,7 @@ function LiveActivity({ events, presentation }) {
             <time dateTime={new Date(event.timestamp).toISOString()}>
               {formatTime(event.timestamp)}
             </time>
-            <span className="as-event-kind">{event.kind}</span>
+            <span className="as-event-kind">{eventKindLabel(event.kind)}</span>
             <span className="as-event-msg">
               {event.message ?? event.summary}
               {event.file ? (
@@ -555,7 +703,11 @@ function LiveActivity({ events, presentation }) {
               ) : null}
             </span>
             <span className="as-event-meta">
-              <Provenance value={event.provenance} />
+              {/* Only a source other than the run's own is marked, so the
+                  common case carries no chip on every row. */}
+              {event.provenance && event.provenance !== baseProvenance ? (
+                <Provenance value={event.provenance} />
+              ) : null}
               {event.data?.activity ? (
                 <ActivityBadge activity={event.data.activity} inferred />
               ) : null}
@@ -586,7 +738,7 @@ function DiffView({ text }) {
   );
 }
 
-function Files({ run, artifacts, presentation, busy, onReview }) {
+function Files({ run, artifacts, presentation, busy, onReview, onChanged }) {
   const [selected, setSelected] = useState(null);
   const [note, setNote] = useState("");
   const [content, setContent] = useState(null);
@@ -648,6 +800,10 @@ function Files({ run, artifacts, presentation, busy, onReview }) {
               <span className="as-muted">
                 {artifact.type ?? artifact.kind ?? "artifact"}
                 {artifact.size ? ` · ${formatNumber(artifact.size)} B` : ""}
+                {/* Only the fence can say what a snippet is written in. */}
+                {artifact.kind === "snippet"
+                  ? ` · ${artifact.metadata?.language ?? "language not reported"}`
+                  : ""}
               </span>
             </button>
           </li>
@@ -699,11 +855,167 @@ function Files({ run, artifacts, presentation, busy, onReview }) {
           <p className="as-muted">
             Accepting marks the task completed.{" "}
             {run.worktree
-              ? `Changes live in worktree ${maskPath(run.worktree, presentation)}.`
+              ? `The changes stay in the worktree ${maskPath(run.worktree, presentation)} until you apply them.`
               : ""}
           </p>
+          <WorktreeApply
+            run={run}
+            presentation={presentation}
+            onChanged={onChanged}
+          />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Copies a reviewed worktree into the working tree, as uncommitted edits.
+ * The server checks everything first (the review accepted, the reviewed diff
+ * complete and unchanged, none of your own uncommitted work in the way, not
+ * already applied) and says why not; this shows its answer and asks before
+ * anything is written. Nothing is ever committed or pushed.
+ */
+function WorktreeApply({ run, presentation, onChanged }) {
+  const [state, setState] = useState({
+    status: "checking",
+    files: [],
+    root: null,
+    reason: "",
+  });
+  const [confirming, setConfirming] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const applied = run.context?.appliedAt ?? null;
+  const path = `/runs/${encodeURIComponent(run.id)}/worktree/apply`;
+
+  useEffect(() => {
+    if (!run.worktree || applied) return undefined;
+    let current = true;
+    setState((previous) => ({ ...previous, status: "checking" }));
+    apiFetch(path, { method: "POST", body: { check: true } })
+      .then((data) => {
+        if (current)
+          setState({
+            status: "ready",
+            files: data?.files ?? [],
+            root: data?.root ?? null,
+            reason: "",
+          });
+      })
+      .catch((error) => {
+        if (current)
+          setState({
+            status: error.status === 404 ? "unsupported" : "blocked",
+            files: [],
+            root: null,
+            reason: error.message,
+          });
+      });
+    return () => {
+      current = false;
+    };
+  }, [path, run.worktree, run.lastEventAt, applied]);
+
+  if (applied) {
+    const files = run.context?.appliedFiles ?? [];
+    return (
+      <p className="as-note as-note-info" role="status">
+        Applied {files.length} file{files.length === 1 ? "" : "s"} to{" "}
+        {maskPath(run.context?.appliedTo ?? "", presentation) ||
+          "the working tree"}{" "}
+        at {formatTime(applied)}. They are not committed: review and commit them
+        with your own tools.
+      </p>
+    );
+  }
+  if (!run.worktree || state.status === "unsupported") return null;
+  if (state.status === "checking")
+    return (
+      <p className="as-muted as-small">Checking whether it can be applied…</p>
+    );
+  if (state.status === "blocked")
+    return (
+      <p className="as-muted as-small as-apply-blocked">
+        Apply to your working tree: not yet. {state.reason}
+      </p>
+    );
+
+  const apply = async () => {
+    setApplying(true);
+    try {
+      await apiFetch(path, { method: "POST", body: {} });
+      setConfirming(false);
+      onChanged?.();
+    } catch (error) {
+      setState((previous) => ({
+        ...previous,
+        status: "blocked",
+        reason: error.message,
+      }));
+      setConfirming(false);
+    } finally {
+      setApplying(false);
+    }
+  };
+  const shown = state.files.slice(0, 10);
+  return (
+    <div className="as-apply">
+      {confirming ? (
+        <div
+          className="as-apply-confirm"
+          role="group"
+          aria-label="Apply changes"
+        >
+          <p>
+            Copies {state.files.length} file
+            {state.files.length === 1 ? "" : "s"} into{" "}
+            <span className="as-mono">
+              {maskPath(state.root ?? "", presentation) || "the working tree"}
+            </span>{" "}
+            as uncommitted changes. Nothing is committed, and your other changes
+            are not touched.
+          </p>
+          <ul className="as-apply-files">
+            {shown.map((file) => (
+              <li key={file} className="as-mono">
+                {presentation ? maskPath(file, true) : file}
+              </li>
+            ))}
+            {state.files.length > shown.length ? (
+              <li className="as-muted">
+                and {state.files.length - shown.length} more
+              </li>
+            ) : null}
+          </ul>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="button"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="button primary"
+              disabled={applying}
+              onClick={apply}
+            >
+              {applying
+                ? "Applying…"
+                : `Apply ${state.files.length} file${state.files.length === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="button"
+          onClick={() => setConfirming(true)}
+        >
+          Apply to my working tree…
+        </button>
+      )}
     </div>
   );
 }
@@ -713,38 +1025,42 @@ function Tools({ events, presentation }) {
   if (groups.length === 0)
     return <p className="as-muted">No tool calls recorded.</p>;
   return (
-    <table className="as-table">
-      <thead>
-        <tr>
-          <th scope="col">Tool</th>
-          <th scope="col">Started</th>
-          <th scope="col">Finished</th>
-          <th scope="col">Errors</th>
-          <th scope="col">Files</th>
-          <th scope="col">Last</th>
-        </tr>
-      </thead>
-      <tbody>
-        {groups.map((group) => (
-          <tr key={group.tool}>
-            <th scope="row">
-              <code>{group.tool}</code>
-            </th>
-            <td>{group.starts}</td>
-            <td>{group.ends}</td>
-            <td>{group.errors}</td>
-            <td className="as-mono">
-              {group.files
-                .slice(0, 4)
-                .map((f) => maskPath(f, presentation))
-                .join(", ")}
-              {group.files.length > 4 ? ` +${group.files.length - 4}` : ""}
-            </td>
-            <td>{group.last ? formatTime(group.last) : "—"}</td>
+    <div className="as-table-wrap as-inspector-table-wrap">
+      <table className="as-table as-tools-table">
+        <thead>
+          <tr>
+            <th scope="col">Tool</th>
+            <th scope="col">Started</th>
+            <th scope="col">Finished</th>
+            <th scope="col">Errors</th>
+            <th scope="col">Files</th>
+            <th scope="col">Last</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {groups.map((group) => (
+            <tr key={group.tool}>
+              <th scope="row">
+                <code>{group.tool}</code>
+              </th>
+              <td data-label="Started">{group.starts}</td>
+              <td data-label="Finished">{group.ends}</td>
+              <td data-label="Errors">{group.errors}</td>
+              <td data-label="Files" className="as-mono">
+                {group.files
+                  .slice(0, 4)
+                  .map((f) => maskPath(f, presentation))
+                  .join(", ")}
+                {group.files.length > 4 ? ` +${group.files.length - 4}` : ""}
+              </td>
+              <td data-label="Last">
+                {group.last ? formatTime(group.last) : "—"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -779,7 +1095,7 @@ function Dependencies({ workspaceId, taskId }) {
           <span
             className={`status status-${String(n.status ?? "").toLowerCase()}`}
           >
-            {n.status}
+            {TASK_STATUS_TEXT[n.status] ?? n.status}
           </span>{" "}
           {n.title ?? n.id}
         </li>
@@ -795,21 +1111,44 @@ function Dependencies({ workspaceId, taskId }) {
   );
 }
 
+/**
+ * Tokens and cost as the run recorded them. The tag says where the numbers
+ * came from: a provider-backed run's come from the provider, a demo run's
+ * are simulated, and cost carries its own stated source.
+ */
 function Usage({ run, events }) {
   const usage = run.usage ?? {};
   const cost = run.cost ?? {};
   const hasUsage = Object.keys(usage).length > 0;
   const hasCost = Object.keys(cost).length > 0;
   const usageEvents = events.filter((e) => e.kind === "usage").length;
+  const simulated =
+    run.provider === "simulated" ||
+    run.provider === "demo" ||
+    run.mode === "demo";
+  const tokenBasis = simulated ? "simulated (demo)" : "reported by provider";
+  const costBasis = cost.estimated
+    ? "estimated"
+    : cost.reportedBy === "provider" || cost.usd !== undefined
+      ? "reported by provider"
+      : simulated
+        ? "simulated (demo)"
+        : "source not recorded";
+  const costEntries = Object.entries(cost).filter(
+    ([key]) => !["reportedBy", "estimated"].includes(key),
+  );
   return (
     <div className="as-usage">
       <h4>
-        Tokens <span className="as-tag">reported by provider</span>
+        Tokens{" "}
+        <span className={`as-tag ${simulated ? "as-tag-warn" : ""}`}>
+          {tokenBasis}
+        </span>
       </h4>
       {hasUsage ? (
         <dl className="as-passport">
           {Object.entries(usage).map(([key, value]) => (
-            <Row key={key} label={key}>
+            <Row key={key} label={USAGE_LABELS[key] ?? key.replace(/_/g, " ")}>
               {typeof value === "object"
                 ? JSON.stringify(value)
                 : formatNumber(value)}
@@ -817,25 +1156,34 @@ function Usage({ run, events }) {
           ))}
         </dl>
       ) : (
-        <p className="as-muted">Token usage not reported by provider.</p>
+        <p className="as-muted">No token usage was recorded for this run.</p>
       )}
       <h4>
-        Cost <span className="as-tag">reported by provider</span>
+        Cost{" "}
+        {hasCost ? (
+          <span
+            className={`as-tag ${costBasis === "reported by provider" ? "" : "as-tag-warn"}`}
+          >
+            {costBasis}
+          </span>
+        ) : null}
       </h4>
       {hasCost ? (
         <dl className="as-passport">
-          {Object.entries(cost).map(([key, value]) => (
-            <Row key={key} label={key}>
-              {typeof value === "object"
-                ? JSON.stringify(value)
-                : String(value)}
+          {costEntries.map(([key, value]) => (
+            <Row key={key} label={key === "usd" ? "US dollars" : key}>
+              {typeof value === "number" && key === "usd"
+                ? `$${value.toFixed(4)}`
+                : typeof value === "object"
+                  ? JSON.stringify(value)
+                  : String(value)}
             </Row>
           ))}
         </dl>
       ) : (
         <p className="as-muted">
-          Cost not reported by provider. Agent Space does not estimate cost for
-          this run.
+          No cost was reported for this run. Agent Space does not estimate cost
+          for it.
         </p>
       )}
       <p className="as-muted">
@@ -878,29 +1226,34 @@ function HistoryTab({ run, approvals, workspaceId }) {
       {approvals.length === 0 ? (
         <p className="as-muted">No approvals requested for this run.</p>
       ) : (
-        <table className="as-table">
-          <thead>
-            <tr>
-              <th scope="col">Kind</th>
-              <th scope="col">Reason</th>
-              <th scope="col">Status</th>
-              <th scope="col">Decided by</th>
-            </tr>
-          </thead>
-          <tbody>
-            {approvals.map((approval) => (
-              <tr key={approval.id}>
-                <td>{approval.kind}</td>
-                <td>{approval.reason ?? "—"}</td>
-                <td>
-                  {approval.status}
-                  {approval.decision ? ` (${approval.decision})` : ""}
-                </td>
-                <td>{approval.decidedBy ?? approval.decided_by ?? "—"}</td>
+        <div className="as-table-wrap as-inspector-table-wrap">
+          <table className="as-table">
+            <thead>
+              <tr>
+                <th scope="col">Kind</th>
+                <th scope="col">Reason</th>
+                <th scope="col">Status</th>
+                <th scope="col">Decided by</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {approvals.map((approval) => (
+                <tr key={approval.id}>
+                  <td>
+                    {String(approval.kind ?? "")
+                      .charAt(0)
+                      .toUpperCase() + String(approval.kind ?? "").slice(1)}
+                  </td>
+                  <td>{approval.reason ?? "—"}</td>
+                  <td>
+                    {APPROVAL_STATUS_TEXT[approval.status] ?? approval.status}
+                  </td>
+                  <td>{approval.decidedBy ?? approval.decided_by ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

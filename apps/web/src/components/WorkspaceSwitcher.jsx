@@ -8,54 +8,24 @@ import {
   History,
   Check,
 } from "lucide-react";
-import { apiFetch, maskPath, providerLabel } from "../hooks/useApi.js";
+import { apiFetch, maskPath } from "../hooks/useApi.js";
 import { useGlobal } from "../hooks/useGlobal.js";
 import { useLocalStorage, pushRecent } from "../hooks/useLocalStorage.js";
+import {
+  runtimesForWorkspace,
+  workspaceRuntimeNote,
+  workspaceStats,
+} from "../hooks/workspaceSummary.js";
+import { themeLabel } from "../office/themeCatalog.js";
 import EmptyState from "./EmptyState.jsx";
 
 export const RECENT_WORKSPACES_KEY = "agent-space-recent-workspaces";
-
-/** Theme preview swatches. Colour is a preview, never the only signal: the
- *  theme name is always written next to it. */
-const THEME_PREVIEW = {
-  studio: {
-    label: "Development Studio",
-    colors: ["#f4efe6", "#c9b28a", "#5d7f9c"],
-  },
-  operations: {
-    label: "Operations Center",
-    colors: ["#1d2733", "#2f4a63", "#6fa8dc"],
-  },
-};
-
-/** Connections that may be used by a workspace, per `allowedWorkspaces`. */
-export function runtimesForWorkspace(connections = [], workspaceId) {
-  return connections.filter((connection) => {
-    if (connection.enabled === false) return false;
-    const allowed = connection.allowedWorkspaces;
-    if (!Array.isArray(allowed) || allowed.length === 0) return true;
-    return allowed.includes(workspaceId);
-  });
-}
-
-function StatusDot({ status }) {
-  const label =
-    status === "ready"
-      ? "ready"
-      : status === "error"
-        ? "error"
-        : status === "missing"
-          ? "missing"
-          : status === "detected"
-            ? "detected"
-            : "unknown";
-  return <span className={`as-conn-dot as-conn-${label}`}>{label}</span>;
-}
+export { runtimesForWorkspace };
 
 /**
- * Rich workspace switcher: name, root path, the runtimes connected to it,
- * active runs, an attention count, a theme preview, recent workspaces, and
- * create / rename / archive actions.
+ * Rich workspace switcher: name, what is going on there (agents, running,
+ * attention), its folder and office theme, the runtimes it may launch when
+ * that is restricted, recent workspaces, and create / rename / archive.
  *
  * Data comes from `useGlobal()` (workspaces + connections from the global
  * channel) unless `workspaces`/`connections` are passed in.
@@ -194,7 +164,7 @@ export default function WorkspaceSwitcher({
         ref={buttonRef}
         type="button"
         className="as-wsswitch-trigger"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         aria-label={`Workspace: ${summary}. Open workspace switcher`}
@@ -202,7 +172,7 @@ export default function WorkspaceSwitcher({
         <FolderOpen size={14} aria-hidden="true" />
         <span className="as-wsswitch-name">{current?.name ?? "Workspace"}</span>
         {current?.activeRuns ? (
-          <span className="as-tag">{current.activeRuns} active</span>
+          <span className="as-tag">{current.activeRuns} running</span>
         ) : null}
         {current?.attention ? (
           <span className="as-tag as-tag-warn">
@@ -215,7 +185,7 @@ export default function WorkspaceSwitcher({
       {open ? (
         <div
           className="as-wsswitch-menu panel"
-          role="menu"
+          role="dialog"
           aria-label="Workspaces"
         >
           {error ? (
@@ -230,88 +200,65 @@ export default function WorkspaceSwitcher({
               description="Create one to point Agent Space at a repository or folder."
             />
           ) : null}
-          <ul className="as-wsswitch-list" role="none">
+          <ul className="as-wsswitch-list" aria-label="All workspaces">
             {workspaces.map((workspace) => {
-              const runtimes = runtimesForWorkspace(connections, workspace.id);
-              const theme = THEME_PREVIEW[workspace.theme] ?? {
-                label: workspace.theme ?? "studio",
-                colors: ["#ddd", "#bbb", "#999"],
-              };
+              const theme = themeLabel(workspace.theme);
+              const runtimeNote = workspaceRuntimeNote(
+                connections,
+                workspace.id,
+              );
               const selected = workspace.id === currentId;
+              const path = workspace.rootPath
+                ? maskPath(workspace.rootPath, presentation)
+                : "";
               return (
                 <li key={workspace.id} className="as-wsswitch-row">
                   <button
                     type="button"
-                    role="menuitemradio"
-                    aria-checked={selected}
+                    aria-current={selected ? "true" : undefined}
                     className={`as-wsswitch-item ${selected ? "active" : ""}`}
                     onClick={() => {
                       onSelect(workspace.id);
                       setOpen(false);
                     }}
                   >
-                    <span className="as-row as-wrap">
-                      {selected ? <Check size={12} aria-hidden="true" /> : null}
-                      <strong>{workspace.name}</strong>
+                    <span className="ws-item-top">
+                      <span className="ws-item-check" aria-hidden="true">
+                        {selected ? <Check size={13} /> : null}
+                      </span>
+                      <strong className="ws-item-name">{workspace.name}</strong>
                       {workspace.kind === "demo" ? (
                         <span className="as-tag">Demo</span>
                       ) : null}
                       {workspace.autoCreated ? (
-                        <span className="as-tag">auto-created</span>
+                        <span className="as-tag">Auto-created</span>
                       ) : null}
                     </span>
-                    <span className="as-muted as-small as-mono">
-                      {workspace.rootPath
-                        ? maskPath(workspace.rootPath, presentation)
-                        : "no folder set"}
+                    <span
+                      className={`ws-item-stats${workspace.attention ? " has-attention" : ""}`}
+                    >
+                      {workspaceStats(workspace)}
                     </span>
-                    <span className="as-row as-wrap as-wsswitch-meta">
-                      <span className="as-tag">
-                        {workspace.activeRuns ?? 0} active run
-                        {(workspace.activeRuns ?? 0) === 1 ? "" : "s"}
-                      </span>
-                      <span
-                        className={`as-tag ${workspace.attention ? "as-tag-warn" : ""}`}
-                      >
-                        {workspace.attention ?? 0} need attention
-                      </span>
-                      <span className="as-tag">
-                        {workspace.agents ?? 0} agents
-                      </span>
-                    </span>
-                    <span className="as-row as-wrap as-wsswitch-runtimes">
-                      {runtimes.length === 0 ? (
-                        <span className="as-muted as-small">
-                          no runtime connected
+                    <span className="ws-item-meta">
+                      {path ? (
+                        <span className="ws-item-path" title={path}>
+                          {path}
                         </span>
                       ) : (
-                        runtimes.map((connection) => (
-                          <span
-                            key={connection.id}
-                            className="as-runtime-chip"
-                            title={`${providerLabel(connection.provider)} (${connection.alias ?? "default"}): ${connection.status ?? "unknown"}`}
-                          >
-                            {providerLabel(connection.provider)}
-                            {connection.alias && connection.alias !== "default"
-                              ? ` · ${connection.alias}`
-                              : ""}
-                            <StatusDot status={connection.status} />
-                          </span>
-                        ))
+                        <span>No folder set</span>
                       )}
-                    </span>
-                    <span className="as-row as-wsswitch-theme">
-                      <span
-                        className="as-theme-swatch"
-                        aria-hidden="true"
-                        style={{
-                          background: `linear-gradient(90deg, ${theme.colors.join(", ")})`,
-                        }}
-                      />
-                      <span className="as-muted as-small">
-                        Theme: {theme.label}
+                      <span className="ws-item-theme">
+                        <i
+                          className="ws-item-swatch"
+                          aria-hidden="true"
+                          style={{ background: theme.color }}
+                        />
+                        {theme.label}
                       </span>
                     </span>
+                    {runtimeNote ? (
+                      <span className="ws-item-runtimes">{runtimeNote}</span>
+                    ) : null}
                   </button>
                   {allowManage ? (
                     <span
@@ -366,12 +313,11 @@ export default function WorkspaceSwitcher({
               <h4>
                 <History size={12} aria-hidden="true" /> Recent
               </h4>
-              <ul role="none">
+              <ul aria-label="Recent workspaces">
                 {recentList.map((workspace) => (
                   <li key={workspace.id}>
                     <button
                       type="button"
-                      role="menuitem"
                       className="text-button"
                       onClick={() => {
                         onSelect(workspace.id);

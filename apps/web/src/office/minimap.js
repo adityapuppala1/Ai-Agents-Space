@@ -1,9 +1,16 @@
-// Small 2D overview of the office: zones and agent dots. Click selects the
-// nearest agent, hover reports it.
+// Small 2D overview of the office: zones, conference rooms and agent dots.
+// Click selects the nearest agent (or focuses a room), hover reports it.
 const PAD = 6;
 
-export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
+export function createMinimap(
+  canvas,
+  { onSelect, onHover, onSelectRoom, onSelectConference },
+) {
   let layout = null;
+  // The conference wing (office/conference.js) and the area the map shows:
+  // the floor alone, or the floor and the wing beside it.
+  let rooms = [];
+  let bounds = null;
   let dots = [];
   let hovered = null;
   const ctx = canvas.getContext("2d");
@@ -11,10 +18,26 @@ export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
   function toMap(x, z) {
     const w = canvas.width - PAD * 2;
     const h = canvas.height - PAD * 2;
+    const b = bounds ?? {
+      minX: -layout.width / 2,
+      maxX: layout.width / 2,
+      minZ: -layout.depth / 2,
+      maxZ: layout.depth / 2,
+    };
     return [
-      PAD + ((x + layout.width / 2) / layout.width) * w,
-      PAD + ((z + layout.depth / 2) / layout.depth) * h,
+      PAD + ((x - b.minX) / (b.maxX - b.minX || 1)) * w,
+      PAD + ((z - b.minZ) / (b.maxZ - b.minZ || 1)) * h,
     ];
+  }
+
+  /** Conference room under the pointer. */
+  function conferenceAt(sx, sy) {
+    for (const room of rooms) {
+      const [x, y] = toMap(room.bounds.minX, room.bounds.minZ);
+      const [x2, y2] = toMap(room.bounds.maxX, room.bounds.maxZ);
+      if (sx >= x && sx <= x2 && sy >= y && sy <= y2) return room.key;
+    }
+    return null;
   }
 
   function nearest(event) {
@@ -39,6 +62,8 @@ export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
     const r = canvas.getBoundingClientRect();
     const sx = ((event.clientX - r.left) / r.width) * canvas.width;
     const sy = ((event.clientY - r.top) / r.height) * canvas.height;
+    const conference = conferenceAt(sx, sy);
+    if (conference) return { conference };
     for (const zone of Object.values(layout.zones)) {
       const [x, y] = toMap(zone.x - zone.w / 2, zone.z - zone.d / 2);
       const [x2, y2] = toMap(zone.x + zone.w / 2, zone.z + zone.d / 2);
@@ -54,7 +79,8 @@ export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
       return;
     }
     const zone = zoneAt(event);
-    if (zone) onSelectRoom?.(zone);
+    if (zone?.conference) onSelectConference?.(zone.conference);
+    else if (zone) onSelectRoom?.(zone);
   };
   const move = (event) => {
     const id = nearest(event);
@@ -75,29 +101,38 @@ export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
   canvas.addEventListener("pointerleave", leave);
 
   return {
-    setLayout(next) {
+    setLayout(next, wing = null) {
       layout = next;
+      rooms = wing?.rooms ?? [];
+      bounds = rooms.length ? (wing?.bounds ?? null) : null;
     },
-    draw({
-      figures,
-      selected,
-      theme,
-      clusterCount,
-      clusterZone,
-      selectedRoom,
-    }) {
+    draw({ figures, selected, theme, selectedRoom }) {
       if (!ctx || !layout) return;
       const p = theme.palette;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const [fx, fy] = toMap(-layout.width / 2, -layout.depth / 2);
+      const [fx2, fy2] = toMap(layout.width / 2, layout.depth / 2);
       ctx.fillStyle = p.minimapFloor;
-      ctx.fillRect(PAD, PAD, canvas.width - PAD * 2, canvas.height - PAD * 2);
+      ctx.fillRect(fx, fy, fx2 - fx, fy2 - fy);
       ctx.strokeStyle = p.minimapZone;
-      ctx.strokeRect(
-        PAD + 0.5,
-        PAD + 0.5,
-        canvas.width - PAD * 2 - 1,
-        canvas.height - PAD * 2 - 1,
-      );
+      ctx.lineWidth = 1;
+      ctx.strokeRect(fx + 0.5, fy + 0.5, fx2 - fx - 1, fy2 - fy - 1);
+      // Each conference room: its floor, edged in the team's colour.
+      for (const room of rooms) {
+        const [x, y] = toMap(room.bounds.minX, room.bounds.minZ);
+        const [x2, y2] = toMap(room.bounds.maxX, room.bounds.maxZ);
+        ctx.fillStyle = p.minimapFloor;
+        ctx.fillRect(x, y, x2 - x, y2 - y);
+        ctx.strokeStyle = room.color ?? p.minimapText;
+        ctx.lineWidth = 1.4;
+        ctx.strokeRect(x + 0.5, y + 0.5, x2 - x - 1, y2 - y - 1);
+        const [cx, cy] = toMap(room.x, room.z);
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.max(2, ((x2 - x) * room.tableRadius) / room.side), 0, Math.PI * 2);
+        ctx.fillStyle = p.minimapZone;
+        ctx.fill();
+      }
+      ctx.lineWidth = 1;
       ctx.font = "7px sans-serif";
       ctx.textBaseline = "top";
       for (const zone of Object.values(layout.zones)) {
@@ -119,7 +154,6 @@ export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
       }
       dots = [];
       for (const f of figures) {
-        if (f.clustered) continue;
         const [x, y] = toMap(f.pos.x, f.pos.z);
         dots.push({ id: f.id, x, y });
         ctx.beginPath();
@@ -131,20 +165,6 @@ export function createMinimap(canvas, { onSelect, onHover, onSelectRoom }) {
           ctx.lineWidth = 1.2;
           ctx.stroke();
         }
-      }
-      if (clusterCount > 0 && clusterZone) {
-        const [x, y] = toMap(clusterZone.x, clusterZone.z + 0.3);
-        ctx.beginPath();
-        ctx.arc(x, y, 6, 0, Math.PI * 2);
-        ctx.fillStyle = p.minimapText;
-        ctx.fill();
-        ctx.fillStyle = p.minimapFloor;
-        ctx.font = "bold 7px sans-serif";
-        ctx.textBaseline = "middle";
-        ctx.textAlign = "center";
-        ctx.fillText(String(clusterCount), x, y);
-        ctx.textAlign = "left";
-        ctx.textBaseline = "top";
       }
     },
     dispose() {

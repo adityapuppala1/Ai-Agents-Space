@@ -192,11 +192,13 @@ export function useSelection() {
 /**
  * Filter chips bar. Shows every active filter with a keyboard-reachable
  * remove button and a "Clear all" action.
- * @param {{ label?: string }} props
+ * @param {{ label?: string, agents?: any[] }} props  agents name the agent chip
  */
-export function FilterChips({ label = "Active filters" }) {
+export function FilterChips({ label = "Active filters", agents = [] }) {
   const selection = useSelection();
-  const chips = describeFilters(selection.filters);
+  const chips = describeFilters(selection.filters, {
+    agentName: (id) => agents.find((agent) => agent.id === id)?.name ?? null,
+  });
   if (chips.length === 0) return null;
   return (
     <div
