@@ -256,6 +256,11 @@ Run status transitions: `queued → running → (waiting_approval|blocked|stale)
 - Subagent helpers come only from the snapshot's `agents[].subagents` (open delegations).
 - Desks are stable while agents come and go (`stableDeskOrder()` in `web/office/scale.js`).
 - Pose angles: a positive shoulder angle swings the hand forward (figures face −z).
+- Walking round the furniture (`web/office/obstacles.js`, `web/office/navmesh.js`). Both are pure arithmetic — no three.js, no agent, no run — so `node --test` covers them.
+  - `officeObstacles(layout)` reads a computed layout as axis-aligned rectangles: one per desktop (1.9 × 0.95, centred 0.35 **behind** the desk anchor, which is why the anchor itself is inside the desk), one core per room that serves a function, and one per placed prop sized by its catalogued radius. A rug is walked over; a chair is deliberately not solid, because every chair is the destination of the agent whose desk it is.
+  - `deskSeat(desk)` is where an agent belongs at a desk: the chair, 0.75 in front of the anchor. Sending a figure to the bare anchor put it inside its own desk.
+  - `buildNavGrid()` marks the floor at ~0.35 units per cell, adding cost near obstacles so a path prefers the middle of an aisle. `findPath()` runs A\* and then pulls the result straight, dropping every waypoint whose neighbours already see each other; what remains is the two to five legs `followRoute()` in `avatars.js` already accepts.
+  - The grid is rebuilt with the room, never per frame; a search runs once when a walk starts. Conference walks keep their own door routing (`routeBetween()`), and the grid handles everything on the open floor. **A path that cannot be found returns nothing and the walk goes straight** — an agent that never arrives would be a worse failure than one that clips a desk.
 - Conference rooms (`roomPlan()` in `web/office/scale.js`, `web/office/conference.js`, `web/office/conferenceScene.js`). These teams meet in a room in a wing on the floor's open (+x) side:
   - a live team relay;
   - each team of `ROOM_MIN` (4) or more, once more than `CLUSTER_THRESHOLD` (16) agents are on the floor;

@@ -111,6 +111,8 @@ import {
   ZONE_IDS,
 } from "./office/zones.js";
 import { buildOfficeProps } from "./office/props.js";
+import { deskSeat, officeObstacles } from "./office/obstacles.js";
+import { buildNavGrid, findPath } from "./office/navmesh.js";
 import OfficeArranger from "./components/OfficeArranger.jsx";
 import {
   createFigure,
@@ -919,6 +921,11 @@ export default function Office({
     );
     let zones = null;
     let shell = {};
+    // What is solid on the floor, and the grid used to walk round it. Both
+    // are rebuilt with the room, never per frame (office/obstacles.js,
+    // office/navmesh.js).
+    let navObstacles = [];
+    let navGrid = null;
     let figures = new Map();
     let particles = [];
     let providerBeacons = new Map();
@@ -990,6 +997,9 @@ export default function Office({
       );
       // Furniture this workspace placed, rebuilt with the room shell.
       buildOfficeProps(propGroup, layout.props, themeDef, roomRes);
+      // The same layout, read as the things an agent may not walk through.
+      navObstacles = officeObstacles(layout);
+      navGrid = buildNavGrid(layout, navObstacles);
       shell =
         buildRoom(roomGroup, themeDef, layout, roomRes, {
           pipeline: pipelinePanels(state.current.buildEvents ?? [], 4, {
@@ -2177,8 +2187,12 @@ export default function Office({
             zone: "conference",
           };
         } else if (zoneId === "desk") {
+          // The desk anchor sits under the desktop, so an agent sent to it
+          // stands inside its own desk. deskSeat() is the chair in front.
           target = {
-            ...(layout.desks[i] ?? layout.desks[layout.desks.length - 1]),
+            ...deskSeat(
+              layout.desks[i] ?? layout.desks[layout.desks.length - 1],
+            ),
             zone: "desk",
           };
         } else {
@@ -2205,17 +2219,26 @@ export default function Office({
           talking: !!message,
         });
         // A walk into, out of or between conference rooms goes through the
-        // doors and round the table, never through the glass.
-        if (fig.walking && fig.walkStart === now)
-          followRoute(
-            fig,
-            routeBetween(
-              [...roomLayouts, ...exitLayouts],
-              fig.from,
-              goal,
-              sitting && goal === target ? sitting.seat.index : null,
-            ),
+        // doors and round the table, never through the glass. Any other walk
+        // crosses the open floor, where the navigation grid keeps it out of
+        // the desks, the rooms and the furniture (office/navmesh.js). A grid
+        // that cannot find a way returns nothing and the walk goes straight,
+        // because an agent that never arrives is worse than one that clips a
+        // desk on the way.
+        if (fig.walking && fig.walkStart === now) {
+          const doors = routeBetween(
+            [...roomLayouts, ...exitLayouts],
+            fig.from,
+            goal,
+            sitting && goal === target ? sitting.seat.index : null,
           );
+          if (doors.length) followRoute(fig, doors);
+          else if (navGrid)
+            followRoute(
+              fig,
+              findPath(navGrid, navObstacles, fig.from, goal) ?? [],
+            );
+        }
         // The laptop at a seat glows in the colour of its owner's activity.
         const cue = cueOf.get(agent.id);
         fig.screenColor = EFFECT_COLORS[cue?.effect] ?? EFFECT_COLORS.quiet;
@@ -2511,12 +2534,15 @@ export default function Office({
       crowdRecords.length = 0;
       occupants.clear();
       for (const fig of figures.values()) {
-        // In its chair, not on the way to it: it sits and works there.
+        // In its chair, not on the way to it: it sits and works there. True
+        // at a conference seat and at the agent's own desk, which has a
+        // chair of its own — an agent working at its desk is sitting at it.
         const home = fig.home;
+        const hasChair =
+          home?.zone === "conference" ? Boolean(fig.seatKey) : home?.zone === "desk";
         fig.atSeat =
-          Boolean(fig.seatKey) &&
+          hasChair &&
           !fig.walking &&
-          home?.zone === "conference" &&
           Math.abs(fig.pos.x - home.x) < 0.05 &&
           Math.abs(fig.pos.z - home.z) < 0.05;
         animateFigure(fig, time, {

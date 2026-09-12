@@ -6,7 +6,18 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ## Unreleased
 
-Nothing pending. The entries below are all on `main`.
+### Added
+
+- **Agents walk round the furniture.** `office/obstacles.js` reads a computed layout as the rectangles an agent may not cross, and `office/navmesh.js` finds a way past them with A\* and a string-pull, producing the same multi-leg route `followRoute()` already accepted. The grid is rebuilt with the room, not per frame, and no route is ever fabricated: a path that cannot be found falls back to a straight line rather than stranding anyone.
+- **A prioritised plan** for what comes next in [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md), built from a study of seventeen comparable products.
+
+### Fixed
+
+- **Agents stood inside their own desks.** A desk agent was sent to the desk anchor, which the desktop covers; it is now sent to the chair, and sits in it. The seated pose that the conference table introduced now applies at desks as well.
+
+### Not yet
+
+Agents still pass through one another, and gaze does not yet follow recorded events. Both belong to the same roadmap item and are not claimed as done.
 
 ## 2026-09-12 — The office becomes a place
 

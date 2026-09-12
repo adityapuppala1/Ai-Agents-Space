@@ -2,6 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
+> **Agents stop walking through the desks, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.1).** Done, with tests:
+>
+> - **The bug, exactly.** A desk agent was sent to `layout.desks[i]` — the desk *anchor*. The desktop is 1.9 × 0.95 centred 0.35 **behind** that anchor, so the anchor is underneath the desk and the figure stood inside its own furniture. Every walk was also a straight line between two points: the only thing any agent avoided was a conference-room wall, because those door waypoints were written by hand.
+> - **An agent now sits at its desk.** `deskSeat()` puts it in the chair, 0.75 in front of the anchor, and the seated pose the conference table already used now applies at desks too — an agent working at its desk is sitting at it.
+> - **Walks go round things.** `office/obstacles.js` reads the computed layout as rectangles (desktops, room cores, placed furniture by its catalogued radius; a rug is walked over, and a chair is deliberately not solid because every chair is some agent's destination). `office/navmesh.js` marks the floor at 0.35 units per cell, runs A\*, then pulls the path straight — leaving the two to five legs `followRoute()` already accepted. The grid is rebuilt with the room, never per frame.
+> - **It reaches every agent by construction**, not per agent: it hangs off the one per-frame loop and off `followRoute()`, which every walk already went through. Conference walks keep their own door routing; the grid handles the open floor.
+> - **It never strands anyone.** A goal inside furniture is moved to the nearest clear spot; a route that cannot be found falls back to the old straight line, because an agent that never arrives is a worse failure than one that clips a desk.
+> - **Still to come in this item:** agents do not yet steer around *each other* (separation and yielding), and gaze does not yet follow recorded events. Both are planned in the same roadmap row and are not claimed here.
+>
+> Verification: `npm test` 636 / 0 (12 new, including 120 desk-to-room routes asserted clear of every obstacle) and `npx playwright test` 50 / 0. Looked at on the isolated server on 5174: `artifacts/office-seated-desks.png` shows Nova and Orbit seated in their chairs, and Atlas and Pixel standing at the research and QA zone slots, where standing is correct. Web-only change: rebuild and reload.
+
 > **What happens in each room, 12 September 2026 (latest; [UI_UX_REVIEW.md](UI_UX_REVIEW.md), top section).** Done, with tests:
 >
 > - **A room's function is now a choice.** Every shared room has a function — research, QA, review, meetings, the break area — and a workspace can give a room another one, or none at all. Choosing a function takes it from the room that had it, so one kind of work always has one place.
