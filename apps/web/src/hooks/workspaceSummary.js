@@ -38,6 +38,33 @@ export function workspaceRuntimeNote(connections = [], workspaceId) {
     : "No runtime is allowed here";
 }
 
+/**
+ * The one thing worth saying about a workspace you are not currently in,
+ * or null when there is nothing going on.
+ *
+ * A switcher row is scanned, not read: four facts per row is a list you have
+ * to parse, one is a list you can skim. Attention outranks running because
+ * it is the only one that needs you; an idle workspace says nothing at all
+ * rather than "0 running", which is noise pretending to be information.
+ */
+export function workspaceSignal(workspace = {}) {
+  const attention = workspace.attention ?? 0;
+  if (attention)
+    return {
+      text: `${attention} attention`,
+      tone: "attention",
+      label: `${attention} need${attention === 1 ? "s" : ""} attention`,
+    };
+  const running = workspace.activeRuns ?? 0;
+  if (running)
+    return {
+      text: `${running} running`,
+      tone: "running",
+      label: `${running} running`,
+    };
+  return null;
+}
+
 /** "3 agents · 2 running · 1 needs attention", zero counts left out. */
 export function workspaceStats(workspace = {}) {
   const parts = [];

@@ -5,7 +5,6 @@ import {
   Plus,
   Pencil,
   Archive,
-  History,
   Check,
 } from "lucide-react";
 import { apiFetch, maskPath } from "../hooks/useApi.js";
@@ -14,7 +13,7 @@ import { useLocalStorage, pushRecent } from "../hooks/useLocalStorage.js";
 import {
   runtimesForWorkspace,
   workspaceRuntimeNote,
-  workspaceStats,
+  workspaceSignal,
 } from "../hooks/workspaceSummary.js";
 import { themeLabel } from "../office/themeCatalog.js";
 import EmptyState from "./EmptyState.jsx";
@@ -57,6 +56,10 @@ export default function WorkspaceSwitcher({
   const [error, setError] = useState("");
   const [renaming, setRenaming] = useState(null); // { id, name }
   const [creating, setCreating] = useState(null); // { name, rootPath }
+  // Managing is a second mode, not a permanent fixture of the list: renaming
+  // and archiving are rare, and picking a workspace is what this menu is for.
+  const [managing, setManaging] = useState(false);
+  const [filter, setFilter] = useState("");
   const [recent, setRecent] = useLocalStorage(RECENT_WORKSPACES_KEY, []);
   const rootRef = useRef(null);
   const buttonRef = useRef(null);
@@ -68,6 +71,16 @@ export default function WorkspaceSwitcher({
     if (currentId) setRecent((list) => pushRecent(list, currentId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentId]);
+
+  // Closing the menu puts it back to what it is for: picking a workspace.
+  useEffect(() => {
+    if (open) return;
+    setManaging(false);
+    setFilter("");
+    setRenaming(null);
+    setCreating(null);
+    setError("");
+  }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -88,13 +101,31 @@ export default function WorkspaceSwitcher({
     };
   }, [open]);
 
-  const recentList = useMemo(() => {
-    const known = new Map(workspaces.map((w) => [w.id, w]));
-    return (Array.isArray(recent) ? recent : [])
-      .filter((id) => id !== currentId && known.has(id))
-      .slice(0, 5)
-      .map((id) => known.get(id));
-  }, [recent, workspaces, currentId]);
+  // Recency is an ordering, not a second list. A "Recent" section repeated
+  // rows that were already on screen a few lines above.
+  const ordered = useMemo(() => {
+    const seen = new Map(
+      (Array.isArray(recent) ? recent : []).map((id, index) => [id, index]),
+    );
+    return [...workspaces].sort((a, b) => {
+      if (a.id === currentId) return -1;
+      if (b.id === currentId) return 1;
+      const ra = seen.has(a.id) ? seen.get(a.id) : Infinity;
+      const rb = seen.has(b.id) ? seen.get(b.id) : Infinity;
+      if (ra !== rb) return ra - rb;
+      return (a.name ?? "").localeCompare(b.name ?? "");
+    });
+  }, [workspaces, recent, currentId]);
+
+  // A search box is itself clutter until there are enough rows to search.
+  const searchable = workspaces.length >= 9;
+  const needle = filter.trim().toLowerCase();
+  const shown =
+    searchable && needle
+      ? ordered.filter((workspace) =>
+          (workspace.name ?? "").toLowerCase().includes(needle),
+        )
+      : ordered;
 
   const act = async (fn) => {
     setBusy(true);
@@ -200,17 +231,36 @@ export default function WorkspaceSwitcher({
               description="Create one to point Agent Space at a repository or folder."
             />
           ) : null}
+          {searchable ? (
+            <div className="as-wsswitch-search">
+              <label className="sr-only" htmlFor="ws-filter">
+                Filter workspaces
+              </label>
+              <input
+                id="ws-filter"
+                type="search"
+                value={filter}
+                placeholder="Filter workspaces"
+                onChange={(event) => setFilter(event.target.value)}
+              />
+            </div>
+          ) : null}
+
           <ul className="as-wsswitch-list" aria-label="All workspaces">
-            {workspaces.map((workspace) => {
-              const theme = themeLabel(workspace.theme);
-              const runtimeNote = workspaceRuntimeNote(
-                connections,
-                workspace.id,
-              );
+            {shown.map((workspace) => {
               const selected = workspace.id === currentId;
-              const path = workspace.rootPath
-                ? maskPath(workspace.rootPath, presentation)
-                : "";
+              const signal = workspaceSignal(workspace);
+              // Only the workspace you are in spells out where it lives and
+              // what it looks like. On every other row that is a fact you
+              // did not ask for while you were trying to pick a name.
+              const theme = selected ? themeLabel(workspace.theme) : null;
+              const runtimeNote = selected
+                ? workspaceRuntimeNote(connections, workspace.id)
+                : null;
+              const path =
+                selected && workspace.rootPath
+                  ? maskPath(workspace.rootPath, presentation)
+                  : "";
               return (
                 <li key={workspace.id} className="as-wsswitch-row">
                   <button
@@ -230,37 +280,39 @@ export default function WorkspaceSwitcher({
                       {workspace.kind === "demo" ? (
                         <span className="as-tag">Demo</span>
                       ) : null}
-                      {workspace.autoCreated ? (
-                        <span className="as-tag">Auto-created</span>
+                      {signal ? (
+                        <span
+                          className={`ws-item-signal ${signal.tone}`}
+                          aria-label={signal.label}
+                        >
+                          {signal.text}
+                        </span>
                       ) : null}
                     </span>
-                    <span
-                      className={`ws-item-stats${workspace.attention ? " has-attention" : ""}`}
-                    >
-                      {workspaceStats(workspace)}
-                    </span>
-                    <span className="ws-item-meta">
-                      {path ? (
-                        <span className="ws-item-path" title={path}>
-                          {path}
+                    {selected ? (
+                      <span className="ws-item-meta">
+                        {path ? (
+                          <span className="ws-item-path" title={path}>
+                            {path}
+                          </span>
+                        ) : (
+                          <span>No folder set</span>
+                        )}
+                        <span className="ws-item-theme">
+                          <i
+                            className="ws-item-swatch"
+                            aria-hidden="true"
+                            style={{ background: theme.color }}
+                          />
+                          {theme.label}
                         </span>
-                      ) : (
-                        <span>No folder set</span>
-                      )}
-                      <span className="ws-item-theme">
-                        <i
-                          className="ws-item-swatch"
-                          aria-hidden="true"
-                          style={{ background: theme.color }}
-                        />
-                        {theme.label}
                       </span>
-                    </span>
+                    ) : null}
                     {runtimeNote ? (
                       <span className="ws-item-runtimes">{runtimeNote}</span>
                     ) : null}
                   </button>
-                  {allowManage ? (
+                  {allowManage && managing ? (
                     <span
                       className="as-wsswitch-actions"
                       role="group"
@@ -303,40 +355,12 @@ export default function WorkspaceSwitcher({
                 </li>
               );
             })}
+            {shown.length === 0 ? (
+              <li className="as-wsswitch-none as-muted as-small">
+                No workspace matches “{filter.trim()}”.
+              </li>
+            ) : null}
           </ul>
-
-          {recentList.length ? (
-            <section
-              className="as-wsswitch-recent"
-              aria-label="Recent workspaces"
-            >
-              <h4>
-                <History size={12} aria-hidden="true" /> Recent
-              </h4>
-              <ul aria-label="Recent workspaces">
-                {recentList.map((workspace) => (
-                  <li key={workspace.id}>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => {
-                        onSelect(workspace.id);
-                        setOpen(false);
-                      }}
-                    >
-                      {workspace.name}
-                      <span className="as-muted as-small">
-                        {" "}
-                        {workspace.rootPath
-                          ? maskPath(workspace.rootPath, presentation)
-                          : ""}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
 
           {allowManage ? (
             <div className="as-wsswitch-foot">
@@ -385,13 +409,26 @@ export default function WorkspaceSwitcher({
                   </div>
                 </form>
               ) : (
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => setCreating({ name: "", rootPath: "" })}
-                >
-                  <Plus size={12} /> New workspace
-                </button>
+                <div className="as-wsswitch-tools">
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => setCreating({ name: "", rootPath: "" })}
+                  >
+                    <Plus size={12} /> New workspace
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button"
+                    aria-pressed={managing}
+                    onClick={() => {
+                      setManaging((value) => !value);
+                      setRenaming(null);
+                    }}
+                  >
+                    {managing ? "Done managing" : "Manage workspaces"}
+                  </button>
+                </div>
               )}
               {renaming ? (
                 <form onSubmit={rename} aria-label="Rename workspace">

@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **Agents stop walking through the desks, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.1).** Done, with tests:
+> **The workspace menu says less, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.3).** Done, with tests:
+>
+> - **Nine facts per row became one.** Each row carried a name, up to two tags, a four-part stats line, a folder path, a colour swatch, an environment name, a runtime note and two icon buttons — and the panel also held an "All workspaces" list, a "Recent" section, an inline create form and an inline rename form. A row you are scanning past now shows its name and, at most, the one thing that needs you: `2 attention`, else `3 running`, else nothing. Never `0 running`, which is noise pretending to be information.
+> - **Only the workspace you are in spells itself out** — its folder, its environment, and any runtime restriction. On every other row those were facts nobody asked for while trying to pick a name.
+> - **Recent is an ordering, not a section.** The old "Recent" list repeated rows that were already on screen a few lines above. Recency now sorts the one list: current first, then recently visited, then the rest by name.
+> - **Managing is a second mode.** Rename and archive are rare; picking a workspace is what the menu is for. "Manage workspaces" reveals them, "Done managing" puts them away, and closing the menu always returns it to picking. Nothing was removed — the demo workspace still refuses to be archived, and says why.
+> - **A filter appears at nine workspaces**, not before: a search box is itself clutter until there is something to search.
+>
+> Verification: `npm test` 653 / 0 and `npx playwright test` 50 / 0. The switcher's browser test now asserts the new anatomy — exactly one row carries the detail block, every signal chip reads `<n> attention` or `<n> running`, no row repeats global detection status, and the manage actions are absent until the mode is on. Looked at on the isolated server on 5174 in both themes with no page or console errors (`artifacts/workspace-switcher.png`). Web-only change: rebuild and reload.
+
+> **Agents stop walking through the desks, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.1).** Done, with tests:
 >
 > - **The bug, exactly.** A desk agent was sent to `layout.desks[i]` — the desk *anchor*. The desktop is 1.9 × 0.95 centred 0.35 **behind** that anchor, so the anchor is underneath the desk and the figure stood inside its own furniture. Every walk was also a straight line between two points: the only thing any agent avoided was a conference-room wall, because those door waypoints were written by hand.
 > - **An agent now sits at its desk.** `deskSeat()` puts it in the chair, 0.75 in front of the anchor, and the seated pose the conference table already used now applies at desks too — an agent working at its desk is sitting at it.

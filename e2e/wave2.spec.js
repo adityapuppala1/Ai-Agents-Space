@@ -342,19 +342,33 @@ test("the workspace switcher says what is going on in each workspace", async ({
   // menu may not.
   const menu = page.getByRole("dialog", { name: "Workspaces" });
   await expect(menu).toBeVisible();
-  const demo = menu
-    .getByRole("list", { name: "All workspaces" })
-    .getByRole("button")
-    .filter({ hasText: "Demo workspace" });
-  await expect(demo.first()).toContainText(/\d+ agents?/);
-  // The office theme is named in words, never shown as an id.
-  await expect(demo.first().locator(".ws-item-theme")).toHaveText(
+  const list = menu.getByRole("list", { name: "All workspaces" });
+  const demo = list.getByRole("button").filter({ hasText: "Demo workspace" });
+  // The workspace you are in is the one that spells itself out: its folder
+  // and its office theme, named in words and never shown as an id.
+  const current = list.getByRole("button").filter({ has: page.locator(".ws-item-meta") });
+  await expect(current).toHaveCount(1);
+  await expect(current.locator(".ws-item-theme")).toHaveText(
     /^[A-Z][a-z]+( [a-z]+)*$/,
   );
+  // Every other row is one line: a name, and at most one signal. A path on a
+  // row you are only scanning past is what made this menu unreadable.
+  await expect(demo.first()).toBeVisible();
+  const signals = list.locator(".ws-item-signal");
+  for (let i = 0; i < (await signals.count()); i += 1)
+    await expect(signals.nth(i)).toHaveText(/^\d+ (attention|running)$/);
   // Detection status is global and lives in the top bar: no row repeats it.
   await expect(menu).not.toContainText(/\b(ready|detected|missing)\b/);
   // Zero counts are left out instead of reading "0 need attention".
   await expect(menu).not.toContainText(/\b0 (need|running|agents)/);
+  // Managing is behind a second mode, so the default list is just a list.
+  await expect(menu.getByRole("button", { name: /^Rename / })).toHaveCount(0);
+  await menu.getByRole("button", { name: "Manage workspaces" }).click();
+  await expect(
+    menu.getByRole("button", { name: /^Rename / }).first(),
+  ).toBeVisible();
+  await menu.getByRole("button", { name: "Done managing" }).click();
+  await expect(menu.getByRole("button", { name: /^Rename / })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
 });

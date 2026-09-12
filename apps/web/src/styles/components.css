@@ -1937,18 +1937,28 @@
   overflow-wrap: anywhere;
   color: var(--text-strong);
 }
-.ws-item-stats,
 .ws-item-meta,
 .ws-item-runtimes {
   padding-left: 20px;
   font-size: var(--text-xs);
   color: var(--muted);
 }
-.ws-item-stats {
-  color: var(--text);
+/* The one thing worth saying about a row, pushed to its trailing edge so a
+   column of names stays a column of names. */
+.ws-item-signal {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
-.ws-item-stats.has-attention {
+.ws-item-signal.attention {
+  background: var(--as-warn-bg);
   color: var(--as-warn);
+}
+.ws-item-signal.running {
+  background: var(--as-info-bg);
+  color: var(--as-info);
 }
 .ws-item-meta {
   display: flex;
@@ -1980,28 +1990,24 @@
 
 .as-wsswitch-actions {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.as-wsswitch-recent {
-  margin-top: 8px;
-  border-top: 1px solid var(--line);
-  padding-top: 6px;
-}
-.as-wsswitch-recent h4 {
-  margin: 0 0 4px;
-  font-size: var(--text-xs);
-  color: var(--muted);
-  display: flex;
   align-items: center;
-  gap: 4px;
-}
-.as-wsswitch-recent ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
   gap: 2px;
+}
+.as-wsswitch-search {
+  padding: 0 2px 6px;
+}
+.as-wsswitch-search input {
+  width: 100%;
+}
+.as-wsswitch-none {
+  padding: 8px 20px;
+}
+.as-wsswitch-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 .as-wsswitch-foot {
   margin-top: 8px;

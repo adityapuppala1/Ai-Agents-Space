@@ -413,6 +413,22 @@ test("the workspace switcher states what is going on without repeating detection
     { provider: "claude-code", status: "detected" },
   ];
   assert.equal(workspaceRuntimeNote(scoped, "w1"), "Can launch: Claude Code");
+
+  // One signal per row, because a row is skimmed rather than read.
+  const { workspaceSignal } = await import(
+    "../apps/web/src/hooks/workspaceSummary.js"
+  );
+  // Attention outranks running: it is the only one that needs the reader.
+  assert.deepEqual(workspaceSignal({ activeRuns: 2, attention: 1 }), {
+    text: "1 attention",
+    tone: "attention",
+    label: "1 needs attention",
+  });
+  assert.equal(workspaceSignal({ activeRuns: 2 }).text, "2 running");
+  assert.equal(workspaceSignal({ attention: 3 }).label, "3 need attention");
+  // Nothing going on says nothing at all, never "0 running".
+  assert.equal(workspaceSignal({ agents: 5, activeRuns: 0, attention: 0 }), null);
+  assert.equal(workspaceSignal({}), null);
   assert.equal(
     workspaceRuntimeNote(scoped, "w2"),
     "Can launch: Codex, Claude Code",

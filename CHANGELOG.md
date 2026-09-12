@@ -13,6 +13,10 @@ Statuses here are deliberately literal. Where something is observed rather than 
 - **Agents look at whoever is speaking.** A glance follows a colleague with a recorded message, in the same room, within range, turning at most about 69°. Silence means every head stays forward: there is no idle looking-around, and gaze is never invented.
 - **A prioritised plan** for what comes next in [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md), built from a study of seventeen comparable products.
 
+### Changed
+
+- **The workspace menu says less.** Rows carried nine facts each; a row you are scanning past now shows its name and at most one signal (`2 attention`, else `3 running`, else nothing). Only the workspace you are in spells out its folder and environment. "Recent" became an ordering rather than a second list that repeated rows already on screen. Renaming and archiving moved behind a "Manage workspaces" mode, and a filter appears once there are nine workspaces.
+
 ### Fixed
 
 - **Agents stood inside their own desks.** A desk agent was sent to the desk anchor, which the desktop covers; it is now sent to the chair, and sits in it. The seated pose that the conference table introduced now applies at desks as well.

@@ -33,7 +33,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | --- | --- | --- | --- | --- | --- |
 | 1.1 | ~~Agents that can see the furniture~~ **Done 12 Sep** | — | 2 | — | Your screenshot |
 | 1.2 | Run worker in its own process | P0 | 1 | — | Robustness |
-| 1.3 | The workspace menu, decluttered | P0 | 1 | — | Your item 4 |
+| 1.3 | ~~The workspace menu, decluttered~~ **Done 12 Sep** | — | 1 | — | Your item 4 |
 | 2.1 | Speak to an agent from its desk | P0 | 2 | 1.2 | CLAW3D |
 | 2.2 | Give an instruction mid-run | P0 | 1 | 2.1 | CLAW3D |
 | 2.3 | Address a room | P1 | 1 | 2.1, 1.1 | CLAW3D |
@@ -74,7 +74,10 @@ Four layers, none of them per-agent, so every agent is covered by construction:
 
 A wedged provider CLI can currently take the interface down with it. The worker gets its own OS process with supervised restart and an unchanged contract above it. This is listed at P0 not for its own sake but because **wave two lets you talk to a live run**, and doing that safely means the thing holding the run cannot be the thing holding the UI.
 
-### 1.3 The workspace menu, decluttered
+### 1.3 The workspace menu, decluttered — **done, 12 September 2026**
+
+> Shipped, as described. See [ROADMAP_STATUS.md](ROADMAP_STATUS.md) for the evidence.
+
 
 Each row carries nine pieces of information and the panel does four jobs. Reduce to one line per workspace, the second line only for the current one, recency as ordering rather than a section, managing behind one item that opens the dialog that already exists, and a filter box only past nine workspaces.
 
