@@ -122,6 +122,8 @@ Your database and run artifacts live in the usual place for your operating syste
 
 Works the same on Windows, macOS and Linux: there are no native modules to compile. Storage is `node:sqlite`, which is why Node **22.13+ or 24+** is required, and why installing needs no compiler and no `node-gyp`. A browser with WebGL2 is needed for the 3D view (there is a 2D fallback without it). Git is needed for worktree isolation and diff artifacts.
 
+[![npm](https://img.shields.io/npm/v/@adhirocks2/agentspace)](https://www.npmjs.com/package/@adhirocks2/agentspace)
+
 > The package is scoped because npm refuses unscoped names too close to an existing one, and `agentspace` collides with the unrelated `agent-space`. The scope is what makes it publishable; the product is still Agent Space.
 
 ### From a clone
