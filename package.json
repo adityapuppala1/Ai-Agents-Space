@@ -11,7 +11,7 @@
     "local-first",
     "three.js"
   ],
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/adityapuppala1/Ai-Agents-Space.git"
@@ -33,7 +33,10 @@
     "apps/web/dist/",
     "docs/",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "THIRD-PARTY-NOTICES.md"
   ],
   "scripts": {
     "start": "node packages/server/src/main.js",

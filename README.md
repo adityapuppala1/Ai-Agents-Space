@@ -122,7 +122,7 @@ Your database and run artifacts live in the usual place for your operating syste
 
 Works the same on Windows, macOS and Linux: there are no native modules to compile. Storage is `node:sqlite`, which is why Node **22.13+ or 24+** is required, and why installing needs no compiler and no `node-gyp`. A browser with WebGL2 is needed for the 3D view (there is a 2D fallback without it). Git is needed for worktree isolation and diff artifacts.
 
-> **Not yet published.** `npx agentspace` works once the package is published to npm; the name is available and the package is prepared and verified from a local tarball. Until then, clone and use the steps below. Publishing, and choosing a licence, are the repository owner's decisions — the package currently declares `UNLICENSED`, because no LICENSE file exists.
+> **Not yet published.** `npx agentspace` works once the package is published to npm; the name is available and the package is prepared and verified from a local tarball. Until then, clone and use the steps below.
 
 ### From a clone
 
@@ -229,6 +229,14 @@ artifacts/             Desktop and mobile captures
 | [Idea/IMPLEMENTATION_GUIDE.md](Idea/IMPLEMENTATION_GUIDE.md)                   | Original phased implementation notes                                                                                            |
 | [Idea/QUICK_REFERENCE.md](Idea/QUICK_REFERENCE.md)                             | Architecture and UI quick reference                                                                                             |
 | [Idea/STARTER_FILES.md](Idea/STARTER_FILES.md)                                 | Starter configuration samples                                                                                                   |
+
+## Licence
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). You may use, modify and redistribute it, including commercially, provided the licence and notices travel with it; the licence also carries an explicit patent grant from every contributor.
+
+The published package bundles React, react-dom, three and lucide-react into the interface and installs `ws` at runtime, each under its own MIT or ISC licence. Minification strips the licence comments that would otherwise sit inside `apps/web/dist`, so those notices are reproduced in full in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), which ships with every copy.
+
+The copyright line in `NOTICE` reads "The Agent Space authors". Replace it with your own name or your company's if you would rather it named you directly.
 
 ## Container option
 

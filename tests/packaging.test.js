@@ -107,7 +107,6 @@ test("the launcher imports the server as a URL, which is all Windows accepts", (
 test("the package names itself something npx can fetch", () => {
   assert.equal(pkg.name, "agentspace");
   assert.ok(!pkg.private, "a private package cannot be published, so npx cannot fetch it");
-  // No licence file exists yet, so no permissive licence may be claimed.
   assert.ok(pkg.license, "npm wants a license field, even if it is UNLICENSED");
   if (pkg.license !== "UNLICENSED")
     assert.ok(
@@ -115,4 +114,46 @@ test("the package names itself something npx can fetch", () => {
       `package.json claims the ${pkg.license} licence but there is no LICENSE file`,
     );
   assert.ok(root.length > 0);
+});
+
+test("the licence a distribution claims is the one it carries", () => {
+  if (pkg.license === "UNLICENSED") return;
+  const licence = readFileSync(new URL("../LICENSE", import.meta.url), "utf8");
+  if (pkg.license === "Apache-2.0") {
+    assert.match(licence, /Apache License\s+Version 2\.0/, "LICENSE is not Apache-2.0");
+    // Apache-2.0 section 4(d): a NOTICE file, if there is one, must travel
+    // with every distribution.
+    assert.ok(
+      existsSync(new URL("../NOTICE", import.meta.url)),
+      "Apache-2.0 expects a NOTICE file naming the copyright holder",
+    );
+    for (const file of ["LICENSE", "NOTICE"])
+      assert.ok(pkg.files.includes(file), `${file} is not packed into the tarball`);
+  }
+});
+
+test("bundled third-party code is still attributed after minification", () => {
+  // React, three and lucide are compiled into apps/web/dist and shipped. The
+  // bundler strips their licence comments, and MIT and ISC both require the
+  // notice to travel with the copy — so it travels in a file instead.
+  const notices = new URL("../THIRD-PARTY-NOTICES.md", import.meta.url);
+  assert.ok(
+    existsSync(notices),
+    "the tarball ships bundled MIT/ISC code with no notices anywhere",
+  );
+  const text = readFileSync(notices, "utf8");
+  for (const name of ["react", "react-dom", "three", "lucide-react", "ws"])
+    assert.ok(
+      new RegExp(`^## ${name} `, "m").test(text),
+      `${name} is distributed but not listed in THIRD-PARTY-NOTICES.md`,
+    );
+  // Reproduced in full, not merely named.
+  assert.ok(
+    (text.match(/Permission is hereby granted/g) ?? []).length >= 4,
+    "the notices name the packages without reproducing their licences",
+  );
+  assert.ok(
+    pkg.files.includes("THIRD-PARTY-NOTICES.md"),
+    "the notices are not packed into the tarball",
+  );
 });
