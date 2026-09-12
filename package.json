@@ -12,6 +12,7 @@
     "dev:web": "vite apps/web --config apps/web/vite.config.js",
     "build": "vite build apps/web --config apps/web/vite.config.js",
     "test:ui": "playwright test",
+    "test:routes": "node artifacts/route-audit.mjs",
     "test": "node --test"
   },
   "dependencies": {

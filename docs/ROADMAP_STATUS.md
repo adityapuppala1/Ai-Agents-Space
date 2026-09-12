@@ -2,7 +2,16 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **Every adapter is held to one contract, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 6.3).** Done, with tests — and the planned approach rejected:
+> **The route audit is committed, and the whole product passes it, 12 September 2026 (latest).** Done:
+>
+> - **256 renders, no findings.** Every route in the rail, at eight viewports, in both themes, checked for sideways scrolling, page and console errors, interactive controls with no accessible name, and text below the 12px floor. That covers every surface added this session — the workspace menu, the conversation tab, the replay strip, the attention chip, the room-message dialog, the arranger preview, the watch control and the relay stages — none of which had been looked at systematically at phone width or in dark.
+> - **It is committed this time** (`artifacts/route-audit.mjs`, `npm run test:routes`). It had been written twice as a throwaway and its findings rediscovered each time; the `rem` type-scale regression that shrank the whole interface was caught by its `tiny` count, not by anyone's eye.
+> - **It reports a screenshot only where something failed.** A folder of 256 correct screenshots is not evidence anyone reads.
+> - **Its own first run was wrong, and that is recorded.** It reported thirty unnamed controls that were plainly labelled, because it tested names with `innerText` — which is layout-dependent and empty inside a closed `<details>`, where several of those controls live. The accessible-name algorithm uses *contents*. The check now uses `textContent` and skips closed `<details>` outright. [TESTING.md](TESTING.md) carries the warning: when this audit reports something, confirm the finding is real before changing the product.
+>
+> Verification: `npm run test:routes` — 256 / 256 clean, twice (once after the fix at five viewports, once in full).
+
+> **Every adapter is held to one contract, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 6.3).** Done, with tests — and the planned approach rejected:
 >
 > - **"Adding a provider is a config entry, not an adapter" was the wrong trade.** `defineAdapter()` already takes a largely declarative object; what remains as code is the flag construction and the stream parser, which is exactly the part that differs per provider. Codex's app-server adapter speaks JSON-RPC rather than a headless stream and would never fit a CLI template, so the config language would have needed an escape hatch for the case that motivated it — and would likely have totalled more code than the six adapters it replaced.
 > - **What was missing was an enforced shape, not a format.** Every adapter was tested only on its own terms — its own fixtures, its own stream, its own flags — so nothing said what an adapter *is*. A new one could omit a capability key, emit an event kind the rest of the system does not know, or throw on an unrecognised line, and every existing test would still pass.

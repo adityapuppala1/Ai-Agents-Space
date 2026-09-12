@@ -8,6 +8,7 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Added
 
+- **A committed route audit.** `npm run test:routes` walks every route at eight viewports in both themes — 256 renders — checking for sideways scrolling, page errors, unnamed controls and text below the 12px floor. It writes a screenshot only where something failed. The product passes it clean.
 - **Every provider adapter is held to one contract.** `tests/adapter-contract.test.js` runs against every registered adapter — capability vocabulary, a findable binary, refusal-with-a-fix where launch is unsupported, a runnable command where it is not, and a `parse()` that survives hostile input without throwing or inventing an event kind. Registering an adapter is the only step needed to be held to it.
 - **You can say one thing to a whole team.** "Message the team" on the relay strip. Every member continues its own session, so this starts a new attempt for each — the dialog says so, names everyone who cannot be reached and why (the server's own words, read per run), and reports a partial success as a partial success.
 - **The office replays a recorded minute.** Scrub back and the floor shows that moment — agents in the rooms their activity put them in, desk screens showing the file that was open. Activity is read from the event kind the recorder assigned, nothing is interpolated between events, and a replayed agent never claims a live run. The floor says which minute it is showing for as long as it shows it.

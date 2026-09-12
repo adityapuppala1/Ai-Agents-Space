@@ -33,7 +33,7 @@ A local-first command center for AI agents. It shows what your coding assistants
 | Webhooks (signed, both directions) and MCP server                                                                   | Working; MCP runs as a separate process over HTTP, and `decide_approval` is gated                                                                                                                                                                                     |
 | CLI (`bin/agent-space.js`)                                                                                          | Working, no dependencies                                                                                                                                                                                                                                              |
 | Shared mode (bearer token), remote workers, roles                                                                   | Token auth working; remote workers, roles and tenant isolation are not built                                                                                                                                                                                          |
-| Unit, integration, and Chrome browser tests                                                                         | Working: `node --test` 624 tests, Playwright 50 tests in 19 files ([docs/TESTING.md](docs/TESTING.md))                                                                                                                                                                |
+| Unit, integration, and Chrome browser tests                                                                         | Working: `node --test` 716 tests, Playwright 57 tests in 22 files, and a 256-render route audit ([docs/TESTING.md](docs/TESTING.md))                                                                                                                                  |
 
 Activity shown for provider sessions is derived from tool names and is always labelled "inferred". Models and costs are shown only when the provider reports them ("model not reported" otherwise). Progress percentages exist only for manual and demo tasks; provider runs show elapsed time and recorded events.
 
@@ -124,9 +124,10 @@ For development run `npm run dev` (server with restart on change) and `npm run d
 ## Verify
 
 ```sh
-npm test          # Node unit and integration tests (624)
-npm run build     # Vite production build
-npm run test:ui   # Playwright browser suite (50 tests in 19 files)
+npm test           # Node unit and integration tests (716)
+npm run build      # Vite production build
+npm run test:ui    # Playwright browser suite (57 tests in 22 files)
+npm run test:routes # Route audit: 16 routes x 8 viewports x 2 themes (256 renders)
 ```
 
 The Node suite never calls a real provider: adapters and the run worker use the fake CLIs in `tests/fixtures/fake-cli/`, and observers read fixture homes. The browser suite uses an installed Google Chrome, starts an isolated server on port 5174 with an in-memory database, the fake CLIs, and empty provider homes under `test-results/homes`, and covers desktop and mobile rendering, two-tab synchronization, the manual task lifecycle, a fake managed run through the inspector, a hook approval through the inbox, a live Claude Code session with an auto-created workspace, the command palette, first-run setup, global search, keyboard drag-to-assign, request-change, the operations panel, day in review, pinned runs, the workspace switcher, server-stored office settings, the knowledge/memory/handover panels, the agents directory, arranging the office, conference-room scale, and a screen-reader pass over the landmarks, headings and live regions. See [docs/TESTING.md](docs/TESTING.md). To use another browser, change `channel` in `playwright.config.js`. On Linux CI run `npx playwright install chrome` first. Preview captures are written to `artifacts/`.

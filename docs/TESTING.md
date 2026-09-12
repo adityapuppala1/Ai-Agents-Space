@@ -73,6 +73,28 @@ Conventions the specs rely on (11 September 2026):
 
   This is not hypothetical: on 12 September 2026 `team-relay.spec.js` failed exactly this way once in a full-suite run, then passed in isolation eight times and in two further full runs. It was only diagnosable by reading `EPISODE_MS` — the failure context had already been cleared, because Playwright empties `test-results/` at the start of every run. **If a transient assertion fails, copy `test-results/` aside before re-running.**
 
+## The route audit
+
+```sh
+npm run test:routes          # 16 routes x 8 viewports x 2 themes = 256 renders
+npm run test:routes -- --fast  # 5 viewports, for a quick pass while working
+```
+
+`artifacts/route-audit.mjs` starts its own server on 5174 with an in-memory database and throwaway provider homes, walks every route in the rail at every viewport in both themes, and reports four things. Each was chosen because it fails loudly and never guesses:
+
+| Check | What it means |
+| --- | --- |
+| `overflow` | The page scrolls sideways at that width |
+| `errors` | A page or console error was raised while rendering |
+| `unnamed` | An interactive control with no accessible name |
+| `tiny` | Text rendered below the 12px floor the design system sets |
+
+It writes `report.json` and a screenshot **only for renders that failed** — a folder of 256 correct screenshots is not evidence anyone reads.
+
+It is committed rather than thrown away because it has been written twice before and its findings had to be rediscovered each time: the `rem` type-scale regression that shrank the whole interface was caught by the `tiny` count, not by anyone's eye.
+
+**A warning from its own history.** The first version tested names with `innerText` and reported thirty unnamed controls that were plainly labelled "Save view", "Daylight studio", "All areas (9)". `innerText` is layout-dependent and empty for anything inside a closed `<details>`; the accessible-name algorithm uses *contents*. When this audit reports something, check the finding is real before changing the product — an audit that cries wolf is worse than none.
+
 ## Writing a test for a template or an extension
 
 ```js
