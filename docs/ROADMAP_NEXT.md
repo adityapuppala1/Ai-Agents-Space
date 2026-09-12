@@ -31,7 +31,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 
 | # | Item | Priority | Slices | Depends on | Source |
 | --- | --- | --- | --- | --- | --- |
-| 1.1 | Agents that can see the furniture | P0 | 2 | — | Your screenshot |
+| 1.1 | ~~Agents that can see the furniture~~ **Done 12 Sep** | — | 2 | — | Your screenshot |
 | 1.2 | Run worker in its own process | P0 | 1 | — | Robustness |
 | 1.3 | The workspace menu, decluttered | P0 | 1 | — | Your item 4 |
 | 2.1 | Speak to an agent from its desk | P0 | 2 | 1.2 | CLAW3D |
@@ -54,7 +54,10 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 
 Everything in waves two and three assumes an agent is credibly *somewhere*. That has to be true first.
 
-### 1.1 Agents that can see the furniture
+### 1.1 Agents that can see the furniture — **done, 12 September 2026**
+
+> Shipped. The evidence is in [ROADMAP_STATUS.md](ROADMAP_STATUS.md); all four layers below were built, and the desk-anchor bug described in the first paragraph turned out to be the larger half of the problem. The description is kept as written so the plan can be compared with what was actually delivered.
+
 
 Today a walk is a straight line between two points, and the only obstacle any agent avoids is a conference-room wall, because those door waypoints were written by hand. Desks, chairs, placed furniture and other agents are all walked through.
 

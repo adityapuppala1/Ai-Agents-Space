@@ -4,6 +4,7 @@
 // delivered-artifact chip and the short completion celebration.
 import * as THREE from "three";
 import { builders, textTexture } from "./scene.js";
+import { GAZE_BLEND, gazeOffset } from "./steering.js";
 import {
   ACTIVITY_LABELS,
   PROVIDER_LABELS,
@@ -406,6 +407,13 @@ function figureRecord(agent, index, extra) {
     // The waypoints of the current walk, when it goes through a room door
     // (followRoute); null for a straight walk.
     route: null,
+    // Where this figure is looking, and how far its head has turned so far.
+    // Only a colleague the record says is speaking earns a glance
+    // (office/steering.js gazeTargets); null means eyes front.
+    lookAt: null,
+    gaze: 0,
+    // How far it has stepped aside for someone in its way this frame.
+    nudge: { x: 0, z: 0 },
   };
 }
 
@@ -561,7 +569,14 @@ export function animateFigure(
   p.arms.R.rotation.x = pose.armR;
   p.legs.L.rotation.x = pose.legL;
   p.legs.R.rotation.x = pose.legR;
-  p.head.rotation.set(pose.headX, pose.headY, 0);
+  // A glance at whoever the record says is speaking. Nothing else earns one:
+  // an agent never turns to look at something that was not recorded.
+  const wantGaze = fig.lookAt
+    ? gazeOffset(fig.pos.x, fig.pos.z, fig.renderYaw, fig.lookAt)
+    : 0;
+  const gazeK = reducedMotion ? 1 : Math.min(1, GAZE_BLEND * (dtMs / 16));
+  fig.gaze += (wantGaze - (fig.gaze ?? 0)) * gazeK;
+  p.head.rotation.set(pose.headX, pose.headY + fig.gaze, 0);
   fig.body.rotation.x = pose.bodyX;
   fig.body.scale.y = pose.bodyScaleY;
   fig.body.position.y = pose.bodyY;

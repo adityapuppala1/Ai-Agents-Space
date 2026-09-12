@@ -111,8 +111,9 @@ import {
   ZONE_IDS,
 } from "./office/zones.js";
 import { buildOfficeProps } from "./office/props.js";
-import { deskSeat, officeObstacles } from "./office/obstacles.js";
+import { blocked, deskSeat, officeObstacles } from "./office/obstacles.js";
 import { buildNavGrid, findPath } from "./office/navmesh.js";
+import { easeNudge, gazeTargets, separation } from "./office/steering.js";
 import OfficeArranger from "./components/OfficeArranger.jsx";
 import {
   createFigure,
@@ -2351,6 +2352,9 @@ export default function Office({
       next.seatKey = previous.seatKey;
       next.roomKey = previous.roomKey;
       next.atSeat = previous.atSeat;
+      next.lookAt = previous.lookAt;
+      next.gaze = previous.gaze ?? 0;
+      next.nudge = previous.nudge ?? { x: 0, z: 0 };
       if (next.group) {
         next.group.position.copy(next.pos);
         next.group.rotation.y = next.renderYaw;
@@ -2533,6 +2537,28 @@ export default function Office({
       directEpisodes(time);
       crowdRecords.length = 0;
       occupants.clear();
+      // Who is going round whom, and who is looking at whom. Both read the
+      // floor as it stands this frame (office/steering.js): a nudge keeps
+      // walkers out of each other, and a glance only ever follows a
+      // colleague the record says is speaking.
+      const crowdNow = [];
+      for (const fig of figures.values())
+        crowdNow.push({
+          id: fig.id,
+          x: fig.pos.x,
+          z: fig.pos.z,
+          dx: fig.to.x - fig.from.x,
+          dz: fig.to.z - fig.from.z,
+          walking: Boolean(fig.walking),
+          talking: Boolean(fig.talking || fig.gesture === "talk"),
+          // Only people in the same room can see each other speak.
+          place: fig.roomKey ?? null,
+        });
+      const nudges = separation(crowdNow);
+      const looks = reducedMotion ? new Map() : gazeTargets(crowdNow);
+      for (const fig of figures.values()) {
+        fig.lookAt = looks.get(fig.id) ?? null;
+      }
       for (const fig of figures.values()) {
         // In its chair, not on the way to it: it sits and works there. True
         // at a conference seat and at the agent's own desk, which has a
@@ -2552,6 +2578,24 @@ export default function Office({
           rate: gfx.animationRate ?? 1,
           selected: selected === fig.id,
         });
+        // Stepping aside for someone in the way. animateFigure recomputes
+        // fig.pos from the planned route every frame while walking, so the
+        // offset is folded in afterwards and can never accumulate; a figure
+        // that has stopped keeps whatever nudge it had and lets it decay.
+        fig.nudge = easeNudge(
+          fig.nudge ?? { x: 0, z: 0 },
+          (fig.walking && nudges.get(fig.id)) || { x: 0, z: 0 },
+          dtMs,
+        );
+        if (Math.abs(fig.nudge.x) > 0.001 || Math.abs(fig.nudge.z) > 0.001) {
+          const stepX = fig.pos.x + fig.nudge.x;
+          const stepZ = fig.pos.z + fig.nudge.z;
+          // Never let giving way push anyone into the furniture.
+          if (!navObstacles.length || !blocked(navObstacles, stepX, stepZ)) {
+            fig.pos.set(stepX, fig.pos.y, stepZ);
+            fig.group?.position.copy(fig.pos);
+          }
+        }
         if (fig.departing && !fig.walking) {
           figureGroup.remove(fig.group);
           figures.delete(fig.id);
