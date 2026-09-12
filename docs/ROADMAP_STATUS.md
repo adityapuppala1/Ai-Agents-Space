@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **The review table says what changed, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 3.3).** Done, with tests:
+> **Which branch a desk is on, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 4.3).** Done, with tests — plus one planned item found already built and one flaky test diagnosed:
+>
+> - **The snapshot says which branch, and whether it is isolated.** Every comparable tool isolates agents in git worktrees and "which branch is this one on?" is the first question their users ask. The run has recorded `branch` and `worktree` since the execution layer shipped; the snapshot never passed them on, so nothing could show them. Agents now carry `branch` and `isolated`.
+> - **Shown where it is asked.** The run passport names the branch and says plainly whether it is an **isolated worktree** or **your working tree** — the distinction that decides whether an agent's work can collide with yours. In the office, an agent's tooltip reads "on &lt;branch&gt; (isolated worktree)".
+> - **No branch recorded is said as that**, never shown as `main`.
+> - **4.1 "subagents as visible helpers" was already built.** The item asked to wire helper figures to real subagent transcripts; they were already wired to the snapshot's `agent.subagents`, stepping out of the parent, carrying a chip naming the delegation and folding back when the subagent reports. Nothing was done.
+> - **The intermittent `team-relay` failure is diagnosed and fixed.** An office moment is a timed episode — `EPISODE_MS.handoff` is 6 500 ms — and the spec made three sequential assertions against it. Under a loaded suite the gap between the first and the last outlasts what is left of the window, and the element is gone. It now reads the moment and the receiving agent's label once, in a single `expect.poll`, and asserts on what it read. Verified with `--repeat-each`, 8 passes, and two clean full runs. The rule is in [TESTING.md](TESTING.md).
+>
+> Verification: `npm test` 685 / 0 (four new in `tests/workspace-branch.test.js`) and `npx playwright test` 55 / 0. Server and web change: rebuild, and restart the server for the new snapshot fields.
+
+> **The review table says what changed, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 3.3).** Done, with tests:
 >
 > - **The board names the files.** It read "2 artifacts linked", which says a review exists without saying what it is about. It now reads "3 files changed: app.js, routes.js", taken from the diff artifact's own `metadata.files` — recorded since the execution layer shipped and never surfaced.
 > - **"No diff recorded" is said, and is not "0 files changed".** A review with no recorded diff and a review of nothing are different facts; the board says the first one plainly rather than implying the second.

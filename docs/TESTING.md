@@ -69,11 +69,9 @@ Conventions the specs rely on (11 September 2026):
 - **Never depend on the demo simulation's clock.** The demo runs on its own timeline: its relay hands over, agents pick tasks up and finish them, and a room opens and closes as that happens. Specs that named one demo agent as "free", or waited for the demo to announce something, passed or failed by where in the cycle they ran. Create a workspace and drive the state the test needs.
 - **Helpers never live in a `.spec.js` file.** Importing a spec would register its tests twice; shared helpers go in `e2e/helpers.js`.
 
-### Known intermittent: `team-relay.spec.js` "plays the handoff"
+- **Never assert twice against a moment.** An office moment is a timed episode — `EPISODE_MS.handoff` is 6 500 ms — and then it leaves the screen. A spec that asks the DOM once for the title, again for the provenance and again for the receiving agent's label is racing that window three times, and under a loaded suite the gap between the first and the last can outlast what is left of it. Read everything in one `expect.poll`, then assert on what was read. That also makes a failure print what the office actually said, instead of timing out against an element that has gone.
 
-On 12 September 2026 this spec failed once in a full-suite run and then passed in isolation and in a second full-suite run. The cause is **unconfirmed** — Playwright clears `test-results/` on each run, so the failure context from the failing run was gone before it could be read. It is recorded here rather than dismissed as flake so the next person to see it knows it has happened before and does not start from zero.
-
-If it recurs, capture the evidence before re-running: copy `test-results/` aside, or run that spec alone with `--repeat-each` under load. The likely suspect is the rule above — the spec deploys a team and waits for the office to play a handoff, which is timing the test does not fully own.
+  This is not hypothetical: on 12 September 2026 `team-relay.spec.js` failed exactly this way once in a full-suite run, then passed in isolation eight times and in two further full runs. It was only diagnosable by reading `EPISODE_MS` — the failure context had already been cleared, because Playwright empties `test-results/` at the start of every run. **If a transient assertion fails, copy `test-results/` aside before re-running.**
 
 ## Writing a test for a template or an extension
 

@@ -41,9 +41,9 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 3.1 | ~~Over the shoulder~~ **Done 12 Sep** | — | 1 | 1.1 | Your "agents view" |
 | 3.2 | ~~The monitor becomes real~~ **Already was — see below** | — | — | — | Your "agents view" |
 | 3.3 | ~~Read the diff at the table~~ **Done 12 Sep** (board names the files) | — | 1 | — | CLAW3D |
-| 4.1 | Subagents as visible helpers | P1 | 1 | 1.1 | Your "multiple agents" |
-| 4.2 | Workflow fan-out on the floor | P1 | 2 | 4.1 | Your "orchestrated" |
-| 4.3 | Which worktree is this desk on | P1 | 1 | — | Vibe Kanban, Conductor |
+| 4.1 | ~~Subagents as visible helpers~~ **Already was — see below** | — | — | — | Your "multiple agents" |
+| 4.2 | Workflow fan-out on the floor | P1 | 2 | — | Your "orchestrated" |
+| 4.3 | ~~Which worktree is this desk on~~ **Done 12 Sep** | — | 1 | — | Vibe Kanban, Conductor |
 | 5.1 | The arranger in 3D | P1 | 2 | 1.1 | Your item 3 |
 | 5.2 | The campus becomes a building | P2 | 2 | 5.1 | Your "3D layers" |
 | 5.3 | Depth and light | P2 | 1 | — | Your "3D layers" |
@@ -158,9 +158,9 @@ Your "more agents view — what he is doing, watching". Today you learn what an 
 
 Your "multiple agents as needed when work is happening", done truthfully: agents appear because work appeared, never to look busy.
 
-- **4.1 Subagents as visible helpers.** Helper figures already exist in the scene. Wire them to real subagent transcripts, which the observer already reads, so a fan-out is visible as it happens and collapses when it ends.
+- **4.1 Subagents as visible helpers — already built (checked 12 September 2026).** The item said "wire them to real subagent transcripts". They were already wired. `Office.jsx` builds a helper per open delegation in the snapshot's `agent.subagents`, steps it out of its parent, gives it a chip naming the delegation, and folds it back when the subagent reports. Nothing to do.
 - **4.2 Workflow fan-out on the floor.** A workflow step that dispatches several agents fills several desks, and the dependency edges are drawn between them. The workflow graph already exists; this is its spatial rendering.
-- **4.3 Which worktree is this desk on.** Every orchestrator in the study isolates agents in git worktrees, and it is the first question their users ask. We already run sandboxed runs in `data/worktrees/<runId>` — we simply never show it. Show the branch at the desk, and put an agent on a worktree on visibly separate floor.
+- **4.3 Which worktree is this desk on — done, 12 September 2026.** The snapshot's agents now carry `branch` and `isolated`; the run passport names the branch and says whether it is an isolated worktree or your own working tree, and an agent's tooltip in the office says "on &lt;branch&gt; (isolated worktree)". A run that recorded no branch says so rather than being shown as `main`. **Not done:** putting an isolated agent on visibly separate floor — the data is there for it, but a second floor plane is a large scene change for a distinction a label already makes.
 
 ## 8. Wave five — more 3D layers (P1 → P2)
 

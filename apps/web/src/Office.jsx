@@ -3454,7 +3454,7 @@ export default function Office({
                   onZoneHover?.(null);
                 }}
                 aria-label={`Inspect ${agent.name}`}
-                title={
+                title={[
                   agent.taskTitle
                     ? `${activityLabel(agent)} · ${
                         // The 3D monitor masks this same field; a browser
@@ -3462,8 +3462,16 @@ export default function Office({
                         // path while the footer claims paths are masked.
                         mask ? maskPrivate(agent.taskTitle) : agent.taskTitle
                       }`
-                    : activityLabel(agent)
-                }
+                    : activityLabel(agent),
+                  // Which branch this desk is on, and whether it is isolated.
+                  // Only said when the run recorded one: a missing branch is
+                  // not "main".
+                  agent.branch
+                    ? `on ${agent.branch}${agent.isolated ? " (isolated worktree)" : ""}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
                 style={{ "--agent-color": agent.color }}
               >
                 <i className={`dot ${tone}`} aria-hidden="true" />

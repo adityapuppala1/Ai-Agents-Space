@@ -499,6 +499,13 @@ export class Workspace extends EventEmitter {
         runStatus: run?.status ?? null,
         runMode: run?.mode ?? null,
         runProvider: run?.provider ?? null,
+        // Which branch this agent's work is on, and whether it is isolated in
+        // a worktree of its own. Every comparable tool isolates agents in git
+        // worktrees, and "which branch is this one on?" is the first thing
+        // their users ask; the run has always recorded it and nothing showed
+        // it. Null branch means the run recorded none — not "main".
+        branch: run?.branch ?? null,
+        isolated: Boolean(run?.worktree),
         actualModel: run?.actualModel ?? null,
         lastEventAt: run?.lastEventAt ?? null,
         elapsedMs: run ? Math.max(0, now - run.startedAt) : null,

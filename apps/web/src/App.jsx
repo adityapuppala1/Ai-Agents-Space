@@ -1167,6 +1167,24 @@ function RunPassport({ run, presentation, onOpenRun }) {
         <strong className="as-mono">
           {maskPath(run.cwd, presentation) || "—"}
         </strong>
+        <span>Branch</span>
+        <strong className="as-mono">
+          {run.branch ? (
+            <>
+              {run.branch}
+              {run.worktree ? (
+                // The distinction that matters: work in a worktree of its own
+                // cannot collide with the working tree you are sitting in.
+                <span className="as-tag"> isolated worktree</span>
+              ) : (
+                <span className="as-tag"> your working tree</span>
+              )}
+            </>
+          ) : (
+            // No branch recorded is not the same as "main".
+            "no branch recorded"
+          )}
+        </strong>
       </div>
       <p className="form-note">
         <CircleHelp size={14} aria-hidden="true" />

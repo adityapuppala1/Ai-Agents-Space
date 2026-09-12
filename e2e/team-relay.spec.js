@@ -125,14 +125,41 @@ test("a deployed team works as a relay, and the office plays the handoff", async
   await acceptWhenDone("Diagnose");
 
   // Diagnose -> Fix passes from Investigator to Developer.
-  const moment = page.locator(".scene-moment.moment-handoff");
-  await expect(moment).toContainText("Handoff · Investigator → Developer", {
-    timeout: 20000,
-  });
-  await expect(moment).toContainText("Recorded");
-  await expect(
-    page.getByRole("button", { name: "Inspect Developer", exact: true }),
-  ).toContainText("Receiving from Investigator");
+  //
+  // The office plays this as a *moment*, and a moment is a timed episode:
+  // EPISODE_MS.handoff is 6 500 ms, after which it leaves the screen. Asking
+  // the DOM three separate times — for the title, for "Recorded", and for the
+  // receiving agent's label — races that window, and under a loaded suite the
+  // gap between the first assertion and the third can outlast what is left of
+  // it. So read everything once, while it is on screen, and assert on what
+  // was read.
+  const seen = { moment: "", developer: "" };
+  await expect
+    .poll(
+      async () => {
+        const moment = page.locator(".scene-moment.moment-handoff").first();
+        if ((await moment.count()) === 0) return false;
+        const developer = page.getByRole("button", {
+          name: "Inspect Developer",
+          exact: true,
+        });
+        seen.moment = await moment.innerText().catch(() => "");
+        seen.developer = (await developer.count())
+          ? await developer.innerText().catch(() => "")
+          : "";
+        return (
+          seen.moment.includes("Handoff · Investigator → Developer") &&
+          seen.developer.includes("Receiving from Investigator")
+        );
+      },
+      { timeout: 30000 },
+    )
+    .toBe(true);
+  // Asserted against the captured text, so a failure prints what the office
+  // actually said rather than timing out against an element that has gone.
+  expect(seen.moment).toContain("Handoff · Investigator → Developer");
+  expect(seen.moment).toContain("Recorded");
+  expect(seen.developer).toContain("Receiving from Investigator");
 
   // The handoff is on the record, naming both agents...
   const state = await snapshot();
