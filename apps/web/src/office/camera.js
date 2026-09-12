@@ -3,11 +3,20 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { roomExtents, roomFrustum, validCamera } from "./data.js";
+import { WATCH_ZOOM, shoulderView } from "./watch.js";
 
 const MIN_ZOOM = 0.65;
 const MAX_ZOOM = 2.2;
+/** Watching over a shoulder needs to get closer than the room view ever does. */
+const WATCH_MAX_ZOOM = 4;
 
-export function createCamera(renderer, container, { onChange } = {}) {
+export function createCamera(
+  renderer,
+  container,
+  // `onWatchEnd` fires when the viewer takes the camera back by hand, so the
+  // control that started the shoulder view can stop claiming it is on.
+  { onChange, onWatchEnd } = {},
+) {
   const camera = new THREE.OrthographicCamera(-10, 10, 7, -7, 0.1, 400);
   camera.position.set(16, 16, 21);
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -28,6 +37,12 @@ export function createCamera(renderer, container, { onChange } = {}) {
   let home;
   let followPos = null;
   let focusPos = null;
+  // Watching over an agent's shoulder: { x, z, yaw }, updated every frame
+  // while it walks and turns, or null.
+  let watchOn = null;
+  // The view to come back to when watching ends, so leaving puts the room
+  // back the way the viewer had it rather than resetting it.
+  let beforeWatch = null;
   // True once the viewer moves the camera this session: a new framing (a
   // conference room opening) then waits for Reset instead of taking the
   // view away from what they were looking at.
@@ -49,6 +64,14 @@ export function createCamera(renderer, container, { onChange } = {}) {
   const start = () => {
     custom = true;
     transition = null;
+    // Taking hold of the camera leaves the shoulder view: the alternative is
+    // the scene pulling back against every drag.
+    if (watchOn) {
+      watchOn = null;
+      beforeWatch = null;
+      controls.maxZoom = MAX_ZOOM;
+      onWatchEnd?.();
+    }
   };
   controls.addEventListener("start", start);
   controls.addEventListener("end", emit);
@@ -170,6 +193,9 @@ export function createCamera(renderer, container, { onChange } = {}) {
       followPos = null;
       focusPos = null;
       transition = null;
+      watchOn = null;
+      beforeWatch = null;
+      controls.maxZoom = MAX_ZOOM;
       camera.position.fromArray(state.position);
       controls.target.fromArray(state.target);
       camera.zoom = THREE.MathUtils.clamp(state.zoom, MIN_ZOOM, MAX_ZOOM);
@@ -207,6 +233,9 @@ export function createCamera(renderer, container, { onChange } = {}) {
       followPos = null;
       focusPos = null;
       transition = null;
+      watchOn = null;
+      beforeWatch = null;
+      controls.maxZoom = MAX_ZOOM;
       custom = false;
       controls.reset();
       if (home !== undefined) {
@@ -239,6 +268,48 @@ export function createCamera(renderer, container, { onChange } = {}) {
     isFollowing() {
       return followPos !== null;
     },
+    /**
+     * Watches over an agent's shoulder. `agent` is `{ x, z, yaw }`, passed
+     * again every frame so the view rides along as it walks and turns; null
+     * leaves the view and puts the room back as the viewer had it.
+     *
+     * Following (setFollow) keeps the room in shot and slides the centre;
+     * this is the closer thing — behind the agent, looking at its screen.
+     */
+    watch(agent) {
+      if (!agent) {
+        if (!watchOn) return;
+        watchOn = null;
+        controls.maxZoom = MAX_ZOOM;
+        if (beforeWatch) {
+          camera.position.fromArray(beforeWatch.position);
+          controls.target.fromArray(beforeWatch.target);
+          camera.zoom = beforeWatch.zoom;
+          camera.updateProjectionMatrix();
+          controls.update();
+          beforeWatch = null;
+        }
+        emit();
+        return;
+      }
+      if (!watchOn) {
+        // Entering: remember the view to come back to, and allow the closer
+        // zoom that a shoulder view needs.
+        beforeWatch = {
+          position: camera.position.toArray(),
+          target: controls.target.toArray(),
+          zoom: camera.zoom,
+        };
+        followPos = null;
+        focusPos = null;
+        transition = null;
+        controls.maxZoom = WATCH_MAX_ZOOM;
+      }
+      watchOn = agent;
+    },
+    isWatching() {
+      return watchOn !== null;
+    },
     update(reducedMotion) {
       if (transition) {
         const t = Math.min(1, (performance.now() - transition.start) / 900);
@@ -262,6 +333,28 @@ export function createCamera(renderer, container, { onChange } = {}) {
           controls.saveState();
           resize();
         }
+      }
+      // Over a shoulder: glide toward the vantage point the agent's own
+      // position and facing imply, recomputed each frame so the view rides
+      // along rather than snapping when it turns.
+      if (watchOn) {
+        const view = shoulderView(watchOn);
+        if (view) {
+          const k = reducedMotion ? 1 : 0.12;
+          controls.target.lerp(
+            delta.set(view.target.x, view.target.y, view.target.z),
+            k,
+          );
+          camera.position.lerp(
+            delta.set(view.position.x, view.position.y, view.position.z),
+            k,
+          );
+          const wanted = Math.min(WATCH_ZOOM, WATCH_MAX_ZOOM);
+          camera.zoom += (wanted - camera.zoom) * k;
+          camera.updateProjectionMatrix();
+        }
+        controls.update();
+        return;
       }
       const goal = followPos ?? focusPos;
       if (goal) {

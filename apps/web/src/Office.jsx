@@ -85,6 +85,7 @@ import {
   Minimize2,
   MousePointer2,
   Crosshair,
+  Eye,
   Pause,
   Play,
   SkipForward,
@@ -507,7 +508,22 @@ export default function Office({
   const followId = localFollow === undefined ? followAgentId : localFollow;
   const toggleFollow = () => {
     setDirector(false);
+    setWatchId(null);
     setLocalFollow(followId != null ? null : (selected ?? null));
+  };
+  // Standing behind one agent to see what it is working on. Following keeps
+  // the room in shot; this is the closer view, so the two are exclusive.
+  const [watchId, setWatchId] = useState(null);
+  // An agent that has left the floor cannot be watched: without this the
+  // camera would sit staring at where it used to be.
+  useEffect(() => {
+    if (watchId && !agents.some((agent) => agent.id === watchId))
+      setWatchId(null);
+  }, [agents, watchId]);
+  const toggleWatch = () => {
+    setDirector(false);
+    setLocalFollow(null);
+    setWatchId((current) => (current ? null : (selected ?? null)));
   };
   // The office this workspace arranged for itself: where its rooms stand,
   // what they are called and the furniture it placed. Null = the theme's own
@@ -801,6 +817,8 @@ export default function Office({
     graphics: graphicsChoice.preset,
     graphicsMode: graphics,
     followId,
+    watchId,
+    onWatchEnd: () => setWatchId(null),
     reducedMotion,
     testResults,
     buildEvents,
@@ -873,6 +891,9 @@ export default function Office({
         lastEmitted = next;
         state.current.onCameraChange?.(next);
       },
+      // Dragging the camera by hand leaves the shoulder view; the control
+      // that started it has to stop claiming it is on.
+      onWatchEnd: () => state.current.onWatchEnd?.(),
     });
     const roomGroup = new THREE.Group();
     const zoneGroup = new THREE.Group();
@@ -2531,7 +2552,21 @@ export default function Office({
             });
         }
       }
-      const followed = followId != null ? figures.get(followId) : null;
+      // Watching one agent wins over following: it is the closer view, and
+      // the two would otherwise fight over the same camera.
+      const watched =
+        state.current.watchId != null
+          ? figures.get(state.current.watchId)
+          : null;
+      if (watched)
+        cam.watch({
+          x: watched.pos.x,
+          z: watched.pos.z,
+          yaw: watched.renderYaw,
+        });
+      else if (cam.isWatching()) cam.watch(null);
+      const followed =
+        !watched && followId != null ? figures.get(followId) : null;
       cam.setFollow(followed ? followed.pos : null);
       cam.update(reducedMotion);
       directEpisodes(time);
@@ -3868,10 +3903,24 @@ export default function Office({
             <Crosshair size={15} />
           </button>
           <button
+            title={
+              selected || watchId
+                ? "Watch over the selected agent's shoulder"
+                : "Select an agent to watch over its shoulder"
+            }
+            aria-label="Watch over the selected agent's shoulder"
+            aria-pressed={watchId != null}
+            disabled={!selected && !watchId}
+            onClick={toggleWatch}
+          >
+            <Eye size={15} />
+          </button>
+          <button
             title="Reset camera"
             aria-label="Reset camera"
             onClick={() => {
               setLocalFollow(null);
+              setWatchId(null);
               if (onSelectRoom) onSelectRoom(null);
               else setLocalRoom(null);
               api.current?.reset();

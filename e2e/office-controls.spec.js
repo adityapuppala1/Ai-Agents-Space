@@ -260,3 +260,41 @@ test("the system's reduce-motion setting stops the office's motion", async ({
   ).toBeVisible();
   await context.close();
 });
+
+test("watching over an agent's shoulder needs a selection, and the camera can be taken back", async ({
+  page,
+  request,
+}) => {
+  await request.post("/api/workspaces/demo/demo", { data: { running: false } });
+  await page.addInitScript(() =>
+    localStorage.setItem("agent-space-workspace", "demo"),
+  );
+  await page.goto("/");
+  const watch = page.getByRole("button", {
+    name: "Watch over the selected agent's shoulder",
+  });
+  await expect(watch).toBeVisible();
+  // There is nobody to stand behind until an agent is chosen.
+  await expect(watch).toBeDisabled();
+
+  await page.getByRole("button", { name: "Inspect Nova", exact: true }).click();
+  await expect(watch).toBeEnabled();
+  await expect(watch).toHaveAttribute("aria-pressed", "false");
+  await watch.click();
+  await expect(watch).toHaveAttribute("aria-pressed", "true");
+
+  // Following is the wider view and cannot be on at the same time.
+  const follow = page.getByRole("button", {
+    name: "Follow selected agent",
+    exact: true,
+  });
+  await follow.click();
+  await expect(watch).toHaveAttribute("aria-pressed", "false");
+  await expect(follow).toHaveAttribute("aria-pressed", "true");
+
+  // Resetting the camera gives the room back.
+  await watch.click();
+  await expect(watch).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Reset camera", exact: true }).click();
+  await expect(watch).toHaveAttribute("aria-pressed", "false");
+});

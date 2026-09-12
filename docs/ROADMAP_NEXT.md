@@ -38,8 +38,8 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 2.1 | ~~Speak to an agent from its desk~~ **Done 12 Sep** | — | 2 | — | CLAW3D |
 | 2.2 | ~~Give an instruction mid-run~~ **Not possible — headless CLIs are one shot** | — | — | — | CLAW3D |
 | 2.3 | Address a room | P1 | 1 | 2.1, 1.1 | CLAW3D |
-| 3.1 | Over the shoulder | P1 | 1 | 1.1 | Your "agents view" |
-| 3.2 | The monitor becomes real | P1 | 2 | 3.1 | Your "agents view" |
+| 3.1 | ~~Over the shoulder~~ **Done 12 Sep** | — | 1 | 1.1 | Your "agents view" |
+| 3.2 | ~~The monitor becomes real~~ **Already was — see below** | — | — | — | Your "agents view" |
 | 3.3 | Read the diff at the table | P1 | 2 | 3.2 | CLAW3D |
 | 4.1 | Subagents as visible helpers | P1 | 1 | 1.1 | Your "multiple agents" |
 | 4.2 | Workflow fan-out on the floor | P1 | 2 | 4.1 | Your "orchestrated" |
@@ -133,15 +133,18 @@ When a conference room is open, speak to everyone in it: the instruction fans ou
 
 Your "more agents view — what he is doing, watching". Today you learn what an agent is doing by reading a panel beside the office. This puts it in the office.
 
-### 3.1 Over the shoulder
+### 3.1 Over the shoulder — **done, 12 September 2026**
 
-Focus an agent and the camera drops behind it at desk height. Its monitor faces you. Leaving restores your previous view — the camera already distinguishes a view you chose from one it chose, so this does not fight you.
+> Shipped. See [ROADMAP_STATUS.md](ROADMAP_STATUS.md) for the evidence and the one design constraint worth knowing: the office camera is orthographic, so the vantage point sets the *angle*, and closeness is zoom.
 
-### 3.2 The monitor becomes real
 
-The desk screen stops being a coloured panel and shows what the run record actually contains: the file being read or edited, the command running, the last tool call, elapsed time. Rendered to a canvas texture, throttled by graphics preset, and readable as text in the roster for anyone not looking at the 3D view.
+### 3.2 The monitor becomes real — **it already was, 12 September 2026**
 
-*Truthfulness guard:* the screen shows recorded tool calls only. An idle agent's screen is idle — never filler code.
+> **Written from a wrong belief about the code.** This item said "the desk screen stops being a coloured panel". It was never a coloured panel. `updateMonitor()` in `office/zones.js` has been drawing the agent's current file, its activity label and its current action to a canvas texture, with an optional three-line preview fed from the run's own sanitized artifacts — masked in presentation mode, and keyed so it only redraws when the content changes.
+>
+> It is visible in `artifacts/office-seated-desks.png`, taken before this item was looked at: the desk screens read "Atlas / Planning", "Echo / Coding", "Pixel / testing", "Sage / waiting for echo". The QA station board likewise reads "tests running / Pixel / no test output yet" — an honest empty state, not filler.
+>
+> Nothing was built. The truthfulness guard the item asked for was already the behaviour.
 
 ### 3.3 Read the diff at the table
 

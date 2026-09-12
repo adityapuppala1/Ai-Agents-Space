@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **You can reply to an agent, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 2.1).** Done, with tests — and a planned item corrected:
+> **Watching over an agent's shoulder, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 3.1).** Done, with tests — and a second planned item found already built:
+>
+> - **Stand behind an agent and see what it is working on.** Select one, press the eye in the camera toolbar, and the view drops in behind it, looking at what it faces. It rides along as the agent walks and turns, because the vantage point is recomputed from its position and facing every frame rather than set once.
+> - **The camera is orthographic**, which decides the design: distance sets the *angle*, not the size, so `office/watch.js` places the camera a long way back along a fixed bearing (to keep the near plane out of the room) and closeness comes from zoom. The bearing — one part up to one part back — lands at a polar angle of about 1.07 radians, deliberately inside the orbit controls' own limit of 1.22, so entering the view never fights the control that owns the camera. `tests/office-watch.test.js` asserts that bound.
+> - **Taking the camera back ends it.** Dragging, resetting, or turning on follow all leave the shoulder view, and leaving restores the view you had rather than resetting the room. Watching and following are exclusive: following keeps the room in shot, this is the closer thing.
+> - **It cannot strand you.** An agent that leaves the floor clears the watch, so the camera never sits staring at where somebody used to be.
+> - **3.2 "the monitor becomes real" was already true.** The roadmap claimed the desk screen was a coloured panel; `updateMonitor()` has always drawn the current file, activity and action to a canvas texture, with an optional preview from the run's own sanitized artifacts. Nothing was built. It is visible in `artifacts/office-seated-desks.png`, captured before the item was even read: the screens say "Atlas / Planning", "Echo / Coding", "Sage / waiting for echo".
+>
+> Verification: `npm test` 674 / 0 (seven new in `tests/office-watch.test.js`) and `npx playwright test` 54 / 0 (one new: the control is disabled until an agent is chosen, turns on, is turned off by follow, and is given up by Reset camera). Looked at on the isolated server with no page or console errors: `artifacts/office-over-the-shoulder.png` shows the view from behind Atlas, with the QA board's real "tests running / no test output yet" legible beside it. Web-only change: rebuild and reload.
+
+> **You can reply to an agent, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 2.1).** Done, with tests — and a planned item corrected:
 >
 > - **The exchange is now readable.** A run's prompt and every message the provider reported are shown as turns, in order, in a new **Conversation** tab on the run inspector. Nothing is generated: a run the provider never answered shows no answer, and a run with no recorded prompt shows no question.
 > - **A resumed session reads as one conversation.** Continuing with a headless provider creates a *new run* linked by `parentRunId`, so what a person experiences as one exchange was stored as a chain of attempts. `RunRecorder.chain()` walks that chain (up to the root, then down through children, guarded against a cycle) and `core/runs/conversation.js` reads it back as turns. Once there is more than one attempt, every turn says which attempt it belongs to, so a resumed session never looks like one unbroken conversation.
