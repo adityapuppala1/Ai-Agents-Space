@@ -45,9 +45,9 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 4.2 | ~~Workflow fan-out on the floor~~ **Done 12 Sep** | — | 1 | — | Your "orchestrated" |
 | 4.3 | ~~Which worktree is this desk on~~ **Done 12 Sep** | — | 1 | — | Vibe Kanban, Conductor |
 | 5.1 | ~~The arranger in 3D~~ **Preview done 12 Sep; drag-in-3D not** | P2 | 2 | 1.1 | Your item 3 |
-| 5.2 | The campus becomes a building | P2 | 2 | 5.1 | Your "3D layers" |
+| 5.2 | ~~The campus becomes a building~~ **Already has floors — see below** | — | — | — | Your "3D layers" |
 | 5.3 | Depth and light | P2 | 1 | — | Your "3D layers" |
-| 6.1 | A one-line presence strip | P2 | 1 | — | Agent Island |
+| 6.1 | ~~A one-line presence strip~~ **Done 12 Sep** (attention elsewhere) | — | 1 | — | Agent Island |
 | 6.2 | Replay a day in the office | P2 | 3 | 1.1 | LangSmith |
 | 6.3 | A runtime as a document | P2 | 2 | — | CLAW3D gateway |
 
@@ -166,12 +166,13 @@ Your "multiple agents as needed when work is happening", done truthfully: agents
 
 - **5.1 The arranger in 3D — the preview is done, 12 September 2026; dragging in 3D is not.** A live preview now stands above the plan, built by `office/arrangeStage.js` from the same `computeLayout()` the office runs, so it cannot drift from what saving produces. It draws the floor, the rooms as named slabs, the desks as guides and the furniture with the office's own catalogue, highlights whatever the plan has selected, and rings anything standing in something else (`propClashes`). Without WebGL it simply does not appear — the plan is the editor and always was.
   **Still not done:** dragging *in* the 3D view, snapping, and the walkthrough. The plan already drags with snapping and is the keyboard path, so 3D dragging is a second way to do something that works; it drops to P2 rather than being called finished.
-- **5.2 The campus becomes a building.** The Campus view already shows several workspaces; give it vertical structure — workspaces as floors, with movement between them — so "more layers" is literal and navigational rather than decorative.
+- **5.2 The campus becomes a building — not done, and deliberately so (12 September 2026).** The premise was that the Campus lacked vertical structure. It does not: it is already a three.js scene where each workspace is a building whose **height scales with its team**, whose **window bands are floors lit when work is running**, and which glows when something needs attention (`artifacts/campus-buildings.png`).
+  Stacking independent workspaces into one building was also considered and rejected on the project's own terms: workspaces are independent — separate agents, tasks, policy and history — and drawing them as floors of a single building would say they are parts of one thing. The existing metaphor is the truer one, so this item is closed rather than built.
 - **5.3 Depth and light.** Contact shadows, layered glass in the conference wing, and light falloff that separates the floor planes. Gated by graphics preset and disabled under reduced motion; this is the one item here that is purely presentational, which is why it sits last in its wave.
 
 ## 9. Wave six — reach (P2)
 
-- **6.1 A one-line presence strip.** Agent Island's entire product is one question answered without opening anything: moving, your turn, or stuck. We have the vocabulary already; we lack the glanceable surface.
+- **6.1 A one-line presence strip — done, 12 September 2026, narrowed to the part that was missing.** The glanceable surface mostly existed: the top bar already says what is running and what needs attention **here**, and the provider pulse already says which assistants are alive. The one question nothing answered was the one Agent Island exists for — *does something need me somewhere I am not looking?* A workspace could sit blocked indefinitely and say nothing until the switcher was opened. The bar now carries "Payments needs you" / "2 workspaces need you", and clicking it goes there. Silent when nothing is waiting: "0 elsewhere" is not information.
 - **6.2 Replay a day in the office.** Scrub the timeline and watch the floor act it out. Everything required is already recorded, and Day in review is the seed.
 - **6.3 A runtime as a document.** Adding a provider should be a config entry rather than an adapter, which is what makes CLAW3D's gateway model extensible.
 

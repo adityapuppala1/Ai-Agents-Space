@@ -39,6 +39,37 @@ export function workspaceRuntimeNote(connections = [], workspaceId) {
 }
 
 /**
+ * Work that needs you somewhere other than where you are looking.
+ *
+ * The top bar says what is going on *here*; a workspace that needs a decision
+ * says nothing until you open the switcher and find it. That is the one
+ * question worth answering without being asked — the same question Agent
+ * Island's whole product answers — so it is answered in the bar.
+ *
+ * Archived workspaces are left out: they are not work any more. Returns
+ * `{ count, workspaces }`, newest-needing first; `count` is people-facing,
+ * so it counts the *workspaces* that need you rather than the total number of
+ * pending decisions, which would read as a bigger number than it is.
+ */
+export function attentionElsewhere(workspaces = [], currentId = null) {
+  const waiting = (Array.isArray(workspaces) ? workspaces : [])
+    .filter(
+      (workspace) =>
+        workspace &&
+        !workspace.archivedAt &&
+        workspace.id !== currentId &&
+        (workspace.attention ?? 0) > 0,
+    )
+    .map((workspace) => ({
+      id: workspace.id,
+      name: workspace.name || "Untitled workspace",
+      attention: workspace.attention ?? 0,
+    }))
+    .sort((a, b) => b.attention - a.attention);
+  return { count: waiting.length, workspaces: waiting };
+}
+
+/**
  * The one thing worth saying about a workspace you are not currently in,
  * or null when there is nothing going on.
  *

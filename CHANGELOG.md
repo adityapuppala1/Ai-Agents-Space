@@ -8,6 +8,7 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Added
 
+- **The top bar says when another workspace needs you.** A workspace could sit blocked and say nothing until the switcher was opened; the bar now reads "Payments needs you" or "2 workspaces need you", and clicking it goes there. Silent when nothing is waiting.
 - **Arranging the office shows a live 3D preview.** It stands above the plan, is built from the same layout computation the office runs, highlights whatever the plan has selected, and rings any furniture standing in something else. Without WebGL it does not appear — the plan is the editor and always was. Dragging in 3D is not built.
 - **Parallel workflow steps are drawn as parallel.** The relay strip put an arrow between every consecutive step, so two steps that depend on none of each other and run at the same time looked like a queue. Steps are now grouped into the stages they form: arrows only between stages, steps within a stage braced together, and "one of 2 running at the same time" for a screen reader.
 - **Every agent says which branch it is on.** The snapshot's agents now carry `branch` and `isolated`; the run passport names the branch and says whether it is an isolated worktree or your own working tree, and an agent's tooltip in the office says the same. A run that recorded no branch says so rather than being shown as `main`.
@@ -27,6 +28,8 @@ Statuses here are deliberately literal. Where something is observed rather than 
 ### Fixed
 
 - **Agents stood inside their own desks.** A desk agent was sent to the desk anchor, which the desktop covers; it is now sent to the chair, and sits in it. The seated pose that the conference table introduced now applies at desks as well.
+
+- **The agent spotlight contradicted its own run passport.** An agent whose run had finished showed "No provider chosen" directly above a passport reading "Claude Code managed". The provider fallback stopped at the active run and never consulted the last one — which is what the passport renders. The empty case now reads "No preferred assistant", which is what the profile field means.
 
 ### Fixed (tests)
 

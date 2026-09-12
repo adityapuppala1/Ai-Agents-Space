@@ -2,7 +2,15 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **The arranger shows what the room will look like, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 5.1).** Done in part, with tests:
+> **You are told when another workspace needs you, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 6.1).** Done, with tests — plus a fixed contradiction and a closed item:
+>
+> - **A workspace could sit blocked and say nothing.** The top bar says what is running and what needs attention *here*; a decision waiting anywhere else was invisible until the switcher was opened. The bar now says "Payments needs you", or "2 workspaces need you" when there are several, and clicking it goes there. It counts the **workspaces** needing you rather than the total pending decisions, which would read as a bigger problem than it is, and it says nothing at all when nothing is waiting.
+> - **Fixed: the agent spotlight contradicted its own passport.** An agent whose run had finished showed "No provider chosen" directly above a passport reading "Claude Code managed" — both drawn from the same records. The provider fallback chain stopped at the *active* run and never consulted the last one, which is exactly what the passport beneath it renders. It now does, and the empty case reads "No preferred assistant", which is what the field actually means (the form calls it "the preferred runtime for new work").
+> - **Item 5.2 is closed, not built.** "Give the Campus vertical structure" assumed it had none. It already draws each workspace as a building whose height scales with its team and whose window bands are floors lit when work is running (`artifacts/campus-buildings.png`). Stacking independent workspaces into one building was rejected on the project's own terms: they are independent, and drawing them as floors of one building would say they are parts of one thing.
+>
+> Verification: `npm test` 691 / 0 (one new covering `attentionElsewhere`, including that the current and archived workspaces are excluded and that nothing waiting says nothing) and `npx playwright test` 55 / 0, with the conversation spec now asserting the identity block and the passport beneath it never contradict each other. Looked at on the isolated server with two workspaces deliberately blocked and no page errors: `artifacts/attention-elsewhere.png`. Web-only change: rebuild and reload.
+
+> **The arranger shows what the room will look like, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 5.1).** Done in part, with tests:
 >
 > - **A live 3D preview stands above the plan** (`web/office/arrangeStage.js`), built from the same `computeLayout()` the office runs on the same draft — so what is previewed is what saving produces, and the two cannot drift. It draws the floor, the rooms as named slabs, the desks as guides, and the furniture with the office's own catalogue.
 > - **It highlights what the plan has selected**, so the two views always agree about what you are holding, and **rings anything standing in something else** — `propClashes()` reports furniture overlapping a desk, a room's furniture, or another piece, which a flat plan makes easy to miss. The panel counts them in words.

@@ -102,6 +102,14 @@ test("an agent's desk offers the conversation, not just the log", async ({
     /Completed/,
     { timeout: 40000 },
   );
+  // The identity block and the run passport beneath it are drawn from the
+  // same records and must not contradict each other: the badge used to read
+  // "no provider chosen" directly above a passport saying "Claude Code".
+  await expect(spotlight).not.toContainText("No preferred assistant");
+  await expect(
+    spotlight.locator(".agent-identity .as-provider-claude-code"),
+  ).toBeVisible();
+
   const talk = spotlight.getByRole("button", { name: "Read and reply" });
   await expect(talk).toBeVisible();
   if (process.env.AGENT_SPACE_CAPTURE_DESK)

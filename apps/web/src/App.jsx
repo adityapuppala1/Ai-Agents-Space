@@ -56,6 +56,7 @@ import {
   MessageSquare,
   KeyRound,
   Timer,
+  TriangleAlert,
   HeartPulse,
   BookOpen,
   Film,
@@ -87,6 +88,7 @@ import AgentPortrait from "./components/AgentPortrait.jsx";
 import OfficeRoster from "./components/OfficeRoster.jsx";
 import AgentDirectory from "./components/AgentDirectory.jsx";
 import { runningProviderSet } from "./hooks/providerStatus.js";
+import { attentionElsewhere } from "./hooks/workspaceSummary.js";
 import { workflowRelays, relayPresence } from "./office/relay.js";
 import Provenance from "./components/Provenance.jsx";
 import ActivityBadge from "./components/ActivityBadge.jsx";
@@ -511,14 +513,28 @@ function enrichAgent(agent, tasks, runs) {
     (agent.runId && runs.find((r) => r.id === agent.runId)) ??
     (task && runs.find((r) => r.taskId === task.id && !r.endedAt)) ??
     null;
+  // Most recent provider-backed run for this agent (shown when idle).
+  const lastRun =
+    runs
+      .filter((r) => r.agentId === agent.id && PROVIDER_MODES.has(r.mode))
+      .sort(
+        (a, b) => new Date(b.startedAt ?? 0) - new Date(a.startedAt ?? 0),
+      )[0] ?? null;
   const runMode =
     agent.runMode ??
     run?.mode ??
+    lastRun?.mode ??
     (run ? (run.provider === "simulated" ? "simulated" : "manual") : null);
+  // The last run is part of this chain because the spotlight renders its
+  // passport directly beneath this badge. Without it an agent whose run had
+  // finished said "no preferred assistant" immediately above a passport
+  // reading "Claude Code managed" — two statements from the same records
+  // that looked like a contradiction.
   const provider =
     agent.provider ??
     agent.runProvider ??
     run?.provider ??
+    lastRun?.provider ??
     (task?.source === "demo" ? "simulated" : null);
   const providerRun = PROVIDER_MODES.has(runMode);
   const reviewPending = Boolean(task && task.review?.status === "pending");
@@ -552,13 +568,6 @@ function enrichAgent(agent, tasks, runs) {
       ? (run?.endedAt ? new Date(run.endedAt).getTime() : Date.now()) -
         new Date(startedAt).getTime()
       : null);
-  // Most recent provider-backed run for this agent (shown when idle).
-  const lastRun =
-    runs
-      .filter((r) => r.agentId === agent.id && PROVIDER_MODES.has(r.mode))
-      .sort(
-        (a, b) => new Date(b.startedAt ?? 0) - new Date(a.startedAt ?? 0),
-      )[0] ?? null;
   return {
     ...agent,
     provider,
@@ -1995,6 +2004,11 @@ export default function App() {
   const hasProjectWorkspace = workspaces.some(
     (w) => w.kind !== "demo" && !w.archivedAt,
   );
+  // Decisions waiting somewhere other than the workspace on screen.
+  const elsewhere = useMemo(
+    () => attentionElsewhere(workspaces, workspaceId),
+    [workspaces, workspaceId],
+  );
   const hasReadyConnection = connections.some((c) => c.status === "ready");
   // Once a person has started the steps, setup stays until they finish or
   // skip it. (It used to vanish mid-flow: creating the sample workspace made
@@ -2644,6 +2658,26 @@ export default function App() {
               </label>
             </div>
             <div className="topbar-right">
+              {/* Work needing a decision somewhere other than here. Silent
+                  when there is none: "0 elsewhere" is not information. */}
+              {elsewhere.count ? (
+                <button
+                  type="button"
+                  className="topbar-elsewhere"
+                  title={elsewhere.workspaces
+                    .map((w) => `${w.name}: ${w.attention} waiting`)
+                    .join(" · ")}
+                  aria-label={`${elsewhere.count} other workspace${
+                    elsewhere.count === 1 ? "" : "s"
+                  } need a decision. Go to ${elsewhere.workspaces[0].name}.`}
+                  onClick={() => setWorkspaceId(elsewhere.workspaces[0].id)}
+                >
+                  <TriangleAlert size={13} aria-hidden="true" />
+                  {elsewhere.count === 1
+                    ? `${elsewhere.workspaces[0].name} needs you`
+                    : `${elsewhere.count} workspaces need you`}
+                </button>
+              ) : null}
               <ProviderPulse
                 connections={connections}
                 runningProviders={runningProviders}
@@ -3302,8 +3336,11 @@ export default function App() {
                                     size="small"
                                   />
                                 ) : (
-                                  <span className="as-tag">
-                                    No provider chosen
+                                  <span
+                                    className="as-tag"
+                                    title="Set on the profile, for new work. It is not a claim about any run."
+                                  >
+                                    No preferred assistant
                                   </span>
                                 )}
                                 <ActivityBadge

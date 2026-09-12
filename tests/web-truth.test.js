@@ -684,3 +684,40 @@ test("a run action is reported as what it did, never 'review accepted.' after a 
   );
   assert.equal(actionMessage("input", { resume: true }), "Resume requested.");
 });
+
+test("work needing a decision elsewhere is surfaced, and silence is kept honest", async () => {
+  const { attentionElsewhere } = await import(
+    "../apps/web/src/hooks/workspaceSummary.js"
+  );
+  const workspaces = [
+    { id: "here", name: "Here", attention: 3 },
+    { id: "a", name: "Payments", attention: 1 },
+    { id: "b", name: "Docs", attention: 4 },
+    { id: "quiet", name: "Quiet", attention: 0 },
+    { id: "old", name: "Archived", attention: 9, archivedAt: "2026-01-01" },
+  ];
+  const out = attentionElsewhere(workspaces, "here");
+  // Where you already are is not "elsewhere", and an archived workspace is
+  // not work any more.
+  assert.deepEqual(
+    out.workspaces.map((w) => w.id),
+    ["b", "a"],
+    "most waiting first, current and archived left out",
+  );
+  // The count is workspaces needing you, not the total pending decisions:
+  // five would read as a bigger problem than two places needing a look.
+  assert.equal(out.count, 2);
+
+  // Nothing waiting anywhere says nothing at all, never "0 elsewhere".
+  assert.deepEqual(
+    attentionElsewhere([{ id: "here", name: "Here", attention: 2 }], "here"),
+    { count: 0, workspaces: [] },
+  );
+  assert.equal(attentionElsewhere([], "here").count, 0);
+  assert.equal(attentionElsewhere().count, 0);
+  // A workspace with no name still names itself somehow.
+  assert.equal(
+    attentionElsewhere([{ id: "x", attention: 1 }], "here").workspaces[0].name,
+    "Untitled workspace",
+  );
+});

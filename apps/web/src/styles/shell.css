@@ -1195,3 +1195,39 @@ main {
   animation: none;
   opacity: 0;
 }
+
+/* Work needing a decision in a workspace other than the one on screen. The
+   top bar says what is happening here; without this, a workspace that needs
+   you stays silent until the switcher is opened. */
+.topbar-elsewhere {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 20rem;
+  padding: 3px 11px;
+  border: 1px solid color-mix(in srgb, var(--as-warn) 35%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--as-warn-bg);
+  color: var(--as-warn);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.topbar-elsewhere:hover {
+  border-color: var(--as-warn);
+}
+@media (max-width: 60rem) {
+  /* Narrow bars keep the signal, drop the sentence. */
+  .topbar-elsewhere {
+    max-width: 2.2rem;
+    padding: 3px 6px;
+    color: transparent;
+    gap: 0;
+  }
+  .topbar-elsewhere svg {
+    color: var(--as-warn);
+    flex: none;
+  }
+}
