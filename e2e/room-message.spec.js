@@ -75,6 +75,8 @@ test("messaging a team says who will receive it before anything is sent", async 
   // being quietly dropped from the list.
   const cannot = dialog.getByRole("list", { name: "Cannot be messaged" });
   await expect(cannot).toBeVisible();
+  if (process.env.AGENT_SPACE_CAPTURE)
+    await dialog.screenshot({ path: process.env.AGENT_SPACE_CAPTURE });
   await expect(cannot.locator("li")).toHaveCount(2);
   await expect(cannot.locator("li").first()).toContainText(
     /recorded here only|cannot resume|no run to continue|still working/,
