@@ -366,3 +366,54 @@ test("a managed Claude Code run's Task subagents open and close through the real
   recorder.flush?.();
   assert.deepEqual(helperOf(), []);
 });
+
+test("steps that run at the same time are grouped into one stage", async () => {
+  const { relayLayers, workflowRelays } = await import(
+    "../apps/web/src/office/relay.js"
+  );
+  // Diagnose fans out to two independent steps, which then join at Verify.
+  const tasks = [
+    { id: "t1", workflowId: "w", title: "Diagnose", status: "COMPLETED", assignedAgentId: "a" },
+    { id: "t2", workflowId: "w", title: "Fix API", status: "IN_PROGRESS", assignedAgentId: "b", dependsOn: ["t1"] },
+    { id: "t3", workflowId: "w", title: "Fix UI", status: "IN_PROGRESS", assignedAgentId: "c", dependsOn: ["t1"] },
+    { id: "t4", workflowId: "w", title: "Verify", status: "QUEUE", assignedAgentId: "d", dependsOn: ["t2", "t3"] },
+  ];
+  const agents = [
+    { id: "a", name: "Ana" },
+    { id: "b", name: "Ben" },
+    { id: "c", name: "Cass" },
+    { id: "d", name: "Dev" },
+  ];
+  const [relay] = workflowRelays(tasks, agents);
+  const stages = relayLayers(relay.steps);
+
+  assert.equal(stages.length, 3, "three stages, not four steps in a row");
+  assert.deepEqual(
+    stages.map((stage) => stage.steps.length),
+    [1, 2, 1],
+    "the fan-out is one stage holding two steps",
+  );
+  assert.deepEqual(
+    stages[1].steps.map((step) => step.title).sort(),
+    ["Fix API", "Fix UI"],
+  );
+  // Both parallel steps really are at the same depth.
+  assert.equal(stages[1].steps[0].layer, stages[1].steps[1].layer);
+});
+
+test("a plain chain is one stage per step, and nothing is invented", async () => {
+  const { relayLayers } = await import("../apps/web/src/office/relay.js");
+  const chain = [
+    { taskId: "1", layer: 0 },
+    { taskId: "2", layer: 1 },
+    { taskId: "3", layer: 2 },
+  ];
+  assert.deepEqual(
+    relayLayers(chain).map((stage) => stage.steps.length),
+    [1, 1, 1],
+  );
+  assert.deepEqual(relayLayers([]), []);
+  assert.deepEqual(relayLayers(), []);
+  // A step with no layer recorded is treated as the first stage, not dropped.
+  assert.equal(relayLayers([{ taskId: "x" }])[0].layer, 0);
+});

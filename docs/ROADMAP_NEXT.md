@@ -42,7 +42,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 3.2 | ~~The monitor becomes real~~ **Already was — see below** | — | — | — | Your "agents view" |
 | 3.3 | ~~Read the diff at the table~~ **Done 12 Sep** (board names the files) | — | 1 | — | CLAW3D |
 | 4.1 | ~~Subagents as visible helpers~~ **Already was — see below** | — | — | — | Your "multiple agents" |
-| 4.2 | Workflow fan-out on the floor | P1 | 2 | — | Your "orchestrated" |
+| 4.2 | ~~Workflow fan-out on the floor~~ **Done 12 Sep** | — | 1 | — | Your "orchestrated" |
 | 4.3 | ~~Which worktree is this desk on~~ **Done 12 Sep** | — | 1 | — | Vibe Kanban, Conductor |
 | 5.1 | The arranger in 3D | P1 | 2 | 1.1 | Your item 3 |
 | 5.2 | The campus becomes a building | P2 | 2 | 5.1 | Your "3D layers" |
@@ -159,7 +159,7 @@ Your "more agents view — what he is doing, watching". Today you learn what an 
 Your "multiple agents as needed when work is happening", done truthfully: agents appear because work appeared, never to look busy.
 
 - **4.1 Subagents as visible helpers — already built (checked 12 September 2026).** The item said "wire them to real subagent transcripts". They were already wired. `Office.jsx` builds a helper per open delegation in the snapshot's `agent.subagents`, steps it out of its parent, gives it a chip naming the delegation, and folds it back when the subagent reports. Nothing to do.
-- **4.2 Workflow fan-out on the floor.** A workflow step that dispatches several agents fills several desks, and the dependency edges are drawn between them. The workflow graph already exists; this is its spatial rendering.
+- **4.2 Workflow fan-out on the floor — done, 12 September 2026, but not as written.** The spatial half already existed: agents in a live workflow stand on the floor (`relayPresence`), and the dependency edges between them are drawn as dashed wait lines (`waitingLinks`). What was wrong was the **relay strip**, which laid every step out in a row with an arrow between each pair — so two steps that depend on none of each other, and run at the same time, were drawn as though one followed the other. That is a claim the workflow does not make. The strip now groups steps into the stages they form (`relayLayers`): arrows only between stages, and steps within one stage braced together, announced to a screen reader as "one of 2 running at the same time".
 - **4.3 Which worktree is this desk on — done, 12 September 2026.** The snapshot's agents now carry `branch` and `isolated`; the run passport names the branch and says whether it is an isolated worktree or your own working tree, and an agent's tooltip in the office says "on &lt;branch&gt; (isolated worktree)". A run that recorded no branch says so rather than being shown as `main`. **Not done:** putting an isolated agent on visibly separate floor — the data is there for it, but a second floor plane is a large scene change for a distinction a label already makes.
 
 ## 8. Wave five — more 3D layers (P1 → P2)

@@ -176,6 +176,30 @@ export function relayName(relay) {
  * [{ fromAgentId (the one waiting), toAgentId (the one it waits for),
  * taskId, label }]. Only between two assigned, different agents.
  */
+/**
+ * A relay's steps grouped into the stages they actually form.
+ *
+ * `workflowRelays` already sorts steps by dependency depth, but a flat list
+ * drawn with an arrow between each pair says every step follows the one
+ * before it. Steps in the same layer depend on none of each other and run at
+ * the same time, so an arrow between them claims an order the workflow does
+ * not have.
+ *
+ * Returns `[{ layer, steps }]` in order, each group being one stage.
+ */
+export function relayLayers(steps = []) {
+  const groups = [];
+  for (const step of steps ?? []) {
+    if (!step) continue;
+    const layer = step.layer ?? 0;
+    const last = groups[groups.length - 1];
+    // Steps arrive sorted by layer, so equal layers are always adjacent.
+    if (last && last.layer === layer) last.steps.push(step);
+    else groups.push({ layer, steps: [step] });
+  }
+  return groups;
+}
+
 export function waitingLinks(relays = []) {
   const links = [];
   for (const relay of relays)

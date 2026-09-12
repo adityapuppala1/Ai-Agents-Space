@@ -200,7 +200,7 @@ import {
   EPISODE_FRESH_MS,
   FIRST_LOOK_MS,
 } from "./office/episodes.js";
-import { waitingLinks, relayName } from "./office/relay.js";
+import { waitingLinks, relayLayers, relayName } from "./office/relay.js";
 import "./styles/office.css";
 
 const TYPING = new Set(["CODING", "COMMANDING", "DEBUGGING"]);
@@ -379,29 +379,52 @@ function RelayStrip({ relays, current, onPick, onSelect, mask }) {
           </span>
         ) : null}
       </strong>
+      {/* One list item per stage, not per step: steps that depend on none of
+          each other run at the same time, and an arrow between them would
+          claim an order the workflow does not have. */}
       <ol>
-        {relay.steps.map((step) => {
-          const title = mask ? maskPrivate(step.title) : step.title;
-          return (
-            <li key={step.taskId} className={`relay-step is-${step.state}`}>
-              <button
-                type="button"
-                disabled={!step.agentId}
-                onClick={() => step.agentId && onSelect?.(step.agentId)}
-                title={`${title} · ${STEP_STATES[step.state]}${
-                  step.agentName ? ` · ${step.agentName}` : " · unassigned"
-                }`}
-              >
-                <i aria-hidden="true">{STEP_MARKS[step.state]}</i>
-                <span>{clean(title, 26)}</span>
-                <small>
-                  {step.agentName ?? "Unassigned"}
-                  <span className="sr-only">, {STEP_STATES[step.state]}</span>
-                </small>
-              </button>
-            </li>
-          );
-        })}
+        {relayLayers(relay.steps).map((group) => (
+          <li key={group.layer} className="relay-layer">
+            <ul>
+              {group.steps.map((step) => {
+                const title = mask ? maskPrivate(step.title) : step.title;
+                return (
+                  <li
+                    key={step.taskId}
+                    className={`relay-step is-${step.state}`}
+                  >
+                    <button
+                      type="button"
+                      disabled={!step.agentId}
+                      onClick={() => step.agentId && onSelect?.(step.agentId)}
+                      title={`${title} · ${STEP_STATES[step.state]}${
+                        step.agentName
+                          ? ` · ${step.agentName}`
+                          : " · unassigned"
+                      }${
+                        group.steps.length > 1
+                          ? ` · one of ${group.steps.length} at the same time`
+                          : ""
+                      }`}
+                    >
+                      <i aria-hidden="true">{STEP_MARKS[step.state]}</i>
+                      <span>{clean(title, 26)}</span>
+                      <small>
+                        {step.agentName ?? "Unassigned"}
+                        <span className="sr-only">
+                          , {STEP_STATES[step.state]}
+                          {group.steps.length > 1
+                            ? `, one of ${group.steps.length} running at the same time`
+                            : ""}
+                        </span>
+                      </small>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </li>
+        ))}
       </ol>
     </nav>
   );

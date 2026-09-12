@@ -2,7 +2,16 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **Which branch a desk is on, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 4.3).** Done, with tests — plus one planned item found already built and one flaky test diagnosed:
+> **Parallel workflow steps stop pretending to be a queue, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 4.2).** Done, with tests:
+>
+> - **The relay strip was claiming an order that does not exist.** It laid every step out in a row with an arrow between each pair. Two steps that depend on none of each other and run at the same time were therefore drawn as though one followed the other — which is exactly the kind of thing §0 forbids, arrived at by a stylesheet rule (`li + li::before { content: "→" }`) rather than by anyone deciding it.
+> - **Steps are now grouped into the stages they form.** `relayLayers()` folds the already-sorted steps into `[{ layer, steps }]`; arrows are drawn only between stages, and steps inside one stage are braced together. A screen reader hears "one of 2 running at the same time".
+> - **The spatial half was already built.** The item asked for agents on the floor and dependency edges between them: `relayPresence()` already puts a live workflow's members on the floor, and `waitingLinks()` already draws the dashed wait line from a waiting agent to the one it waits for. Nothing was needed there.
+> - **A plain chain is unchanged**, one stage per step, which the regression capture confirms.
+>
+> Verification: `npm test` 687 / 0 (two new in `tests/team-relay.test.js`, one building a real fan-out through `workflowRelays` and asserting three stages rather than four steps) and `npx playwright test` 55 / 0. Looked at on the isolated server with a constructed fan-out workflow and no page errors: `artifacts/relay-fan-out.png` shows Diagnose → (Fix the API, Fix the UI braced together) → Verify. Web-only change: rebuild and reload.
+
+> **Which branch a desk is on, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 4.3).** Done, with tests — plus one planned item found already built and one flaky test diagnosed:
 >
 > - **The snapshot says which branch, and whether it is isolated.** Every comparable tool isolates agents in git worktrees and "which branch is this one on?" is the first question their users ask. The run has recorded `branch` and `worktree` since the execution layer shipped; the snapshot never passed them on, so nothing could show them. Agents now carry `branch` and `isolated`.
 > - **Shown where it is asked.** The run passport names the branch and says plainly whether it is an **isolated worktree** or **your working tree** — the distinction that decides whether an agent's work can collide with yours. In the office, an agent's tooltip reads "on &lt;branch&gt; (isolated worktree)".

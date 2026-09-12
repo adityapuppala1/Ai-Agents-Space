@@ -8,6 +8,7 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Added
 
+- **Parallel workflow steps are drawn as parallel.** The relay strip put an arrow between every consecutive step, so two steps that depend on none of each other and run at the same time looked like a queue. Steps are now grouped into the stages they form: arrows only between stages, steps within a stage braced together, and "one of 2 running at the same time" for a screen reader.
 - **Every agent says which branch it is on.** The snapshot's agents now carry `branch` and `isolated`; the run passport names the branch and says whether it is an isolated worktree or your own working tree, and an agent's tooltip in the office says the same. A run that recorded no branch says so rather than being shown as `main`.
 - **The review table says what changed.** Its board read "2 artifacts linked"; it now reads "3 files changed: app.js, routes.js", from the diff artifact's own record of the files it touched. When no diff was recorded it says so, rather than showing "0 files changed" — those are different facts.
 - **Watch over an agent's shoulder.** Select an agent and press the eye in the camera toolbar: the view drops in behind it and looks at what it faces, riding along as it walks and turns. Dragging, resetting or turning on follow all give the camera back, and leaving restores the view you had.
