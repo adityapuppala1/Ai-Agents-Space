@@ -144,10 +144,13 @@ export function refusalFor(category, { allowPrivate = false } = {}) {
     return "That is a multicast or reserved address, which cannot receive a webhook. Use the receiver's own address.";
   if (category === "unspecified")
     return "That is the unspecified address (0.0.0.0 or ::), which routes back to this machine rather than to a receiver. Name the receiver's address.";
-  if (category === "invalid") return "That is not an address a webhook can reach.";
+  if (category === "invalid")
+    return "That is not an address a webhook can reach.";
   if ((category === "loopback" || category === "private") && !allowPrivate)
     return `This server accepts connections from the network, so it will not deliver to ${
-      category === "loopback" ? "its own loopback interface" : "a private network address"
+      category === "loopback"
+        ? "its own loopback interface"
+        : "a private network address"
     } — that would let anyone holding the token reach machines only this server can see. Deliver to a routable address, or set AGENT_SPACE_WEBHOOK_ALLOW_PRIVATE=true if that is genuinely what you want.`;
   return null;
 }
@@ -203,7 +206,9 @@ export function guardedLookup({ allowPrivate = false } = {}) {
         const reason =
           refusalFor(categorize(found[0]?.address ?? ""), { allowPrivate }) ??
           "resolved to no address a webhook can reach.";
-        done(new Error(`${hostname} resolves to ${found[0]?.address}. ${reason}`));
+        done(
+          new Error(`${hostname} resolves to ${found[0]?.address}. ${reason}`),
+        );
         return;
       }
       if (asked.all) done(null, allowed);

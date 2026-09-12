@@ -19,17 +19,49 @@ fs.mkdirSync(outDir, { recursive: true });
 const q = (v) => `"${v}"`;
 const fake = (n) => path.join(root, "tests", "fixtures", "fake-cli", n);
 const homes = path.join(root, "test-results", "audit-homes");
-for (const sub of ["claude", "codex", "copilot", "cursor", "gemini", "data", "projects"])
+for (const sub of [
+  "claude",
+  "codex",
+  "copilot",
+  "cursor",
+  "gemini",
+  "data",
+  "projects",
+])
   fs.mkdirSync(path.join(homes, sub), { recursive: true });
 
 /** What to capture, and why each one is worth a reader's attention. */
 const SHOTS = [
-  { route: "Workspace", theme: "light", viewport: { name: "desktop-1440", width: 1440, height: 900 } },
-  { route: "Workspace", theme: "dark", viewport: { name: "desktop-1440", width: 1440, height: 900 } },
-  { route: "Workspace", theme: "light", viewport: { name: "phone-390", width: 390, height: 844 } },
-  { route: "Connections", theme: "light", viewport: { name: "desktop-1440", width: 1440, height: 900 } },
-  { route: "Task board", theme: "dark", viewport: { name: "desktop-1440", width: 1440, height: 900 } },
-  { route: "Operations", theme: "light", viewport: { name: "desktop-1440", width: 1440, height: 900 } },
+  {
+    route: "Workspace",
+    theme: "light",
+    viewport: { name: "desktop-1440", width: 1440, height: 900 },
+  },
+  {
+    route: "Workspace",
+    theme: "dark",
+    viewport: { name: "desktop-1440", width: 1440, height: 900 },
+  },
+  {
+    route: "Workspace",
+    theme: "light",
+    viewport: { name: "phone-390", width: 390, height: 844 },
+  },
+  {
+    route: "Connections",
+    theme: "light",
+    viewport: { name: "desktop-1440", width: 1440, height: 900 },
+  },
+  {
+    route: "Task board",
+    theme: "dark",
+    viewport: { name: "desktop-1440", width: 1440, height: 900 },
+  },
+  {
+    route: "Operations",
+    theme: "light",
+    viewport: { name: "desktop-1440", width: 1440, height: 900 },
+  },
 ];
 
 const server = spawn(process.execPath, ["packages/server/src/main.js"], {
@@ -137,7 +169,9 @@ async function main() {
   const withErrors = written.filter((w) => w.errors.length).length;
   console.log(
     `\n${written.length} screenshots written to test-results/ui-capture` +
-      (withErrors ? `, ${withErrors} with console errors` : ", none with console errors"),
+      (withErrors
+        ? `, ${withErrors} with console errors`
+        : ", none with console errors"),
   );
 }
 

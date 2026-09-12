@@ -203,7 +203,12 @@ export function defaultSend({
 export class WebhookService {
   constructor(
     services,
-    { now = Date.now, send = defaultSend, resolveSecret, allowPrivateTargets } = {},
+    {
+      now = Date.now,
+      send = defaultSend,
+      resolveSecret,
+      allowPrivateTargets,
+    } = {},
   ) {
     this.services = services;
     this.db = services.db;

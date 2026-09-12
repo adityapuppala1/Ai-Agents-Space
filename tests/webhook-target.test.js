@@ -120,7 +120,10 @@ test("whether private targets are allowed follows how the server is bound", () =
   assert.equal(privateTargetsAllowed({ HOST: "192.168.1.20" }), false);
   // And it can be said explicitly either way.
   assert.equal(
-    privateTargetsAllowed({ HOST: "0.0.0.0", AGENT_SPACE_WEBHOOK_ALLOW_PRIVATE: "true" }),
+    privateTargetsAllowed({
+      HOST: "0.0.0.0",
+      AGENT_SPACE_WEBHOOK_ALLOW_PRIVATE: "true",
+    }),
     true,
   );
   assert.equal(
@@ -132,7 +135,10 @@ test("whether private targets are allowed follows how the server is bound", () =
 test("a url may not carry a credential", () => {
   // It would be sent to the target and written into the delivery record.
   assert.throws(
-    () => assertDeliverable("http://user:pa55@example.com/hook", { allowPrivate: true }),
+    () =>
+      assertDeliverable("http://user:pa55@example.com/hook", {
+        allowPrivate: true,
+      }),
     /secret rather than in the url/,
   );
 });
@@ -204,7 +210,11 @@ test("a refused delivery never reaches the listener, and a permitted one does", 
       body: "{}",
       allowPrivate: true,
     });
-    assert.equal(delivered.ok, true, `local delivery broke: ${delivered.error}`);
+    assert.equal(
+      delivered.ok,
+      true,
+      `local delivery broke: ${delivered.error}`,
+    );
     assert.equal(delivered.status, 204);
     assert.equal(hits, 1, "the permitted delivery did not arrive");
   } finally {

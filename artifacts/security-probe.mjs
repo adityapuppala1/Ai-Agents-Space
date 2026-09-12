@@ -52,7 +52,9 @@ const passed = [];
 
 function record(ok, severity, title, detail) {
   (ok ? passed : findings).push({ severity, title, detail });
-  console.log(`${ok ? "PASS" : "FAIL"} [${severity}] ${title}${ok ? "" : ` — ${detail}`}`);
+  console.log(
+    `${ok ? "PASS" : "FAIL"} [${severity}] ${title}${ok ? "" : ` — ${detail}`}`,
+  );
 }
 
 async function req(pathname, init = {}) {
@@ -103,18 +105,35 @@ try {
   // ---- 1. Authentication -------------------------------------------------
   {
     const r = await req("/api/workspaces");
-    record(r.status === 401, "Critical", "API requires a token when one is set", `got ${r.status}`);
+    record(
+      r.status === 401,
+      "Critical",
+      "API requires a token when one is set",
+      `got ${r.status}`,
+    );
   }
   {
-    const r = await req("/api/workspaces", { headers: { Authorization: "Bearer wrong-token" } });
-    record(r.status === 401, "Critical", "A wrong token is rejected", `got ${r.status}`);
+    const r = await req("/api/workspaces", {
+      headers: { Authorization: "Bearer wrong-token" },
+    });
+    record(
+      r.status === 401,
+      "Critical",
+      "A wrong token is rejected",
+      `got ${r.status}`,
+    );
   }
   {
     // A prefix must not pass: that is what a length-independent compare leaks.
     const r = await req("/api/workspaces", {
       headers: { Authorization: `Bearer ${TOKEN.slice(0, 10)}` },
     });
-    record(r.status === 401, "High", "A token prefix is rejected", `got ${r.status}`);
+    record(
+      r.status === 401,
+      "High",
+      "A token prefix is rejected",
+      `got ${r.status}`,
+    );
   }
 
   // ---- 2. Path traversal on static serving -------------------------------
@@ -131,21 +150,42 @@ try {
   ]) {
     const r = await req(attempt);
     const leaked = r.status === 200 && /"dependencies"|root:/.test(r.text);
-    record(!leaked, "Critical", `Path traversal blocked: ${attempt}`, `status ${r.status}`);
+    record(
+      !leaked,
+      "Critical",
+      `Path traversal blocked: ${attempt}`,
+      `status ${r.status}`,
+    );
   }
 
   // ---- 3. Origin / Host / CORS -------------------------------------------
   {
-    const r = await req("/api/workspaces", { headers: { ...auth, Origin: "http://evil.example" } });
-    record(r.status === 403, "High", "Cross-origin request is refused", `got ${r.status}`);
+    const r = await req("/api/workspaces", {
+      headers: { ...auth, Origin: "http://evil.example" },
+    });
+    record(
+      r.status === 403,
+      "High",
+      "Cross-origin request is refused",
+      `got ${r.status}`,
+    );
   }
-  for (const host of ["evil.example", "127.0.0.1.evil.example", "attacker:1337"]) {
+  for (const host of [
+    "evil.example",
+    "127.0.0.1.evil.example",
+    "attacker:1337",
+  ]) {
     // fetch() ignores a Host override entirely, so this one must be raw.
     const r = await raw(
       `GET /api/health HTTP/1.1\r\nHost: ${host}\r\nAuthorization: Bearer ${TOKEN}\r\nConnection: close\r\n\r\n`,
     );
     const status = statusOf(r);
-    record(status === 403 || status === 400, "High", `Unexpected Host refused: ${host}`, `got ${status || r.note}`);
+    record(
+      status === 403 || status === 400,
+      "High",
+      `Unexpected Host refused: ${host}`,
+      `got ${status || r.note}`,
+    );
   }
   {
     const r = await req("/api/health", { headers: auth });
@@ -157,13 +197,25 @@ try {
   {
     const r = await req("/");
     const csp = r.headers.get("content-security-policy") ?? "";
-    record(csp.includes("default-src 'self'"), "Medium", "HTML carries a CSP", csp || "(none)");
+    record(
+      csp.includes("default-src 'self'"),
+      "Medium",
+      "HTML carries a CSP",
+      csp || "(none)",
+    );
     record(!csp.includes("unsafe-eval"), "High", "CSP forbids eval", csp);
     record(
       r.headers.get("x-content-type-options") === "nosniff",
-      "Low", "HTML sets nosniff", r.headers.get("x-content-type-options") ?? "(none)",
+      "Low",
+      "HTML sets nosniff",
+      r.headers.get("x-content-type-options") ?? "(none)",
     );
-    record(csp.includes("frame-ancestors 'none'"), "Medium", "Clickjacking is blocked", csp);
+    record(
+      csp.includes("frame-ancestors 'none'"),
+      "Medium",
+      "Clickjacking is blocked",
+      csp,
+    );
   }
 
   // ---- 5. Injection into API parameters ----------------------------------
@@ -175,11 +227,23 @@ try {
       "../../etc/passwd",
       "<script>alert(1)</script>",
     ]) {
-      const r = await req(`/api/search?q=${encodeURIComponent(p)}`, { headers: auth });
-      record(r.status < 500, "High", `Search survives hostile input: ${p.slice(0, 24)}`, `status ${r.status}`);
+      const r = await req(`/api/search?q=${encodeURIComponent(p)}`, {
+        headers: auth,
+      });
+      record(
+        r.status < 500,
+        "High",
+        `Search survives hostile input: ${p.slice(0, 24)}`,
+        `status ${r.status}`,
+      );
     }
     const after = await req("/api/health", { headers: auth });
-    record(after.status === 200, "Critical", "Database intact after injection attempts", `status ${after.status}`);
+    record(
+      after.status === 200,
+      "Critical",
+      "Database intact after injection attempts",
+      `status ${after.status}`,
+    );
   }
 
   // ---- 6. Body limits, malformed JSON, content-type smuggling ------------
@@ -189,13 +253,32 @@ try {
       headers: json,
       body: JSON.stringify({ name: "x".repeat(200000) }),
     });
-    record(r.status === 413 || r.status === 400, "Medium", "Oversized body is refused", `got ${r.status}`);
+    record(
+      r.status === 413 || r.status === 400,
+      "Medium",
+      "Oversized body is refused",
+      `got ${r.status}`,
+    );
   }
   {
-    const r = await req("/api/workspaces", { method: "POST", headers: json, body: "{not json" });
-    record(r.status >= 400 && r.status < 500, "Medium", "Malformed JSON is a 4xx, not a crash", `got ${r.status}`);
+    const r = await req("/api/workspaces", {
+      method: "POST",
+      headers: json,
+      body: "{not json",
+    });
+    record(
+      r.status >= 400 && r.status < 500,
+      "Medium",
+      "Malformed JSON is a 4xx, not a crash",
+      `got ${r.status}`,
+    );
   }
-  for (const ct of ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data", ""]) {
+  for (const ct of [
+    "text/plain",
+    "application/x-www-form-urlencoded",
+    "multipart/form-data",
+    "",
+  ]) {
     // A JSON body sent as a simple content type is what gets past a CSRF
     // defence that leans on the preflight. fetch() reports the refusal as a
     // network error, so read the status off the wire instead.
@@ -204,11 +287,21 @@ try {
     const r = await raw(
       `POST /api/workspaces HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nAuthorization: Bearer ${TOKEN}\r\n${header}Content-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
     );
-    record(statusOf(r) === 415, "High", `Non-JSON content type refused: ${ct || "(absent)"}`, `got ${statusOf(r) || r.note}`);
+    record(
+      statusOf(r) === 415,
+      "High",
+      `Non-JSON content type refused: ${ct || "(absent)"}`,
+      `got ${statusOf(r) || r.note}`,
+    );
   }
   {
     const list = await req("/api/workspaces", { headers: auth });
-    record(!list.text.includes("smuggled"), "High", "No smuggled body created a record", "a workspace was created");
+    record(
+      !list.text.includes("smuggled"),
+      "High",
+      "No smuggled body created a record",
+      "a workspace was created",
+    );
   }
 
   // ---- 7. Prototype pollution -------------------------------------------
@@ -224,7 +317,9 @@ try {
     });
     record(
       {}.polluted !== "yes" && Object.prototype.polluted !== "yes",
-      "Critical", "JSON body does not pollute Object.prototype", `status ${r.status}`,
+      "Critical",
+      "JSON body does not pollute Object.prototype",
+      `status ${r.status}`,
     );
   }
 
@@ -240,22 +335,36 @@ try {
   // ---- 9. Secret handling ------------------------------------------------
   {
     const r = await req("/api/health", { headers: auth });
-    record(!r.text.includes(TOKEN), "Critical", "Health does not echo the token", "token found in body");
+    record(
+      !r.text.includes(TOKEN),
+      "Critical",
+      "Health does not echo the token",
+      "token found in body",
+    );
   }
   {
     const r = await req("/api/connections", { headers: auth });
     record(
       !/"(apiKey|api_key|secret|password|token)"\s*:\s*"(?!\*)/i.test(r.text),
-      "Critical", "Connections never return a credential value", r.text.slice(0, 120),
+      "Critical",
+      "Connections never return a credential value",
+      r.text.slice(0, 120),
     );
   }
   {
     const r = await req("/api/settings", {
       method: "PUT",
       headers: json,
-      body: JSON.stringify({ "openai.apiKey": "sk-abcdefghijklmnopqrstuvwxyz123456" }),
+      body: JSON.stringify({
+        "openai.apiKey": "sk-abcdefghijklmnopqrstuvwxyz123456",
+      }),
     });
-    record(r.status >= 400, "High", "Settings refuse to store a credential", `got ${r.status}`);
+    record(
+      r.status >= 400,
+      "High",
+      "Settings refuse to store a credential",
+      `got ${r.status}`,
+    );
   }
 
   // ---- 10. Server-side request forgery ----------------------------------
@@ -266,7 +375,10 @@ try {
       ["http://169.254.169.254/latest/meta-data/", "AWS metadata"],
       ["http://[::ffff:169.254.169.254]/", "metadata via IPv4-mapped IPv6"],
       ["http://169.254.170.2/v2/credentials/", "ECS task credentials"],
-      ["http://metadata.google.internal/computeMetadata/v1/", "GCP metadata by name"],
+      [
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "GCP metadata by name",
+      ],
       ["file:///etc/passwd", "non-http scheme"],
       ["http://user:pa55@example.com/hook", "credential in the url"],
     ]) {
@@ -297,18 +409,29 @@ try {
     const r = await req("/api/runs/does-not-exist", { headers: auth });
     record(
       !/at\s+\w+\s+\(.*:\d+:\d+\)|node_modules|[A-Z]:\\\\/.test(r.text),
-      "Medium", "Errors do not leak stack traces or paths", r.text.slice(0, 120),
+      "Medium",
+      "Errors do not leak stack traces or paths",
+      r.text.slice(0, 120),
     );
   }
   {
     const r = await req("/api/nope", { headers: auth });
-    record(r.status === 404, "Low", "Unknown API route is a clean 404", `got ${r.status}`);
+    record(
+      r.status === 404,
+      "Low",
+      "Unknown API route is a clean 404",
+      `got ${r.status}`,
+    );
   }
 
   console.log(`\n${passed.length} passed, ${findings.length} findings`);
   fs.writeFileSync(
     path.join(outDir, "security-probe.json"),
-    JSON.stringify({ ranAt: new Date().toISOString(), passed, findings }, null, 2),
+    JSON.stringify(
+      { ranAt: new Date().toISOString(), passed, findings },
+      null,
+      2,
+    ),
   );
   process.exitCode = findings.length ? 1 : 0;
 } finally {

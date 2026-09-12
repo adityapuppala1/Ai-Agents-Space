@@ -147,13 +147,38 @@ For development run `npm run dev` (server with restart on change) and `npm run d
 ## Verify
 
 ```sh
-npm test           # Node unit and integration tests (716)
-npm run build      # Vite production build
-npm run test:ui    # Playwright browser suite (57 tests in 22 files)
+npm test            # Node unit and integration tests (736)
+npm run build       # Vite production build
+npm run test:ui     # Playwright browser suite (57 tests in 23 files)
 npm run test:routes # Route audit: 16 routes x 8 viewports x 2 themes (256 renders)
+npm run test:security # 48 hostile requests against an isolated server
 ```
 
 The Node suite never calls a real provider: adapters and the run worker use the fake CLIs in `tests/fixtures/fake-cli/`, and observers read fixture homes. The browser suite uses an installed Google Chrome, starts an isolated server on port 5174 with an in-memory database, the fake CLIs, and empty provider homes under `test-results/homes`, and covers desktop and mobile rendering, two-tab synchronization, the manual task lifecycle, a fake managed run through the inspector, a hook approval through the inbox, a live Claude Code session with an auto-created workspace, the command palette, first-run setup, global search, keyboard drag-to-assign, request-change, the operations panel, day in review, pinned runs, the workspace switcher, server-stored office settings, the knowledge/memory/handover panels, the agents directory, arranging the office, conference-room scale, and a screen-reader pass over the landmarks, headings and live regions. See [docs/TESTING.md](docs/TESTING.md). To use another browser, change `channel` in `playwright.config.js`. On Linux CI run `npx playwright install chrome` first. Preview captures are written to `artifacts/`.
+
+`npm run test:security` is the same idea pointed at the server: an isolated instance on its own port, then 48 requests an attacker would make — authentication, path traversal, `Origin`/`Host`/CORS, the security headers, SQL injection, body limits, content-type smuggling, prototype pollution, confirmation on the destructive routes, secret leakage, SSRF, and error handling. It exits non-zero on a finding. Nothing in it is destructive and it never touches the port a person is using.
+
+## Security
+
+Agent Space is local-first, and that single fact carries most of the security model.
+
+**Local mode (the default).** The server binds to loopback, so nothing outside the machine can reach it. No token is required, because the only caller is the person at the keyboard — who already has every privilege the API grants. The database lives in your own per-user data directory. Nothing is uploaded and no account exists.
+
+**Shared mode.** Setting `HOST` to anything other than loopback puts the API on the network, and the process then **refuses to start without `AGENT_SPACE_TOKEN`** rather than starting an open server. That is the boundary the controls are written against: a token holder is not necessarily the owner of the host.
+
+```sh
+AGENT_SPACE_TOKEN=$(openssl rand -hex 32) HOST=0.0.0.0 npm start
+```
+
+What holds in both modes: secrets never reach the database, the logs or the interface (a webhook endpoint stores the *name* of an environment variable, never a value); provider homes such as `~/.claude` are read-only to this product; authentication fails closed and compares in constant time on the API and the WebSocket alike; stopping every run or sweeping retention needs explicit confirmation; and a run that may already have changed files is never retried automatically.
+
+Outbound webhook delivery is the only place the server connects to an address a caller chose, so it is the whole SSRF surface, and it is constrained — link-local is refused always, and loopback and private addresses are refused when the server is bound to the network. `AGENT_SPACE_WEBHOOK_ALLOW_PRIVATE=true` overrides that for someone who means it.
+
+```sh
+npm run test:security   # check it yourself: 48 hostile requests, exits non-zero on a finding
+```
+
+Full policy, threat model, accepted risks and how to report a vulnerability privately: [SECURITY.md](SECURITY.md).
 
 ## API
 
@@ -202,11 +227,11 @@ apps/web/src/          React interface, WebSocket hooks, Three.js office (office
 packages/core/src/     SQLite schema, tasks, agents, workspaces, providers/, observe/, adapters/, runs/, policy/, approvals/, hooks/, audit/, workflows/, analytics/, context/, collab/, connectors/, connections/, extensions/, mcp/, ops/, search/, webhooks/, export/
 packages/server/src/   Local HTTP API (routes/), static frontend, WebSocket broadcast, main.js entrypoint
 bin/                   agent-space.js CLI (also the Claude Code hook command), agent-space-mcp.js MCP bridge
-docs/                  ARCHITECTURE, ROADMAP_STATUS, API, CONNECTIONS, POLICY, OPERATIONS, TEMPLATES, EXTENSIONS, TESTING
+docs/                  ARCHITECTURE, ROADMAP_STATUS, ROADMAP_NEXT, API, CONNECTIONS, POLICY, OPERATIONS, TEMPLATES, EXTENSIONS, TESTING, UI_UX_REVIEW
 data/                  SQLite database, worktrees, scoped output folders, artifacts (created on first start, ignored by git)
 tests/                 Node unit and integration tests, provider fixtures, fake CLIs
 e2e/                   Chrome browser acceptance tests
-artifacts/             Desktop and mobile captures
+artifacts/             Desktop and mobile captures, plus the audit runners: route-audit.mjs (UI/UX), security-probe.mjs (DAST), ui-capture.mjs (evidence screenshots)
 ```
 
 ## Documents
@@ -214,6 +239,7 @@ artifacts/             Desktop and mobile captures
 | File                                                                           | Purpose                                                                                                                         |
 | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | [CHANGELOG.md](CHANGELOG.md)                                                   | What changed and when, with the same honest statuses used everywhere else                                                       |
+| [SECURITY.md](SECURITY.md)                                                     | Threat model, the two run modes, what is guaranteed, accepted risks, and how to report a vulnerability privately                |
 | [Idea/PRODUCT_ROADMAP.md](Idea/PRODUCT_ROADMAP.md)                             | Product strategy, release gates R1–R6, and the next step                                                                        |
 | [docs/ROADMAP_STATUS.md](docs/ROADMAP_STATUS.md)                               | Done / Partial / Deferred status of every roadmap item with evidence                                                            |
 | [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md)                                   | The prioritised queue of what gets built next, and the market study behind it                                                   |

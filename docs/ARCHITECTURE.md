@@ -14,6 +14,7 @@ This document is the working contract for everyone (people and agents) implement
 8. **Windows first.** Paths use backslashes; normalize with a shared helper (`normalizePath` in `packages/core/src/util/paths.js`, owned by the providers module, described below). Match cwd case-insensitively on win32. Spawn `.cmd` shims through `shell: true` only when needed; prefer resolving the real executable.
 9. **Tests are mandatory per module.** `node --test tests/<file>.test.js` must pass. Use fixtures in `tests/fixtures/providers`. Never call a real provider CLI from tests; use the fake CLIs in `tests/fixtures/fake-cli/`.
 10. **Formatting:** run `npx prettier --write` on files you touch. ESM only (`"type": "module"`).
+11. **An address the caller chose is never connected to unchecked.** Outbound webhooks are the only place where a caller names a destination and the *server* opens the connection, which makes them the product's whole SSRF surface (`webhooks/target.js` — it is also the only outbound HTTP client in `core` and `server`, so keep it that way). Link-local is refused always, because that is where cloud metadata lives. Loopback and private addresses stay allowed when bound to loopback, since delivering to `localhost` is the ordinary use of a local-first tool, and are refused when bound to the network unless `AGENT_SPACE_WEBHOOK_ALLOW_PRIVATE` says otherwise. Validate the resolved address through a `lookup` passed to the request, not just the literal — a name is not judged until it resolves, and checking before connecting by name leaves a rebinding gap. If you add another outbound client, it goes through the same rule.
 
 ## 1. What exists today (R1–R6 build, after wave 2)
 
@@ -50,7 +51,7 @@ Verified on 10 September 2026: `npm test` 401/401, `npm run build` OK, `npx play
 - `context/{ContextManifest,memory,relevance}.js`, `collab/{Handover,Decisions}.js`.
 - `analytics/{Analytics,pricing,lineage,evaluation}.js`, `search/Search.js`, `export/manifest.js`.
 - `connectors/{index,filesystem,git,github}.js` (read/write registry) and the optional `connectors/Connectors.js` (availability probes).
-- `webhooks/WebhookService.js`, `extensions/{manifest,registry}.js`, `mcp/{server,tools,resources}.js`.
+- `webhooks/WebhookService.js` (endpoints, signing, delivery and backoff) and `webhooks/target.js` (what an outbound delivery may connect to — see rule 11), `extensions/{manifest,registry}.js`, `mcp/{server,tools,resources}.js`.
 
 **Server and web**
 
