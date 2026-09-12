@@ -1,6 +1,18 @@
 import { test, expect } from "@playwright/test";
 
+/**
+ * A fresh browser opens the first real workspace once other specs have made
+ * one, so every test that reads the demo team chooses the demo explicitly.
+ */
+function useDemo(page) {
+  return page.addInitScript(() => {
+    if (!localStorage.getItem("agent-space-workspace"))
+      localStorage.setItem("agent-space-workspace", "demo");
+  });
+}
+
 test("workspace remains usable when WebGL is unavailable", async ({ page }) => {
+  await useDemo(page);
   await page.addInitScript(() => {
     const original = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (type, ...args) {
@@ -16,14 +28,25 @@ test("workspace remains usable when WebGL is unavailable", async ({ page }) => {
     .locator(".scene-fallback")
     .getByRole("button", { name: /Sage/ })
     .click();
+  // Whatever Sage is doing at this point in the demo's cycle, choosing it
+  // from the list opens it in the office's own details pane.
   await expect(
-    page.getByText("Ready for what’s next.", { exact: true }),
-  ).toBeVisible();
+    page.getByRole("complementary", { name: "Agent spotlight" }),
+  ).toContainText("Sage");
   await page
     .getByRole("button", { name: "Task board", exact: true })
     .first()
     .click();
   await expect(page.locator(".task-row")).toHaveCount(7);
+  // The Agents page shows 2D portraits in place of its 3D figures.
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Agents", exact: true })
+    .click();
+  const cards = page.locator(".agent-card");
+  await expect(cards.first()).toBeVisible();
+  await expect(page.locator(".agent-figure-canvas")).toHaveCount(0);
+  await expect(cards.first().locator(".agent-portrait")).toBeVisible();
 });
 
 test("office renders and manual task lifecycle synchronizes across tabs", async ({
@@ -36,6 +59,7 @@ test("office renders and manual task lifecycle synchronizes across tabs", async 
   // The demo simulation is shared server state: another spec may have paused
   // it. Set the precondition this test relies on instead of assuming order.
   await request.post("/api/workspaces/demo/demo", { data: { running: true } });
+  await useDemo(page);
   await page.goto("/");
   await expect(
     page.getByText("Live connection", { exact: true }),
@@ -86,9 +110,12 @@ test("office renders and manual task lifecycle synchronizes across tabs", async 
       .locator(".task-row")
       .filter({ hasText: "Review the finished workspace" }),
   ).toBeVisible();
-  await page
-    .getByLabel("Available agent", { exact: true })
-    .selectOption("sage");
+  // Whoever is free: the demo's Echo → Sage relay gives Sage a step for part
+  // of its cycle, so naming one agent made this test depend on the clock.
+  const available = page.getByLabel("Available agent", { exact: true });
+  const free = available.locator("option:not([value=''])").first();
+  await expect(free).toBeAttached();
+  await available.selectOption((await free.getAttribute("value")) ?? "");
   await page.getByRole("button", { name: "Assign task", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "+10% progress", exact: true }),
@@ -118,6 +145,11 @@ test("office renders and manual task lifecycle synchronizes across tabs", async 
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Workspace settings", exact: true })
+    .first()
+    .click();
+  await page
+    .getByRole("dialog", { name: "Workspace settings" })
+    .getByRole("button", { name: /^Environment/ })
     .click();
   await page.getByRole("switch", { name: "Dark appearance" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -139,6 +171,7 @@ test("office renders and manual task lifecycle synchronizes across tabs", async 
 test("workspaces are isolated and agent edits persist across reloads", async ({
   page,
 }) => {
+  await useDemo(page);
   await page.goto("/");
   await expect(
     page.getByText("Live connection", { exact: true }),
@@ -150,11 +183,13 @@ test("workspaces are isolated and agent edits persist across reloads", async ({
   await page
     .getByRole("button", { name: "Create workspace", exact: true })
     .click();
+  // A round trip and a new snapshot: under a loaded suite this can take
+  // longer than the default five seconds.
   await expect(
     page.getByLabel("Switch workspace", { exact: true }),
-  ).toHaveValue(/^storefront/);
+  ).toHaveValue(/^storefront/, { timeout: 15000 });
   await expect(
-    page.getByText("PROJECT WORKSPACE", { exact: true }),
+    page.getByText("Project workspace", { exact: true }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Task board", exact: true })
@@ -162,32 +197,45 @@ test("workspaces are isolated and agent edits persist across reloads", async ({
     .click();
   await expect(page.locator(".task-row")).toHaveCount(0);
   await page.getByRole("button", { name: "Workspace", exact: true }).click();
-  await page.getByRole("button", { name: "Inspect Nova", exact: true }).click();
+  // A new workspace has no recorded work, so nobody stands on the floor; the
+  // roster below the office is where an idle agent is chosen.
+  await expect(page.locator(".scene-label")).toHaveCount(0);
+  const roster = page.locator(".roster-item");
+  await roster.filter({ hasText: "Nova" }).first().click();
   await page.getByRole("button", { name: "Edit Nova", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Nova Prime");
   await page.getByRole("button", { name: "Save agent", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Inspect Nova Prime", exact: true }),
-  ).toBeVisible();
+  await expect(roster.filter({ hasText: "Nova Prime" })).toHaveCount(1);
   await page.reload();
   await expect(
     page.getByLabel("Switch workspace", { exact: true }),
   ).toHaveValue(/^storefront/);
   await expect(
-    page.getByRole("button", { name: "Inspect Nova Prime", exact: true }),
-  ).toBeVisible();
+    page.locator(".roster-item").filter({ hasText: "Nova Prime" }),
+  ).toHaveCount(1);
   await page
     .getByLabel("Switch workspace", { exact: true })
     .selectOption("demo");
   await expect(
     page.getByRole("button", { name: "Inspect Nova", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("DEMO WORKSPACE", { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Office controls" })
+      .getByText("Demo workspace", { exact: true }),
+  ).toBeVisible();
+  // Choosing the demo keeps the demo: the first-visit switch to a real
+  // workspace never overrides an explicit choice.
+  await page.reload();
+  await expect(
+    page.getByLabel("Switch workspace", { exact: true }),
+  ).toHaveValue("demo");
 });
 
 test("mobile layout fits viewport and keyboard can create a task", async ({
   page,
 }) => {
+  await useDemo(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await expect(

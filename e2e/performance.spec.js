@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { putTeamToWork } from "./helpers.js";
 
 /**
  * The 10/50/100-agent scenarios from the roadmap's performance section.
@@ -53,7 +54,7 @@ test("the office renders every agent at 10, 50 and 100 without stalling", async 
   page,
   request,
 }) => {
-  test.setTimeout(180000);
+  test.setTimeout(240000);
 
   // A dedicated workspace: the load scenarios must not leave 100 agents behind
   // in the demo workspace that every other spec reads.
@@ -90,6 +91,8 @@ test("the office renders every agent at 10, 50 and 100 without stalling", async 
       );
       expect(response.ok(), `creating agent ${i + 1}`).toBeTruthy();
     }
+    // Only agents with recorded work stand on the floor.
+    await putTeamToWork(request, workspaceId);
 
     await page.reload();
     await expect(
@@ -103,6 +106,20 @@ test("the office renders every agent at 10, 50 and 100 without stalling", async 
     });
     // WebGL survived; we are measuring the 3D path, not the 2D fallback.
     await expect(page.locator(".scene-fallback")).toHaveCount(0);
+    // Nobody is grouped or hidden: a crowded floor sends its large teams into
+    // conference rooms, where every agent is still drawn in full. This
+    // measures that scene, rooms and all.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            window.__officeScale?.clustered === 0
+              ? window.__officeScale.visibleFigures
+              : -1,
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(target);
 
     const gaps = await sampleFrames(page, SAMPLE_MS);
     expect(

@@ -10,18 +10,22 @@ import { test, expect } from "@playwright/test";
  * and a human review are still required, and the docs say so.
  */
 
+// "Board" is the column layout of the Task board, so it is reached from there.
 const VIEWS = [
   "Workspace",
+  "Campus",
   "Task board",
   "Board",
   "Dependencies",
+  "Schedules",
+  "Workflow editor",
   "Activity",
   "Timeline",
   "Live sessions",
   "Day in review",
   "Analytics",
   "Inbox",
-  "Your agents",
+  "Agents",
   "Connections",
   "Operations",
   "Knowledge",
@@ -229,6 +233,118 @@ test("design tokens meet WCAG AA contrast in light and dark themes", async ({
   console.log(report.join("\n"));
 });
 
+/**
+ * Text as rendered, not just the tokens: every visible text node is measured
+ * against the first solid background behind it. Text over a gradient or the
+ * 3D canvas has no single background colour and is skipped (the office
+ * captions use a per-backdrop ink for that reason; see styles.css). Found
+ * on 11 September 2026: status badges at 2.5 to 3.3:1 in both themes.
+ */
+async function lowContrastText(page) {
+  return page.evaluate(() => {
+    const parse = (value) => {
+      const m = value.match(/rgba?\(([^)]+)\)/);
+      if (!m) return null;
+      const [r, g, b, a = 1] = m[1]
+        .split(/[ ,/]+/)
+        .filter(Boolean)
+        .map(Number);
+      return { r, g, b, a };
+    };
+    const lum = ({ r, g, b }) => {
+      const f = (v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    const over = (top, under) => ({
+      r: top.r * top.a + under.r * (1 - top.a),
+      g: top.g * top.a + under.g * (1 - top.a),
+      b: top.b * top.a + under.b * (1 - top.a),
+      a: 1,
+    });
+    const background = (el) => {
+      const layers = [];
+      for (let node = el; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.backgroundImage !== "none" || node.tagName === "CANVAS")
+          return null;
+        const bg = parse(style.backgroundColor);
+        if (bg && bg.a > 0) {
+          layers.push(bg);
+          if (bg.a >= 1) break;
+        }
+      }
+      let colour = layers.pop() ?? { r: 255, g: 255, b: 255, a: 1 };
+      if (colour.a < 1) colour = over(colour, { r: 255, g: 255, b: 255, a: 1 });
+      while (layers.length) colour = over(layers.pop(), colour);
+      return colour;
+    };
+    const out = [];
+    const seen = new Set();
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+    );
+    while (walker.nextNode()) {
+      const el = walker.currentNode.parentElement;
+      if (!walker.currentNode.textContent.trim() || !el || seen.has(el))
+        continue;
+      seen.add(el);
+      const box = el.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility === "hidden" || Number(style.opacity) < 0.2)
+        continue;
+      if (el.closest("[aria-hidden='true'], .sr-only, [hidden]")) continue;
+      // Disabled controls are exempt from the contrast requirement.
+      if (el.closest("button:disabled, [aria-disabled='true']")) continue;
+      const fg = parse(style.color);
+      const bg = background(el);
+      if (!fg || !bg) continue;
+      const colour = fg.a < 1 ? over(fg, bg) : fg;
+      const [hi, lo] = [lum(colour), lum(bg)].sort((x, y) => y - x);
+      const ratio = (hi + 0.05) / (lo + 0.05);
+      const size = parseFloat(style.fontSize);
+      const large =
+        size >= 24 || (Number(style.fontWeight) >= 700 && size >= 18.66);
+      if (ratio + 0.01 < (large ? 3 : 4.5))
+        out.push(
+          `"${walker.currentNode.textContent.trim().slice(0, 30)}" ${ratio.toFixed(2)}:1 (${style.color} on rgb(${Math.round(bg.r)}, ${Math.round(bg.g)}, ${Math.round(bg.b)}))`,
+        );
+    }
+    return out;
+  });
+}
+
+test("rendered text meets WCAG AA contrast on every view in both themes", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await expect(
+    page.getByText("Live connection", { exact: true }),
+  ).toBeVisible();
+  await dismissSetup(page);
+  const problems = [];
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => {
+      document.documentElement.dataset.theme = t;
+    }, theme);
+    for (const view of VIEWS) {
+      await page
+        .getByRole("button", { name: view, exact: true })
+        .first()
+        .click();
+      await page.waitForTimeout(500);
+      for (const found of await lowContrastText(page))
+        problems.push(`${theme} ${view}: ${found}`);
+    }
+  }
+  expect(problems, problems.join("\n")).toEqual([]);
+});
+
 test("keyboard focus is visible and reduced motion is honoured", async ({
   page,
 }) => {
@@ -261,4 +377,96 @@ test("keyboard focus is visible and reduced motion is honoured", async ({
     () => matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
   expect(reduced).toBe(true);
+});
+
+test("the command palette and search keep focus inside and give it back on close", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(
+    page.getByText("Live connection", { exact: true }),
+  ).toBeVisible();
+  await dismissSetup(page);
+
+  const trigger = page.getByRole("button", {
+    name: "Command palette",
+    exact: true,
+  });
+  await trigger.focus();
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await expect(palette).toBeVisible();
+  const box = palette.getByRole("combobox", { name: "Search commands" });
+  await expect(box).toBeFocused();
+  // Before: Tab left the palette for the page behind it.
+  await page.keyboard.press("Tab");
+  await expect(box).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(box).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(palette).toHaveCount(0);
+  // Before: focus fell to the page body.
+  await expect(trigger).toBeFocused();
+
+  await trigger.focus();
+  await page.keyboard.press("Control+Shift+F");
+  const search = page.getByRole("dialog", { name: "Global search" });
+  await expect(search).toBeVisible();
+  for (let step = 0; step < 12; step += 1) {
+    await page.keyboard.press("Tab");
+    expect(
+      await search.evaluate((node) => node.contains(document.activeElement)),
+    ).toBe(true);
+  }
+  // Escape closes from any control inside, not only the text box.
+  await page.keyboard.press("Escape");
+  await expect(search).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("text follows the reader's own font size, and the page still fits", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(
+    page.getByText("Live connection", { exact: true }),
+  ).toBeVisible();
+  await dismissSetup(page);
+  const measure = () =>
+    page.evaluate(() => ({
+      body: parseFloat(getComputedStyle(document.body).fontSize),
+      small: parseFloat(
+        getComputedStyle(
+          document.querySelector(".as-tag, .dir-sub, small, .rail button") ??
+            document.body,
+        ).fontSize,
+      ),
+    }));
+  const before = await measure();
+  // The type scale is in rem (styles/tokens.css), so this is what a reader
+  // who sets a larger default font in the browser gets.
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "150%";
+  });
+  const after = await measure();
+  expect(after.body).toBeGreaterThan(before.body * 1.4);
+  expect(after.small).toBeGreaterThan(before.small * 1.4);
+  // Nothing spills sideways at that size, on any of the busiest views.
+  const problems = [];
+  for (const view of [
+    "Workspace",
+    "Task board",
+    "Inbox",
+    "Agents",
+    "Connections",
+    "Analytics",
+  ]) {
+    await page.getByRole("button", { name: view, exact: true }).first().click();
+    await page.waitForTimeout(400);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    if (overflow > 1) problems.push(`${view}: page scrolls ${overflow}px sideways`);
+  }
+  expect(problems, problems.join("\n")).toEqual([]);
 });

@@ -37,12 +37,19 @@ export default defineConfig({
     url: "http://127.0.0.1:5174/api/health",
     env: {
       PORT: "5174",
+      // Browser fixtures opt into the showcase. Production startup does not.
+      DEMO: "true",
       AGENT_SPACE_DB: ":memory:",
       // Fake provider CLIs (absolute paths: managed runs spawn with the
       // workspace folder as cwd, so relative script paths would not resolve).
       AGENT_SPACE_BIN_CLAUDE_CODE: `${q(process.execPath)} ${q(fakeCli("claude.js"))}`,
       AGENT_SPACE_BIN_COPILOT: `${q(process.execPath)} ${q(fakeCli("copilot.js"))}`,
       AGENT_SPACE_BIN_CODEX: `${q(process.execPath)} ${q(fakeCli("codex.js"))}`,
+      // Without these two, detection ran the real `gemini --version` and the
+      // Cursor IDE's `cursor --version` on a machine that has them on PATH.
+      // Tests never call a real provider CLI.
+      AGENT_SPACE_BIN_GEMINI: `${q(process.execPath)} ${q(fakeCli("gemini.js"))}`,
+      AGENT_SPACE_BIN_CURSOR: `${q(process.execPath)} ${q(fakeCli("cursor.js"))}`,
       // Provider homes redirected to empty folders under test-results/homes so
       // observation never reads the real machine during e2e.
       CLAUDE_CONFIG_DIR: HOMES.claude,

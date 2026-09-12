@@ -31,7 +31,7 @@ async function openApp(page) {
   ).toBeVisible();
 }
 
-test("connections view lists providers with statuses and capability chips", async ({
+test("connections shows each provider as a card in the product's words", async ({
   page,
 }) => {
   await openApp(page);
@@ -39,23 +39,41 @@ test("connections view lists providers with statuses and capability chips", asyn
   await expect(
     page.getByRole("heading", { name: "Local task API", exact: true }),
   ).toBeVisible();
-  const table = page.locator(".as-conn-table");
-  await expect(table).toBeVisible();
-  const rows = table.locator("tbody tr");
-  for (const label of ["Claude Code", "Codex", "Copilot"])
-    await expect(rows.filter({ hasText: label })).toHaveCount(1, {
-      timeout: 15000,
-    });
-  const claude = rows.filter({ hasText: "Claude Code" });
-  // Columns: Provider (row header), Kind, Alias, Status, ...
-  // The fake CLI answers --version, so Claude Code is at least "detected".
-  await expect(claude.locator("td").nth(2)).toHaveText(/ready|detected/);
-  await expect(claude.locator(".as-cap").first()).toBeVisible();
-  await expect(claude.locator(".as-cap-verified").first()).toBeVisible();
-  const cursor = rows.filter({ hasText: "Cursor" });
-  await expect(cursor.locator("td").nth(2)).toHaveText(
-    /missing|detected|unknown|error/,
+  const cards = page
+    .getByRole("list", { name: "Providers", exact: true })
+    .locator(":scope > li");
+  const card = (name) =>
+    cards.filter({ has: page.getByRole("heading", { name, exact: true }) });
+  for (const name of ["Claude Code", "Codex", "Copilot", "Gemini"])
+    await expect(card(name)).toHaveCount(1, { timeout: 15000 });
+  // The fake CLI answers --version, so Claude Code is found. The pill uses
+  // the product's words, never a raw detection id such as "ready".
+  const claude = card("Claude Code");
+  await expect(claude.locator(".conn-state")).toHaveText(
+    /^(Running|Available|Installed)$/,
   );
+  for (const text of await cards.locator(".conn-state").allTextContents())
+    expect(text.trim()).toMatch(
+      /^(Running|Available|Installed|Failed|Not checked)$/,
+    );
+  // Capabilities read as grouped sentences and say where they come from.
+  await expect(claude.locator(".conn-caps-row.cap-verified dd")).toContainText(
+    "Observe sessions",
+  );
+  await expect(claude.getByText(/From the provider registry/)).toBeVisible();
+  // Long paths never break one character per line: they stay on one line.
+  const path = claude.locator(".conn-path").first();
+  const box = await path.boundingBox();
+  expect(box.height).toBeLessThan(30);
+  // Controls are not cut off at the right edge once scrolled to.
+  const recheck = claude.getByRole("button", {
+    name: "Check again — Claude Code",
+  });
+  await recheck.scrollIntoViewIfNeeded();
+  await expect(recheck).toBeInViewport();
+  // Every CLI is a fake here and answers its version check, so nothing is
+  // failed and the outage banner (failed checks, tripped breakers) is absent.
+  await expect(page.locator(".as-outage")).toHaveCount(0);
 });
 
 test("Run now launches a managed run through the fake Claude CLI", async ({
@@ -68,7 +86,7 @@ test("Run now launches a managed run through the fake Claude CLI", async ({
     .getByLabel("Switch workspace", { exact: true })
     .selectOption(ws.id);
   await expect(
-    page.getByText("PROJECT WORKSPACE", { exact: true }),
+    page.getByText("Project workspace", { exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "New task", exact: true }).click();
   await page
@@ -97,7 +115,12 @@ test("Run now launches a managed run through the fake Claude CLI", async ({
   ).toContainText("Claude Code");
   await inspector.getByRole("tab", { name: "Live activity" }).click();
   await expect(inspector.locator(".as-event").first()).toBeVisible();
-  await expect(inspector.locator(".as-prov-provider").first()).toBeVisible();
+  // Provenance is stated once for a provider run; only events from another
+  // source (the system, a person) carry their own chip.
+  await expect(inspector).toContainText(
+    "Recorded by the provider unless marked",
+  );
+  await expect(inspector.locator(".as-event .as-prov-provider")).toHaveCount(0);
   await expect(inspector.locator(".as-inferred").first()).toBeVisible();
   await inspector.getByRole("tab", { name: "Files/diff" }).click();
   await expect(inspector.locator(".as-artifact").first()).toBeVisible();
@@ -263,13 +286,13 @@ test("a live Claude Code session appears with an auto-created workspace", async 
   await expect(card).toContainText(name);
   await card.getByRole("button", { name: /^Open workspace/ }).click();
   await expect(
-    page.getByText("PROJECT WORKSPACE", { exact: true }),
+    page.getByText("Project workspace", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Inspect Claude Code", exact: true }),
   ).toBeVisible({ timeout: 15000 });
   await expect(
-    page.locator(".agent-card").filter({ hasText: "auto" }),
+    page.locator(".roster-item").filter({ hasText: "auto" }),
   ).toHaveCount(1);
 });
 

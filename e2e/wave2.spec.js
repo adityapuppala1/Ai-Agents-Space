@@ -34,17 +34,47 @@ async function createTask(request, workspaceId, title) {
   return await response.json();
 }
 
-async function openApp(page) {
+async function openApp(page, workspaceId = null) {
+  if (workspaceId)
+    await page.addInitScript(
+      (id) => localStorage.setItem("agent-space-workspace", id),
+      workspaceId,
+    );
   await page.goto("/");
   await expect(
     page.getByText("Live connection", { exact: true }),
   ).toBeVisible();
 }
 
+/**
+ * A workspace of this test's own with one completed run from the fake Claude
+ * CLI. Tests that need recorded runs used to rely on whichever workspace a
+ * fresh browser opened first, which depended on what earlier specs created.
+ */
+async function workspaceWithRun(request, name) {
+  const ws = await createWorkspace(request, name);
+  const task = await createTask(request, ws.id, "WRITE_FILE and summarise");
+  const launched = await request.post(
+    `/api/workspaces/${ws.id}/tasks/${task.id}/run`,
+    { data: { provider: "claude-code" } },
+  );
+  expect(launched.ok(), await launched.text()).toBeTruthy();
+  const run = await launched.json();
+  await expect
+    .poll(
+      async () =>
+        (await (await request.get(`/api/runs/${run.id}`)).json()).run?.status ??
+        null,
+      { timeout: 40000 },
+    )
+    .toBe("completed");
+  return ws;
+}
+
 async function switchWorkspace(page, id) {
   await page.getByLabel("Switch workspace", { exact: true }).selectOption(id);
   await expect(
-    page.getByText("PROJECT WORKSPACE", { exact: true }),
+    page.getByText("Project workspace", { exact: true }),
   ).toBeVisible();
 }
 
@@ -80,7 +110,13 @@ test("drag-to-assign assigns a task with the keyboard only", async ({
   await createTask(request, ws.id, title);
   await openApp(page);
   await switchWorkspace(page, ws.id);
-  await page.getByRole("button", { name: "Board", exact: true }).click();
+  await page.getByRole("button", { name: "Task board", exact: true }).click();
+  await page
+    .getByRole("group", { name: "Task layout" })
+    .getByRole("button", { name: "Board", exact: true })
+    .click();
+  // Assignment repeats the task list, so it is folded until opened.
+  await page.getByText("Assign tasks to agents", { exact: true }).click();
 
   const assign = page.getByRole("region", {
     name: "Assign a task to an agent",
@@ -160,6 +196,62 @@ test("requesting a change leaves the approval pending, then approving releases i
   );
 });
 
+test("inbox decision keys act only on the request that has focus", async ({
+  page,
+  request,
+}) => {
+  const ws = await createWorkspace(request, `keys-${stamp()}`);
+  const policy = await request.put(`/api/workspaces/${ws.id}/policy`, {
+    data: { autonomy: "scoped", deniedCommands: [] },
+  });
+  expect(policy.ok(), await policy.text()).toBeTruthy();
+  await openApp(page);
+
+  const command = `git push origin keys-${stamp()}`;
+  const pending = request.post("/api/hooks/claude-code", {
+    data: {
+      session_id: `e2e-keys-${stamp()}`,
+      transcript_path: path.join(ws.rootPath, "transcript.jsonl"),
+      cwd: ws.rootPath,
+      hook_event_name: "PreToolUse",
+      permission_mode: "default",
+      tool_name: "Bash",
+      tool_input: { command, description: "push" },
+      tool_use_id: `toolu_${stamp()}`,
+    },
+    timeout: 120000,
+  });
+
+  await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  const inbox = page.getByRole("region", { name: "Decision inbox" });
+  const card = inbox.locator(".as-approval").filter({ hasText: command });
+  await expect(card).toBeVisible({ timeout: 20000 });
+
+  // Observed before this fix: "A" with focus on another control approved the
+  // first card. Now a decision key outside a card decides nothing.
+  await inbox.getByRole("button", { name: "Refresh inbox" }).press("a");
+  await expect(inbox).toContainText(
+    "Decision keys act only on the request that has focus",
+  );
+  await expect(card).toBeVisible();
+  // The app-wide "A" (Analytics) did not take over either.
+  await expect(inbox).toBeVisible();
+
+  // Typing in the note is text, never a decision.
+  await card.getByRole("textbox").press("d");
+  await expect(card.getByRole("textbox")).toHaveValue("d");
+  await expect(card).toBeVisible();
+
+  // With the card focused, "D" declines exactly that request.
+  await card.press("d");
+  const response = await pending;
+  expect(response.ok(), await response.text()).toBeTruthy();
+  expect((await response.json()).hookSpecificOutput.permissionDecision).toBe(
+    "deny",
+  );
+  await expect(card).toHaveCount(0, { timeout: 15000 });
+});
+
 test("operations panel reports health and confirms before stopping everything", async ({
   page,
 }) => {
@@ -168,7 +260,21 @@ test("operations panel reports health and confirms before stopping everything", 
   const ops = page.getByRole("region", { name: "Operations" });
   await expect(ops).toBeVisible();
   await expect(ops).toContainText("Uptime");
-  await expect(ops).toContainText("Schema version");
+  await expect(ops).toContainText(/schema \d+/);
+  // Loaded values use the product's words, never raw detection ids.
+  await expect(ops).toContainText(/Assistants available\s*\d+ of \d+/);
+  await expect(ops).not.toContainText(/Providers ready|\bdetected\b/);
+
+  // Deleting old records takes a second, explicit step. Cancelled here: the
+  // suite shares one database.
+  await ops.getByRole("button", { name: "Sweep now…" }).click();
+  await expect(ops).toContainText("Delete every record older than");
+  await ops
+    .getByRole("group")
+    .filter({ hasText: "Delete every record older than" })
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(ops.getByRole("button", { name: "Sweep now…" })).toBeVisible();
 
   await ops.getByRole("button", { name: "Stop all runs…" }).click();
   await expect(ops).toContainText("Stop every run now?");
@@ -181,8 +287,12 @@ test("operations panel reports health and confirms before stopping everything", 
   await expect(ops).not.toContainText("Dispatch is stopped.");
 });
 
-test("day in review is assembled from recorded events", async ({ page }) => {
-  await openApp(page);
+test("day in review is assembled from recorded events", async ({
+  page,
+  request,
+}) => {
+  const ws = await workspaceWithRun(request, `review-${stamp()}`);
+  await openApp(page, ws.id);
   await page
     .getByRole("button", { name: "Day in review", exact: true })
     .click();
@@ -198,10 +308,11 @@ test("day in review is assembled from recorded events", async ({ page }) => {
   await expect(review).toContainText(/recorded events/);
 });
 
-test("a pinned run survives a reload", async ({ page }) => {
-  await openApp(page);
+test("a pinned run survives a reload", async ({ page, request }) => {
+  const ws = await workspaceWithRun(request, `pin-${stamp()}`);
+  await openApp(page, ws.id);
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
-  await page.locator(".as-tl-row").first().click();
+  await page.locator(".tl-label").first().click();
   await page.getByRole("button", { name: "Open run", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Run inspector" });
   await expect(dialog).toBeVisible();
@@ -222,23 +333,28 @@ test("a pinned run survives a reload", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Pinned runs" })).toBeVisible();
 });
 
-test("the workspace switcher shows runtimes, runs and attention", async ({
+test("the workspace switcher says what is going on in each workspace", async ({
   page,
 }) => {
   await openApp(page);
   await page.getByRole("button", { name: /Open workspace switcher$/ }).click();
-  const menu = page.getByRole("menu", { name: "Workspaces" });
+  // A dialog, not a menu: it holds text fields (create, rename), which a
+  // menu may not.
+  const menu = page.getByRole("dialog", { name: "Workspaces" });
   await expect(menu).toBeVisible();
-  const demo = menu.getByRole("menuitemradio").filter({ hasText: "Demo" });
-  await expect(demo.first()).toContainText(/active run/);
-  await expect(demo.first()).toContainText(/need attention/);
-  await expect(demo.first()).toContainText(/Theme:/);
-  await expect(menu.locator(".as-runtime-chip").first()).toBeVisible({
-    timeout: 20000,
-  });
-  await expect(menu.locator(".as-runtime-chip").first()).toContainText(
-    /Claude Code|Codex|Copilot|Cursor|Gemini/,
+  const demo = menu
+    .getByRole("list", { name: "All workspaces" })
+    .getByRole("button")
+    .filter({ hasText: "Demo workspace" });
+  await expect(demo.first()).toContainText(/\d+ agents?/);
+  // The office theme is named in words, never shown as an id.
+  await expect(demo.first().locator(".ws-item-theme")).toHaveText(
+    /^[A-Z][a-z]+( [a-z]+)*$/,
   );
+  // Detection status is global and lives in the top bar: no row repeats it.
+  await expect(menu).not.toContainText(/\b(ready|detected|missing)\b/);
+  // Zero counts are left out instead of reading "0 need attention".
+  await expect(menu).not.toContainText(/\b0 (need|running|agents)/);
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
 });
@@ -250,8 +366,11 @@ test("office settings are stored on the server and come back after a reload", as
   const openSettings = async () => {
     await page
       .getByRole("button", { name: "Workspace settings", exact: true })
+      .first()
       .click();
-    return page.getByRole("dialog", { name: "Workspace settings" });
+    const dialog = page.getByRole("dialog", { name: "Workspace settings" });
+    await dialog.getByRole("button", { name: /^Environment/ }).click();
+    return dialog;
   };
 
   let settings = await openSettings();
@@ -308,15 +427,31 @@ test("knowledge, memory and handover panels render for a workspace", async ({
   await page.getByRole("button", { name: "Knowledge", exact: true }).click();
   const stack = page.locator(".knowledge-stack");
   await expect(stack).toBeVisible();
-  // Each panel either shows its content or names the route it needs; neither
-  // may throw, and none of them may show an unexplained empty list.
+  const tabs = stack.getByRole("tablist", { name: "Knowledge stores" });
+  // Each store is its own tab; each panel either shows its content or names
+  // the route it needs, and none may show an unexplained empty list.
+  for (const [tab, region] of [
+    ["Collections", "Knowledge collections"],
+    ["Memory", "Scoped memory"],
+    ["Handover briefs", "Handover brief"],
+  ]) {
+    await tabs.getByRole("tab", { name: tab }).click();
+    await expect(tabs.getByRole("tab", { name: tab })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(stack.getByRole("region", { name: region })).toBeVisible();
+  }
+  // Scope is chosen on the page, never taken from another page's selection.
   await expect(
-    stack.getByRole("region", { name: "Knowledge collections" }),
-  ).toBeVisible();
+    stack.getByLabel("What the brief is about", { exact: true }),
+  ).toHaveValue("all");
+  await tabs.getByRole("tab", { name: "Memory" }).click();
+  await stack.getByRole("button", { name: "Run notes" }).click();
+  await expect(stack).toContainText(/Choose a run|no runs yet/);
+  // Arrow keys move between tabs.
+  await tabs.getByRole("tab", { name: "Memory" }).press("ArrowRight");
   await expect(
-    stack.getByRole("region", { name: "Scoped memory" }),
-  ).toBeVisible();
-  await expect(
-    stack.getByRole("region", { name: "Handover brief" }),
-  ).toBeVisible();
+    tabs.getByRole("tab", { name: "Handover briefs" }),
+  ).toHaveAttribute("aria-selected", "true");
 });
