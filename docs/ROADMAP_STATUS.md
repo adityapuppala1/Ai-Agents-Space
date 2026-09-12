@@ -1,5 +1,7 @@
 # Roadmap status
 
+> **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
+
 > **What happens in each room, 12 September 2026 (latest; [UI_UX_REVIEW.md](UI_UX_REVIEW.md), top section).** Done, with tests:
 >
 > - **A room's function is now a choice.** Every shared room has a function — research, QA, review, meetings, the break area — and a workspace can give a room another one, or none at all. Choosing a function takes it from the room that had it, so one kind of work always has one place.

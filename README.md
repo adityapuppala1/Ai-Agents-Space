@@ -192,6 +192,7 @@ artifacts/             Desktop and mobile captures
 | [CHANGELOG.md](CHANGELOG.md)                                                   | What changed and when, with the same honest statuses used everywhere else                                                       |
 | [Idea/PRODUCT_ROADMAP.md](Idea/PRODUCT_ROADMAP.md)                             | Product strategy, release gates R1–R6, and the next step                                                                        |
 | [docs/ROADMAP_STATUS.md](docs/ROADMAP_STATUS.md)                               | Done / Partial / Deferred status of every roadmap item with evidence                                                            |
+| [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md)                                   | The prioritised queue of what gets built next, and the market study behind it                                                   |
 | [docs/UI_UX_REVIEW.md](docs/UI_UX_REVIEW.md)                                   | Page-by-page UI/UX audit board, design tokens and shell decisions, verification evidence                                        |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                                   | Module contracts, schema v1–v9, verified provider facts                                                                         |
 | [docs/CONNECTIONS.md](docs/CONNECTIONS.md)                                     | Per-provider detection, observation, launch commands, approvals, limitations                                                    |
