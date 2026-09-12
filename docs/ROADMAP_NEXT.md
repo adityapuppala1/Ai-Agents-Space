@@ -25,6 +25,12 @@ Interaction must never manufacture agent behaviour.
 
 Every item below is designed to be buildable without breaking that rule. Where an item could tempt us to fake something, the row says how it is prevented.
 
+> **The queue is closed, 12 September 2026.** All nineteen items are resolved: eleven built, six found already built or closed on their own terms, and two withdrawn because their premise did not survive checking. What remains open anywhere is in [ROADMAP_STATUS.md](ROADMAP_STATUS.md), and is blocked on things this machine does not have — vendor authentication, other operating systems, hosted infrastructure — rather than on unwritten code.
+>
+> **The pattern worth carrying forward.** Nine of these nineteen descriptions turned out to be wrong about the code, and almost always in the same direction: pessimistic about something that already worked. The desk monitor, subagent helpers, the Campus floors, dependency edges, depth and light — all described as missing, all present. Two were optimistic in a way that would have wasted real effort: the run-worker split rested on a freeze that measurement could not reproduce, and mid-run steering is impossible against a headless CLI. Checking each premise against the code cost minutes; it saved a 2,400-line extraction and a feature that could not have worked.
+>
+> Write the plan, then read the code before building from it.
+
 ## 3. The queue
 
 Priorities are dependency-ordered, not date-ordered. **P0** is being built now; **P1** needs P0's foundation; **P2** needs demand or a decision first. "Slice" means one focused pass: implementation, tests, documentation, and a look at the running app.
@@ -46,7 +52,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 4.3 | ~~Which worktree is this desk on~~ **Done 12 Sep** | — | 1 | — | Vibe Kanban, Conductor |
 | 5.1 | ~~The arranger in 3D~~ **Preview done 12 Sep; drag-in-3D not** | P2 | 2 | 1.1 | Your item 3 |
 | 5.2 | ~~The campus becomes a building~~ **Already has floors — see below** | — | — | — | Your "3D layers" |
-| 5.3 | Depth and light | P2 | 1 | — | Your "3D layers" |
+| 5.3 | ~~Depth and light~~ **Already was — see below** | — | — | — | Your "3D layers" |
 | 6.1 | ~~A one-line presence strip~~ **Done 12 Sep** (attention elsewhere) | — | 1 | — | Agent Island |
 | 6.2 | ~~Replay a day in the office~~ **Done 12 Sep** | — | 1 | — | LangSmith |
 | 6.3 | ~~A runtime as a document~~ **Done 12 Sep, not as written** | — | 1 | — | CLAW3D gateway |
@@ -170,7 +176,7 @@ Your "multiple agents as needed when work is happening", done truthfully: agents
   **Still not done:** dragging *in* the 3D view, snapping, and the walkthrough. The plan already drags with snapping and is the keyboard path, so 3D dragging is a second way to do something that works; it drops to P2 rather than being called finished.
 - **5.2 The campus becomes a building — not done, and deliberately so (12 September 2026).** The premise was that the Campus lacked vertical structure. It does not: it is already a three.js scene where each workspace is a building whose **height scales with its team**, whose **window bands are floors lit when work is running**, and which glows when something needs attention (`artifacts/campus-buildings.png`).
   Stacking independent workspaces into one building was also considered and rejected on the project's own terms: workspaces are independent — separate agents, tasks, policy and history — and drawing them as floors of a single building would say they are parts of one thing. The existing metaphor is the truer one, so this item is closed rather than built.
-- **5.3 Depth and light.** Contact shadows, layered glass in the conference wing, and light falloff that separates the floor planes. Gated by graphics preset and disabled under reduced motion; this is the one item here that is purely presentational, which is why it sits last in its wave.
+- **5.3 Depth and light — already built (checked 12 September 2026).** The item proposed three things and the office already had all three. **Contact shadows:** `GRAPHICS` gates `shadows` per preset — off at `low`, on at `medium` and `high` — and `applyGraphics()` switches the shadow map and its size at runtime, which is exactly the gating the item asked for. **Layered glass:** the conference wing builds its walls from two transparent materials, at opacity 0.26 and 0.18. **Light falloff:** `createLights()` has three rigs (`day`, `evening`, `focus`) with a shadow frustum that widens with the room. All of it is visible in screenshots taken before this item was read — `artifacts/office-over-the-shoulder.png`, `artifacts/office-navigation.png`. Nothing was built; adding more would have been decoration for its own sake.
 
 ## 9. Wave six — reach (P2)
 

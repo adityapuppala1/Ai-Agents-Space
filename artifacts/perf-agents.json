@@ -4,24 +4,24 @@
   "scenarios": [
     {
       "agents": 10,
-      "frames": 38,
-      "medianFrameMs": 50.3,
-      "p95FrameMs": 59.4,
-      "worstFrameMs": 75.4
+      "frames": 35,
+      "medianFrameMs": 58.3,
+      "p95FrameMs": 67.3,
+      "worstFrameMs": 75.1
     },
     {
       "agents": 50,
       "frames": 18,
-      "medianFrameMs": 117.1,
-      "p95FrameMs": 126.1,
-      "worstFrameMs": 126.4
+      "medianFrameMs": 109,
+      "p95FrameMs": 124.9,
+      "worstFrameMs": 125.6
     },
     {
       "agents": 100,
-      "frames": 14,
-      "medianFrameMs": 151.7,
-      "p95FrameMs": 159.3,
-      "worstFrameMs": 168.1
+      "frames": 13,
+      "medianFrameMs": 166.9,
+      "p95FrameMs": 176.7,
+      "worstFrameMs": 200.5
     }
   ]
 }
