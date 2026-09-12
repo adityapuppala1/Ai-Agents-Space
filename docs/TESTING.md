@@ -91,6 +91,14 @@ npm run test:routes -- --fast  # 5 viewports, for a quick pass while working
 
 It writes `report.json` and a screenshot **only for renders that failed** — a folder of 256 correct screenshots is not evidence anyone reads.
 
+The audit is also the project's Content-Security-Policy gate, because a refused inline style raises a console error and `errors` catches any console error at all. Three things to know before trusting a clean run:
+
+- **Make the gate fail before believing it passed.** A CSP violation is only caught if the harness can see one. `el.style.color = …` (React's style-prop path, CSSOM) is *allowed* and silent; `setAttribute("style", …)` and an injected `<style>` element are blocked and do raise a console error. Prove the second pair still fails before reading 256 clean renders as meaning anything.
+- **Do not grep for "Refused to apply".** Chrome's wording here is `Applying inline style violates the following Content Security Policy directive …`. The audit is unaffected — it flags any console error regardless of text — but a log grep for the other phrasing finds nothing and looks like a pass.
+- **Do not check the header with `curl -I`.** `-I` sends HEAD, and the static branch in `server.js` is gated on `req.method === "GET"`, so HEAD falls through to a 404 JSON response carrying no CSP header — which looks exactly like the header being missing. Use `curl -s -D - -o /dev/null http://127.0.0.1:<port>/`.
+
+One more ordering trap: Playwright's `outputDir` is `test-results`, which it wipes at the start of every run, so running a Playwright suite after the audit deletes the audit's `report.json`. Run the audit last, or point it elsewhere with `--out`.
+
 ## The security probe
 
 ```sh

@@ -180,7 +180,15 @@ export function createWorkspaceServer(options = {}) {
             "Content-Type": mime[extname(target)] ?? "application/octet-stream",
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy":
-              "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'",
+              // No 'unsafe-inline' anywhere, for scripts or styles. The
+              // interface never needs it: React applies a style prop through
+              // CSSOM rather than a style attribute, nothing calls
+              // setAttribute("style") or assigns cssText, and the built
+              // index.html carries no <style> tag. Verified by the route
+              // audit, which renders every route at every viewport in both
+              // themes and fails on a console error — which is how a refused
+              // inline style announces itself.
+              "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'",
           });
           return res.end(content);
         } catch (error) {
