@@ -43,6 +43,7 @@ import Provenance from "./Provenance.jsx";
 import ActivityBadge from "./ActivityBadge.jsx";
 import { actionMessage } from "../hooks/viewLogic.js";
 import Tabs from "./Tabs.jsx";
+import AgentConversation from "./AgentConversation.jsx";
 import RunLineage from "./RunLineage.jsx";
 import { PinToggle } from "./PinnedRuns.jsx";
 
@@ -76,6 +77,11 @@ const USAGE_LABELS = {
 
 const TABS = [
   { id: "overview", label: "Overview", icon: <Info size={13} /> },
+  {
+    id: "conversation",
+    label: "Conversation",
+    icon: <MessageSquare size={13} />,
+  },
   { id: "activity", label: "Live activity", icon: <Activity size={13} /> },
   { id: "files", label: "Files/diff", icon: <FileDiff size={13} /> },
   { id: "tools", label: "Tools", icon: <Wrench size={13} /> },
@@ -166,8 +172,6 @@ export default function RunInspector({
   const [tab, setTab] = useState(initialTab);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
-  const [inputText, setInputText] = useState("");
-  const [showInput, setShowInput] = useState(false);
   const [events, setEvents] = useState([]);
   const detail = useApi(runId ? `/runs/${encodeURIComponent(runId)}` : null);
   const run = detail.data?.run ?? null;
@@ -392,7 +396,7 @@ export default function RunInspector({
               />
               <Control
                 icon={<MessageSquare size={12} />}
-                label="Provide input"
+                label="Reply"
                 capability={caps.resume}
                 unavailable={
                   active
@@ -400,7 +404,9 @@ export default function RunInspector({
                     : null
                 }
                 busy={busy === "input"}
-                onClick={() => setShowInput((v) => !v)}
+                // The reply box lives with the conversation it belongs to,
+                // rather than being a second form on top of the header.
+                onClick={() => setTab("conversation")}
               />
               <Control
                 icon={<Play size={12} />}
@@ -427,41 +433,6 @@ export default function RunInspector({
             : "This run is not controlled by Agent Space; it is recorded here only."}
         </p>
       )}
-      {showInput ? (
-        <form
-          className="as-input-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            call("input", { text: inputText }).then(() => setInputText(""));
-          }}
-        >
-          <label>
-            Message to the agent
-            <textarea
-              rows={3}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              data-autofocus
-            />
-          </label>
-          <div className="modal-actions">
-            <button
-              type="button"
-              className="button"
-              onClick={() => setShowInput(false)}
-            >
-              Close
-            </button>
-            <button
-              type="submit"
-              className="button primary"
-              disabled={!inputText.trim() || busy === "input"}
-            >
-              Send input
-            </button>
-          </div>
-        </form>
-      ) : null}
       {message ? (
         <p className="as-feedback" role="status">
           {message}
@@ -485,6 +456,14 @@ export default function RunInspector({
             elapsed={elapsed}
             presentation={presentation}
             context={context}
+          />
+        )}
+        {tab === "conversation" && (
+          <AgentConversation
+            runId={runId}
+            // While the run is working, its answer can still arrive.
+            interval={active ? 3000 : 0}
+            onReplied={(started) => onAction?.("input", started)}
           />
         )}
         {tab === "activity" && (

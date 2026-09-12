@@ -35,8 +35,8 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 1.2 | ~~Run worker in its own process~~ **Withdrawn 12 Sep — premise unproven** | — | — | — | Robustness |
 | 1.2a | Bound and cache binary resolution | P0 | — | — | What 1.2 actually found |
 | 1.3 | ~~The workspace menu, decluttered~~ **Done 12 Sep** | — | 1 | — | Your item 4 |
-| 2.1 | Speak to an agent from its desk | P0 | 2 | — | CLAW3D |
-| 2.2 | Give an instruction mid-run | P0 | 1 | 2.1 | CLAW3D |
+| 2.1 | ~~Speak to an agent~~ **Done 12 Sep** (from the office: still to do) | P1 | 2 | — | CLAW3D |
+| 2.2 | ~~Give an instruction mid-run~~ **Not possible — headless CLIs are one shot** | — | — | — | CLAW3D |
 | 2.3 | Address a room | P1 | 1 | 2.1, 1.1 | CLAW3D |
 | 3.1 | Over the shoulder | P1 | 1 | 1.1 | Your "agents view" |
 | 3.2 | The monitor becomes real | P1 | 2 | 3.1 | Your "agents view" |
@@ -104,7 +104,10 @@ Each row carries nine pieces of information and the panel does four jobs. Reduce
 
 The CLAW3D capability worth taking, and the one that turns the office from a display into a place you work.
 
-### 2.1 Speak to an agent from its desk
+### 2.1 Speak to an agent — **conversation done, 12 September 2026; the office entry point is not**
+
+> Shipped: the exchange itself, and replying. What is *not* yet done is opening it from an agent's desk in the office — the component was built to be used from both places, but only the run inspector uses it so far. That half stays P1.
+
 
 Select an agent, and a conversation opens anchored to it: what it has actually said, and a box to say something back. The agent's recorded messages already exist as events; this gives them a face and a place.
 
@@ -112,13 +115,15 @@ Select an agent, and a conversation opens anchored to it: what it has actually s
 - The panel is the same conversation the run inspector shows — one record, two views, never two truths.
 - Keyboard and screen-reader path from day one: the conversation is a normal focusable region with a live region, not a 3D-only affordance.
 
-### 2.2 Give an instruction mid-run
+### 2.2 Give an instruction mid-run — **not possible, 12 September 2026**
 
-This is smaller than it sounds, because the capability already exists: `POST /api/runs/:id/input` feeds a running session. What is missing is the place to type it and the honesty around it.
-
-- An instruction is **queued** until the provider consumes it, and says so.
-- It goes through policy and, where policy requires, an approval — steering a live agent is an action, and actions are governed here.
-- It is recorded as an event with you as the author, so the run passport shows who said what.
+> **Corrected.** This item claimed "`POST /api/runs/:id/input` feeds a running session". It does not. `RunWorker.input()` refuses outright while the run is executing — *"headless providers accept input only between attempts"* — and what it actually does is resume the provider's session as a **new run**, linked to the previous one by `parentRunId`.
+>
+> That is not a gap to close; it is what a headless provider CLI is. `claude -p "…"` is one shot: it takes a prompt, works, answers and exits. There is no stdin to steer it through. Nothing in the interface can change that, and pretending otherwise would have been exactly the kind of invented capability the truthfulness rules exist to stop.
+>
+> So "mid-run" is dropped, and what *is* possible was built instead as part of 2.1: replying between attempts, with the interface saying plainly that a reply starts a new attempt. A run that is still working says so, and offers the two real options — wait, or cancel.
+>
+> The queueing and approval ideas in the original text are still worth having, but they belong to a reply that starts an attempt, not to steering a live process. They are not built.
 
 ### 2.3 Address a room
 

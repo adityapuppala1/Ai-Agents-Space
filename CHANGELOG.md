@@ -8,6 +8,7 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Added
 
+- **You can read the exchange with an agent, and reply to it.** A **Conversation** tab on the run inspector shows the prompt and every message the provider reported, as turns. Continuing a session with a headless provider creates a new run linked to the last, so `RunRecorder.chain()` walks that chain and `core/runs/conversation.js` reads it back as one exchange; each turn says which attempt it belongs to. Replying states plainly that it starts a new attempt. New route: `GET /api/runs/:id/conversation`.
 - **Agents walk round the furniture.** `office/obstacles.js` reads a computed layout as the rectangles an agent may not cross, and `office/navmesh.js` finds a way past them with A\* and a string-pull, producing the same multi-leg route `followRoute()` already accepted. The grid is rebuilt with the room, not per frame, and no route is ever fabricated: a path that cannot be found falls back to a straight line rather than stranding anyone.
 - **Agents go round each other.** `office/steering.js` steps a walking agent aside for anyone in its way, across its direction of travel so the walk still makes progress. Two agents meeting head-on pass on the right — always the same way, because mirroring is the one case that deadlocks. A nudge is refused if it would put a figure inside the furniture.
 - **Agents look at whoever is speaking.** A glance follows a colleague with a recorded message, in the same room, within range, turning at most about 69°. Silence means every head stays forward: there is no idle looking-around, and gaze is never invented.
@@ -24,6 +25,7 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Withdrawn
 
+- **Giving an agent an instruction mid-run** was planned on the belief that `POST /api/runs/:id/input` feeds a running session. It does not — it refuses while a run executes and resumes the session as a new run. A headless provider CLI is one shot and has no stdin to steer, so the interface now says that instead of pretending otherwise.
 - **Moving the run worker into its own OS process**, planned as a robustness fix, was withdrawn: the premise that a wedged provider CLI could take the interface down did not survive measurement. A CLI is a separate process with piped stdio and cannot block the event loop. See [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) §1.2 for what was measured and what was actually wrong.
 
 ## 2026-09-12 — The office becomes a place

@@ -150,6 +150,42 @@ export class RunRecorder {
     return rowToRun(row);
   }
 
+  /**
+   * Every attempt belonging to one conversation, oldest first: the run asked
+   * for, everything it was resumed from, and everything resumed from it.
+   *
+   * Continuing a conversation with a headless provider creates a new run
+   * linked by `parent_run_id` (RunWorker.input), so the chain is what a
+   * person actually experienced as one exchange. The walk is guarded against
+   * a cycle, which the schema does not forbid.
+   */
+  chain(runId) {
+    const start = this.get(runId);
+    const byId = this.db.prepare("SELECT * FROM runs WHERE id = ?");
+    const byParent = this.db.prepare(
+      "SELECT * FROM runs WHERE parent_run_id = ? ORDER BY attempt ASC, started_at ASC",
+    );
+    let root = start;
+    const climbed = new Set([start.id]);
+    while (root.parentRunId && !climbed.has(root.parentRunId)) {
+      climbed.add(root.parentRunId);
+      const parent = byId.get(root.parentRunId);
+      if (!parent) break;
+      root = rowToRun(parent);
+    }
+    const out = [];
+    const seen = new Set();
+    const queue = [root];
+    while (queue.length) {
+      const run = queue.shift();
+      if (seen.has(run.id)) continue;
+      seen.add(run.id);
+      out.push(run);
+      for (const row of byParent.all(run.id)) queue.push(rowToRun(row));
+    }
+    return out;
+  }
+
   find({ provider, providerSessionId }) {
     const row = this.db
       .prepare(

@@ -1,4 +1,8 @@
 import { InputError } from "../../../core/src/TaskStore.js";
+import {
+  buildConversation,
+  replyState,
+} from "../../../core/src/runs/conversation.js";
 
 /**
  * Managed-run routes. Register BEFORE routes/workspaces.js: it owns the
@@ -11,6 +15,8 @@ import { InputError } from "../../../core/src/TaskStore.js";
  *   GET  /api/runs/:id/artifacts/:artifactId     (with content)
  *   POST /api/runs/:id/cancel
  *   POST /api/runs/:id/retry                     {prompt?}
+ *   GET  /api/runs/:id/conversation              the exchange across every
+ *                                                attempt in this chain
  *   POST /api/runs/:id/input                     {text}
  *   POST /api/runs/:id/review                    {decision:'accept'|'reject', note?}
  *   POST /api/runs/:id/worktree/apply            {check?} copies the reviewed
@@ -61,6 +67,29 @@ export default async function runRoutes(ctx) {
       events: worker.recorder.events(runId, {
         after: Number.isFinite(after) ? after : 0,
         limit: Number.isFinite(limit) && limit > 0 ? limit : 500,
+      }),
+    });
+    return true;
+  }
+  if (method === "GET" && rest === "/conversation") {
+    const chain = worker.recorder.chain(runId);
+    const built = buildConversation(chain, (id) =>
+      worker.recorder.events(id, { limit: 5000 }),
+    );
+    const latest = chain[chain.length - 1] ?? worker.recorder.get(runId);
+    send(200, {
+      runId,
+      // The attempt a reply would continue from: the newest in the chain.
+      latestRunId: latest.id,
+      attempts: chain.map((run) => ({
+        id: run.id,
+        attempt: run.attempt ?? 1,
+        status: run.status,
+        startedAt: run.startedAt ?? null,
+      })),
+      ...built,
+      reply: replyState(latest, worker.adapterFor(latest.provider), {
+        active: worker.children?.has?.(latest.id) ?? false,
       }),
     });
     return true;

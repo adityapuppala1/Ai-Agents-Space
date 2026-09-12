@@ -453,12 +453,97 @@
   border-radius: 3px;
   padding: 0 4px;
 }
-.as-input-form {
+/* The exchange with an agent: what was asked, what it answered, and the box
+   to reply. One component (AgentConversation.jsx) shown in the run inspector
+   and from the office, so the two can never disagree about what was said. */
+.as-conversation {
+  display: grid;
+  gap: 12px;
+}
+.as-turns {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.as-turn {
+  border-radius: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+/* The person's own turns sit to the trailing side and carry the accent, so a
+   long exchange is readable as an exchange rather than a transcript. */
+.as-turn.you {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  margin-left: 10%;
+}
+.as-turn.agent {
+  background: var(--soft);
+  margin-right: 10%;
+}
+.as-turn-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 4px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.as-turn-role {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.as-turn-attempt {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-pill);
+  padding: 0 6px;
+}
+.as-turn-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.as-reply {
+  display: grid;
+  gap: 6px;
   background: var(--soft);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 4px 14px 12px;
-  margin: 8px 0;
+  padding: 10px 12px 12px;
+}
+.as-reply label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.as-reply textarea {
+  width: 100%;
+}
+.as-reply-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.as-reply-foot p {
+  margin: 0;
+  max-width: 42ch;
+}
+
+@media (max-width: 32rem) {
+  .as-turn.you {
+    margin-left: 0;
+  }
+  .as-turn.agent {
+    margin-right: 0;
+  }
 }
 .as-passport {
   display: grid;

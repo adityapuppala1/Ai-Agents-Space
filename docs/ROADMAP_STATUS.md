@@ -2,7 +2,18 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **Binary resolution stops holding the server, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.2).** Done, with tests — and a planned item withdrawn:
+> **You can reply to an agent, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 2.1).** Done, with tests — and a planned item corrected:
+>
+> - **The exchange is now readable.** A run's prompt and every message the provider reported are shown as turns, in order, in a new **Conversation** tab on the run inspector. Nothing is generated: a run the provider never answered shows no answer, and a run with no recorded prompt shows no question.
+> - **A resumed session reads as one conversation.** Continuing with a headless provider creates a *new run* linked by `parentRunId`, so what a person experiences as one exchange was stored as a chain of attempts. `RunRecorder.chain()` walks that chain (up to the root, then down through children, guarded against a cycle) and `core/runs/conversation.js` reads it back as turns. Once there is more than one attempt, every turn says which attempt it belongs to, so a resumed session never looks like one unbroken conversation.
+> - **Replying says what it actually does.** "Sending this starts a new attempt that continues the provider's session" is shown next to the button, because that is the part people are surprised by.
+> - **"Give an instruction mid-run" was corrected, not built.** It is not possible: `RunWorker.input()` refuses while a run executes, because a headless provider CLI is one shot and has no stdin to steer. A run that is still working now says so and names the two real options — wait for it to finish, or cancel it. See [ROADMAP_NEXT.md](ROADMAP_NEXT.md) §2.2.
+> - **No second reply box.** The run inspector's old ad-hoc input form was removed; its "Reply" control now opens the Conversation tab. One component (`web/components/AgentConversation.jsx`) serves the inspector and, when the office entry point is built, the office too — so the two can never disagree about what was said.
+> - **Not done:** opening the conversation from an agent's desk in the office. The component was written to be used from both; only the inspector uses it today.
+>
+> Verification: `npm test` 667 / 0 (nine new in `tests/conversation.test.js`) and `npx playwright test` 52 / 0 (two new in `e2e/conversation.spec.js`, one of which sends a real reply through the fake CLI's `--resume` and asserts a second attempt joins the same exchange). Looked at on the e2e server: `artifacts/agent-conversation.png`. Server and web change: rebuild, and restart the server for the new route.
+
+> **Binary resolution stops holding the server, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 1.2).** Done, with tests — and a planned item withdrawn:
 >
 > - **The planned work was withdrawn because its premise was wrong.** Item 1.2 said a wedged provider CLI could take the interface down. It cannot: a CLI is spawned as a separate process with piped stdio, so it can hold a queue slot but never the event loop. Extracting the 2 400-line `RunWorker` across a process boundary — which would also have forced multi-process SQLite or a large IPC surface — would have been substantial risk bought with an assumption.
 > - **Measured instead of assumed.** Artifact capture reads untracked files with `readFileSync`, which looked like the culprit; across 2 000 to 20 000 untracked files the worst event-loop pause was **16–44 ms**, because the `diff.length < DIFF_LIMIT` check stops the reads. That check is load-bearing and does not look it, so `tests/artifacts-blocking.test.js` now fails if it is removed.
