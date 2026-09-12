@@ -48,7 +48,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 5.2 | ~~The campus becomes a building~~ **Already has floors — see below** | — | — | — | Your "3D layers" |
 | 5.3 | Depth and light | P2 | 1 | — | Your "3D layers" |
 | 6.1 | ~~A one-line presence strip~~ **Done 12 Sep** (attention elsewhere) | — | 1 | — | Agent Island |
-| 6.2 | Replay a day in the office | P2 | 3 | 1.1 | LangSmith |
+| 6.2 | ~~Replay a day in the office~~ **Done 12 Sep** | — | 1 | — | LangSmith |
 | 6.3 | A runtime as a document | P2 | 2 | — | CLAW3D gateway |
 
 ## 4. Wave one — make the world physical and the runtime safe (P0)
@@ -173,7 +173,7 @@ Your "multiple agents as needed when work is happening", done truthfully: agents
 ## 9. Wave six — reach (P2)
 
 - **6.1 A one-line presence strip — done, 12 September 2026, narrowed to the part that was missing.** The glanceable surface mostly existed: the top bar already says what is running and what needs attention **here**, and the provider pulse already says which assistants are alive. The one question nothing answered was the one Agent Island exists for — *does something need me somewhere I am not looking?* A workspace could sit blocked indefinitely and say nothing until the switcher was opened. The bar now carries "Payments needs you" / "2 workspaces need you", and clicking it goes there. Silent when nothing is waiting: "0 elsewhere" is not information.
-- **6.2 Replay a day in the office.** Scrub the timeline and watch the floor act it out. Everything required is already recorded, and Day in review is the seed.
+- **6.2 Replay a day in the office — done, 12 September 2026.** Scrubbing existed in Timeline and Day in review, but both scrubbed a *list*; neither drove the floor. `office/replay.js` reads the recorded events back as "the agents, at a moment", and the office draws that minute. Activity comes from the event **kind** the recorder already assigned rather than being re-derived in the browser — the web never imports from `packages/core`, and a second classifier would be one more thing to keep in step. Nothing is interpolated between events, nothing is claimed that was not reconstructed (no live run, no elapsed time, no status), and the floor says which minute it is showing for as long as it shows it.
 - **6.3 A runtime as a document.** Adding a provider should be a config entry rather than an adapter, which is what makes CLAW3D's gateway model extensible.
 
 ## 10. Decisions taken

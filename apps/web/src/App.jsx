@@ -89,6 +89,7 @@ import OfficeRoster from "./components/OfficeRoster.jsx";
 import AgentDirectory from "./components/AgentDirectory.jsx";
 import { runningProviderSet } from "./hooks/providerStatus.js";
 import { attentionElsewhere } from "./hooks/workspaceSummary.js";
+import { agentsAt, replayRange } from "./office/replay.js";
 import { workflowRelays, relayPresence } from "./office/relay.js";
 import Provenance from "./components/Provenance.jsx";
 import ActivityBadge from "./components/ActivityBadge.jsx";
@@ -1933,10 +1934,17 @@ export default function App() {
   // views can never disagree about which task or agent is selected.
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [selectionFilters, setSelectionFilters] = useState(undefined);
-  const officeAgents = useMemo(
-    () => agents.filter((a) => agentMatchesFilters(a, selectionFilters)),
-    [agents, selectionFilters],
-  );
+  // Watching a past minute instead of this one. null = live.
+  const [replayAt, setReplayAt] = useState(null);
+  const recordedSpan = useMemo(() => replayRange(events), [events]);
+  // Leaving the workspace leaves the replay: a cursor from another
+  // workspace's events would name a moment this floor never had.
+  useEffect(() => setReplayAt(null), [workspaceId]);
+  const officeAgents = useMemo(() => {
+    const shown =
+      replayAt != null ? agentsAt(agents, events, replayAt) : agents;
+    return shown.filter((a) => agentMatchesFilters(a, selectionFilters));
+  }, [agents, events, replayAt, selectionFilters]);
   const selectionValue = useMemo(
     () => ({
       selectedTaskId: selectedTask,
@@ -2839,7 +2847,19 @@ export default function App() {
                       <section className="panel office-panel">
                         <OfficeControl
                           onArrange={() => setArranging(true)}
+                          replay={
+                            recordedSpan && recordedSpan.to > recordedSpan.from
+                              ? {
+                                  ...recordedSpan,
+                                  at: replayAt,
+                                  onChange: setReplayAt,
+                                  onExit: () => setReplayAt(null),
+                                  onStart: () => setReplayAt(recordedSpan.to),
+                                }
+                              : null
+                          }
                           agents={agents}
+                          floorAgents={officeAgents}
                           visibleCount={officeAgents.length}
                           filters={selectionFilters}
                           onFilters={setSelectionFilters}

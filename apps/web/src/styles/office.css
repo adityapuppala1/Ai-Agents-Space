@@ -1045,3 +1045,27 @@
     max-width: 46vw;
   }
 }
+
+/* Replaying a recorded minute. It is deliberately loud: the floor beneath it
+   is not live, and must never be mistaken for it. */
+.office-replay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--as-warn) 40%, transparent);
+  border-radius: var(--radius);
+  background: var(--as-warn-bg);
+  color: var(--as-warn);
+}
+.office-replay .as-scrubber {
+  flex: 1 1 14rem;
+  min-width: 10rem;
+  display: flex;
+  align-items: center;
+}
+.office-replay .as-scrubber input {
+  width: 100%;
+}

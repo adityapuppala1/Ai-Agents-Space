@@ -112,17 +112,52 @@ export default function OfficeControl({
   onConnections,
   onDeployTeam,
   onArrange,
+  // { from, to, at, onChange, onExit } — present only when the workspace has
+  // recorded events to replay. `at` null means the floor is live.
+  replay = null,
+  // The agents the office is drawing. Defaults to `agents`; they differ
+  // during a replay, and the "on the floor" count follows what is drawn.
+  floorAgents = null,
 }) {
   const providers = [...new Set(agents.map((a) => a.provider).filter(Boolean))];
   const roles = [...new Set(agents.map((a) => a.role).filter(Boolean))].sort(
     (a, b) => a.localeCompare(b),
   );
-  const onFloor = agents.filter(isOnFloor).length;
+  // Counted from what the office is actually drawing, not from the live
+  // list: while a replay is on those differ, and "0 on the floor" above a
+  // floor with somebody on it is the office contradicting itself.
+  const onFloor = (floorAgents ?? agents).filter(isOnFloor).length;
   const filtered = Boolean(filters?.provider || filters?.role);
   const themeLabel = OFFICE_THEMES.find(([id]) => id === theme)?.[1] ?? theme;
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   return (
     <section className="office-control" aria-label="Office controls">
+      {/* Replaying a past minute. The floor must never look live while this
+          is on, so the strip says the time it is showing and stays until it
+          is left. */}
+      {replay?.at ? (
+        <div className="office-replay" role="status">
+          <strong>
+            Replay · {new Date(replay.at).toLocaleTimeString()}
+          </strong>
+          <span className="as-tag">recorded events only</span>
+          <label className="as-scrubber">
+            <span className="sr-only">Replay position</span>
+            <input
+              type="range"
+              min={replay.from}
+              max={replay.to}
+              step={1000}
+              value={replay.at}
+              aria-valuetext={new Date(replay.at).toLocaleTimeString()}
+              onChange={(event) => replay.onChange(Number(event.target.value))}
+            />
+          </label>
+          <button type="button" className="button" onClick={replay.onExit}>
+            Back to live
+          </button>
+        </div>
+      ) : null}
       <div className="office-status">
         <span
           className={`office-kind ${isDemo ? "is-demo" : ""}`}
@@ -139,6 +174,16 @@ export default function OfficeControl({
         <span className="office-fact">
           <strong>{onFloor}</strong> on the floor
         </span>
+        {replay && !replay.at ? (
+          <button
+            type="button"
+            className="office-fact is-link"
+            title="Scrub back through what was recorded and watch the floor as it was"
+            onClick={replay.onStart}
+          >
+            Replay
+          </button>
+        ) : null}
         <button
           type="button"
           className={`office-fact is-link ${decisions ? "is-attention" : ""}`}
