@@ -166,6 +166,7 @@ import {
   qaScreen,
   pipelinePanels,
   serviceMap,
+  changedFiles,
   reviewChips,
   handoffCard,
   messageFor,
@@ -2303,6 +2304,9 @@ export default function Office({
       zones?.updateReview(
         reviewers.map((a) => clean(a.name, 20)),
         reviewChips(reviewers, artifactsByAgent, 3, { mask }),
+        // What the review is about, from the diff artifact's own record of
+        // which files changed. Null when no diff was recorded.
+        changedFiles(artifactsByAgent, reviewers, { mask }),
       );
       zones?.updateHandoff(handoffCard(handoffs, agents, { mask }));
       // The break-area sign counted grouped idle agents; nobody is grouped.

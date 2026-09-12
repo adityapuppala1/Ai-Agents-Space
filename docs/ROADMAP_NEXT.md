@@ -40,7 +40,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 2.3 | Address a room | P1 | 1 | 2.1, 1.1 | CLAW3D |
 | 3.1 | ~~Over the shoulder~~ **Done 12 Sep** | — | 1 | 1.1 | Your "agents view" |
 | 3.2 | ~~The monitor becomes real~~ **Already was — see below** | — | — | — | Your "agents view" |
-| 3.3 | Read the diff at the table | P1 | 2 | 3.2 | CLAW3D |
+| 3.3 | ~~Read the diff at the table~~ **Done 12 Sep** (board names the files) | — | 1 | — | CLAW3D |
 | 4.1 | Subagents as visible helpers | P1 | 1 | 1.1 | Your "multiple agents" |
 | 4.2 | Workflow fan-out on the floor | P1 | 2 | 4.1 | Your "orchestrated" |
 | 4.3 | Which worktree is this desk on | P1 | 1 | — | Vibe Kanban, Conductor |
@@ -146,9 +146,13 @@ Your "more agents view — what he is doing, watching". Today you learn what an 
 >
 > Nothing was built. The truthfulness guard the item asked for was already the behaviour.
 
-### 3.3 Read the diff at the table
+### 3.3 Read the diff at the table — **done in part, 12 September 2026**
 
-The review room already gathers the agents; its board is blank where the diff should be. Put the changed-file list and the diff itself there, opened from the run, so a review happens where the review is depicted.
+> **The premise was half wrong again.** The board was never blank: it already said "reviewing", named the reviewers, and carried up to three clickable artifact chips that open the artifact. What it never said was *what the review is about* — "2 artifacts linked" tells you a review exists, not which files changed.
+>
+> The changed files were recorded all along, on the diff artifact's own `metadata.files` (`captureGitDiff` stores `{ path, status }` per file); nothing surfaced them. The board now reads **"3 files changed: app.js, routes.js"**, and says **"no diff recorded"** when none was — a different fact from nothing having changed, and never shown as "0 files changed".
+>
+> **Not done:** the patch text itself on the wall. The chips already open the artifact, which is where a diff is readable; painting a patch onto a canvas texture at wall distance would be less legible than the panel that already exists. Revisit only if reading it in place turns out to matter more than reaching it in one click.
 
 ## 7. Wave four — more agents when the work needs them (P1)
 

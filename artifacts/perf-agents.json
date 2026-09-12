@@ -5,23 +5,23 @@
     {
       "agents": 10,
       "frames": 38,
-      "medianFrameMs": 50.3,
-      "p95FrameMs": 59.1,
-      "worstFrameMs": 67
+      "medianFrameMs": 50.2,
+      "p95FrameMs": 60.6,
+      "worstFrameMs": 66.9
     },
     {
       "agents": 50,
-      "frames": 21,
-      "medianFrameMs": 100.5,
-      "p95FrameMs": 109.7,
-      "worstFrameMs": 117.1
+      "frames": 18,
+      "medianFrameMs": 116.6,
+      "p95FrameMs": 126.6,
+      "worstFrameMs": 133.4
     },
     {
       "agents": 100,
       "frames": 13,
-      "medianFrameMs": 158.9,
-      "p95FrameMs": 176.3,
-      "worstFrameMs": 189.4
+      "medianFrameMs": 158.4,
+      "p95FrameMs": 170.7,
+      "worstFrameMs": 192.5
     }
   ]
 }

@@ -3,7 +3,7 @@
 // furniture is rebuilt on theme change; agent figures are not.
 import * as THREE from "three";
 import { builders, textTexture, swapTexture } from "./scene.js";
-import { basename, maskPrivate } from "./data.js";
+import { basename, changedSummary, maskPrivate } from "./data.js";
 import { themeMaterials } from "./themes.js";
 import { buildDeskField } from "./instancing.js";
 
@@ -590,16 +590,26 @@ export function buildZones(group, theme, layout, agents, res, options = {}) {
       swapTexture(res, qa, { lines, bg: p.screenBg, fg, w: 384, h: 192 });
     },
     /** Whiteboard names plus up to three clickable artifact chips. */
-    updateReview(names, chips = []) {
+    updateReview(names, chips = [], changed = null) {
       if (!review) return;
       const list = Array.isArray(chips) ? chips.slice(0, 3) : [];
-      const key = `${names.join(",")}|${list.map((c) => c.id).join(",")}`;
+      const key = `${names.join(",")}|${list.map((c) => c.id).join(",")}|${
+        changed ? `${changed.count}:${changed.names.join("/")}` : "-"
+      }`;
       if (key !== review.key) {
         review.key = key;
         let lines;
         if (names.length)
-          lines = ["reviewing", ...names.slice(0, 3), artifactLine(list)];
-        else if (list.length) lines = [names.review, artifactLine(list)];
+          // Two names rather than three, to make room for the one line that
+          // says what the review is actually about.
+          lines = [
+            "reviewing",
+            ...names.slice(0, 2),
+            changedSummary(changed),
+            artifactLine(list),
+          ];
+        else if (list.length)
+          lines = [names.review, changedSummary(changed), artifactLine(list)];
         else lines = [names.review, "nothing under review"];
         swapTexture(res, review, {
           lines,

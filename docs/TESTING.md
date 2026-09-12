@@ -69,6 +69,12 @@ Conventions the specs rely on (11 September 2026):
 - **Never depend on the demo simulation's clock.** The demo runs on its own timeline: its relay hands over, agents pick tasks up and finish them, and a room opens and closes as that happens. Specs that named one demo agent as "free", or waited for the demo to announce something, passed or failed by where in the cycle they ran. Create a workspace and drive the state the test needs.
 - **Helpers never live in a `.spec.js` file.** Importing a spec would register its tests twice; shared helpers go in `e2e/helpers.js`.
 
+### Known intermittent: `team-relay.spec.js` "plays the handoff"
+
+On 12 September 2026 this spec failed once in a full-suite run and then passed in isolation and in a second full-suite run. The cause is **unconfirmed** — Playwright clears `test-results/` on each run, so the failure context from the failing run was gone before it could be read. It is recorded here rather than dismissed as flake so the next person to see it knows it has happened before and does not start from zero.
+
+If it recurs, capture the evidence before re-running: copy `test-results/` aside, or run that spec alone with `--repeat-each` under load. The likely suspect is the rule above — the spec deploys a team and waits for the office to play a handoff, which is timing the test does not fully own.
+
 ## Writing a test for a template or an extension
 
 ```js

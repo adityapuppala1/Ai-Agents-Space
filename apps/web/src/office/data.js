@@ -336,6 +336,55 @@ export function reviewChips(
   return chips;
 }
 
+/**
+ * What actually changed, for the review table's board.
+ *
+ * The review room has always named the artifacts linked to it — "2 artifacts
+ * linked" — which says a review exists without saying what it is about. The
+ * changed files are recorded on the diff artifact's own metadata
+ * (`captureGitDiff` stores `{ path, status }` per file), so the board can
+ * say which files rather than how many artifacts.
+ *
+ * Returns `{ count, names }` from the first artifact that recorded a file
+ * list, or **null when none did** — which the caller must render as "no diff
+ * recorded" rather than as zero files, because those are different facts.
+ */
+export function changedFiles(
+  artifactsByAgent,
+  reviewers = [],
+  { mask = false, limit = 2 } = {},
+) {
+  for (const agent of reviewers) {
+    const list = artifactsByAgent?.[agent?.id];
+    if (!Array.isArray(list)) continue;
+    for (const artifact of list) {
+      const files = artifact?.metadata?.files;
+      if (!Array.isArray(files) || !files.length) continue;
+      const names = files
+        .map((file) => basename(file?.path ?? file ?? ""))
+        .filter(Boolean)
+        .slice(0, limit)
+        .map((name) => clean(mask ? maskPrivate(name) : name, 18));
+      return { count: files.length, names };
+    }
+  }
+  return null;
+}
+
+/**
+ * The one line the review board says about what changed.
+ *
+ * Kept here rather than in the scene so the exact words are unit tested: the
+ * board itself is a canvas texture, which no test can read back.
+ */
+export function changedSummary(changed) {
+  // Null means no diff was recorded, which is not the same as nothing having
+  // changed, and must not be shown as "0 files changed".
+  if (!changed) return "no diff recorded";
+  const label = `${changed.count} file${changed.count === 1 ? "" : "s"} changed`;
+  return changed.names?.length ? `${label}: ${changed.names.join(", ")}` : label;
+}
+
 /** The most recent handoff that involves `agentId`, or null. */
 export function handoffFor(handoffs, agentId) {
   if (!Array.isArray(handoffs) || agentId == null) return null;

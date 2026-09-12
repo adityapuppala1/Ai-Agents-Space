@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **Watching over an agent's shoulder, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 3.1).** Done, with tests — and a second planned item found already built:
+> **The review table says what changed, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 3.3).** Done, with tests:
+>
+> - **The board names the files.** It read "2 artifacts linked", which says a review exists without saying what it is about. It now reads "3 files changed: app.js, routes.js", taken from the diff artifact's own `metadata.files` — recorded since the execution layer shipped and never surfaced.
+> - **"No diff recorded" is said, and is not "0 files changed".** A review with no recorded diff and a review of nothing are different facts; the board says the first one plainly rather than implying the second.
+> - **The words are unit tested, because a canvas cannot be read back.** `changedSummary()` lives in `office/data.js` with the rest of the screen content, so the exact line the wall draws is pinned by `tests/office-review-board.test.js` instead of being trusted.
+> - **Presentation mode still never shows a path**, only the file name.
+> - **Not done:** the patch text on the wall itself. The chips already open the artifact, and a patch painted on a canvas at wall distance would read worse than the panel that exists.
+>
+> Verification: `npm test` 681 / 0 (seven new) and `npx playwright test` 55 / 0, including a new end-to-end check that a real run in a real git repository records the changed files the board reads. **Honest note:** an earlier full-suite run had one intermittent failure in `team-relay.spec.js`; it then passed in isolation and in a second full run. The cause is unconfirmed — Playwright clears `test-results/` on each run, so the evidence was gone before it could be read. Recorded in [TESTING.md](TESTING.md) rather than dismissed.
+
+> **Watching over an agent's shoulder, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 3.1).** Done, with tests — and a second planned item found already built:
 >
 > - **Stand behind an agent and see what it is working on.** Select one, press the eye in the camera toolbar, and the view drops in behind it, looking at what it faces. It rides along as the agent walks and turns, because the vantage point is recomputed from its position and facing every frame rather than set once.
 > - **The camera is orthographic**, which decides the design: distance sets the *angle*, not the size, so `office/watch.js` places the camera a long way back along a fixed bearing (to keep the near plane out of the room) and closeness comes from zoom. The bearing — one part up to one part back — lands at a polar angle of about 1.07 radians, deliberately inside the orbit controls' own limit of 1.22, so entering the view never fights the control that owns the camera. `tests/office-watch.test.js` asserts that bound.
