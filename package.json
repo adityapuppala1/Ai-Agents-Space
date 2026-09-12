@@ -1,5 +1,5 @@
 {
-  "name": "agentspace",
+  "name": "@adhirocks2/agentspace",
   "version": "0.1.0",
   "description": "A local-first command centre for AI coding agents: watch what Claude Code, Codex and Copilot are actually doing, in a 3D office built from their own session records.",
   "keywords": [
@@ -21,6 +21,9 @@
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "bin": {
     "agentspace": "bin/agentspace.js",

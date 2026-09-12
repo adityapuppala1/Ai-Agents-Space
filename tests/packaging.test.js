@@ -105,8 +105,18 @@ test("the launcher imports the server as a URL, which is all Windows accepts", (
 });
 
 test("the package names itself something npx can fetch", () => {
-  assert.equal(pkg.name, "agentspace");
+  assert.equal(pkg.name, "@adhirocks2/agentspace");
   assert.ok(!pkg.private, "a private package cannot be published, so npx cannot fetch it");
+  // A scoped package is published restricted unless it says otherwise, and a
+  // restricted package is one nobody can npx. The registry rejected the
+  // unscoped name as too similar to the existing "agent-space", so the scope
+  // is what makes this publishable at all — and the access has to be stated.
+  if (pkg.name.startsWith("@"))
+    assert.equal(
+      pkg.publishConfig?.access,
+      "public",
+      "a scoped package defaults to restricted: npx would get a 404",
+    );
   assert.ok(pkg.license, "npm wants a license field, even if it is UNLICENSED");
   if (pkg.license !== "UNLICENSED")
     assert.ok(
