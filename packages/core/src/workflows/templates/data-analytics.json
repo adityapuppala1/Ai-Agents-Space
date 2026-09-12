@@ -3,6 +3,7 @@
   "name": "Data analytics",
   "domain": "Data",
   "priority": "Growth",
+  "recommendedEnvironment": "data-lab",
   "description": "Question -> scoped query -> analyze -> chart -> review. A generated query is never a result: this pack requires a query file AND a result file produced by a command that exited 0.",
   "requiredResult": "Query, results, chart, assumptions, reproducible report",
   "roles": [

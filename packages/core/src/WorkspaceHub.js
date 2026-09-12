@@ -6,7 +6,7 @@ import { openDatabase, transaction } from "./db.js";
 import { mergePolicy, validatePolicy } from "./policy/Policy.js";
 
 export const DEMO_WORKSPACE_ID = "demo";
-export const THEMES = ["studio", "operations", "garden", "midnight", "sandstone"];
+export const THEMES = ["studio", "operations", "garden", "midnight", "sandstone", "data-lab", "research-library", "creative-studio"];
 
 function slug(name) {
   return (
@@ -216,10 +216,12 @@ export class WorkspaceHub extends EventEmitter {
    * Applies a data-only visual preset in one database transaction. Presentation
    * imports must never leave a workspace with half an environment applied.
    */
-  applyVisualPreset(id, { theme, visual }) {
+  applyVisualPreset(id, { theme, visual, layout }) {
     const runtime = this.get(id);
     const current = runtime.record.settings ?? {};
     const next = { ...current, visual: { ...visual } };
+    // A preset that says nothing about the layout leaves the one in place.
+    if (layout !== undefined) next.officeLayout = layout;
     transaction(this.db, () => {
       this.db.prepare("UPDATE workspaces SET theme = ? WHERE id = ?").run(theme, id);
       this.db

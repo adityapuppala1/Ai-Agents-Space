@@ -13,7 +13,11 @@ import { InputError } from "../../../core/src/TaskStore.js";
  *   DELETE /api/schedules/:id
  *   POST   /api/schedules/:id/enable|disable|cancel|run-now
  *   GET    /api/schedules/:id/runs              ?limit=
+ *   POST   /api/schedules/preview               {expression, timeZone, count?}
+ *                                               next run times; nothing written
  *   GET    /api/scheduler/status
+ *   POST   /api/scheduler/enabled               {enabled} turns timed dispatch
+ *                                               on or off without a restart
  *
  * Scheduling is opt-in twice: the schedule must be enabled AND the
  * `scheduler.enabled` setting must be true before anything dispatches on a
@@ -24,6 +28,7 @@ export default async function scheduleRoutes(ctx) {
   const scheduler = services.scheduler;
   const isOurs =
     path === "/api/scheduler/status" ||
+    path === "/api/scheduler/enabled" ||
     path.startsWith("/api/schedules/") ||
     /^\/api\/workspaces\/[^/]+\/schedules$/.test(path);
   if (!isOurs) return false;
@@ -35,15 +40,35 @@ export default async function scheduleRoutes(ctx) {
     send(200, scheduler.status());
     return true;
   }
+  if (path === "/api/scheduler/enabled") {
+    if (method !== "POST") return false;
+    const input = (await body()) ?? {};
+    send(200, await scheduler.setEnabled(input.enabled, { actor }));
+    return true;
+  }
+  if (path === "/api/schedules/preview") {
+    if (method !== "POST") return false;
+    const input = (await body()) ?? {};
+    send(
+      200,
+      scheduler.preview(input.expression, input.timeZone, {
+        count: input.count,
+      }),
+    );
+    return true;
+  }
 
   const inWorkspace = path.match(/^\/api\/workspaces\/([^/]+)\/schedules$/);
   if (inWorkspace) {
     const workspaceId = inWorkspace[1];
     if (method === "GET") {
       services.hub.get(workspaceId);
-      send(200, scheduler.list(workspaceId, {
-        includeCancelled: query?.get?.("includeCancelled") === "true",
-      }));
+      send(
+        200,
+        scheduler.list(workspaceId, {
+          includeCancelled: query?.get?.("includeCancelled") === "true",
+        }),
+      );
       return true;
     }
     if (method === "POST") {
@@ -73,7 +98,9 @@ export default async function scheduleRoutes(ctx) {
     return false;
   }
 
-  const sub = path.match(/^\/api\/schedules\/([^/]+)\/(enable|disable|cancel|run-now|runs)$/);
+  const sub = path.match(
+    /^\/api\/schedules\/([^/]+)\/(enable|disable|cancel|run-now|runs)$/,
+  );
   if (!sub) return false;
   const [, id, action] = sub;
   if (action === "runs") {

@@ -13,6 +13,9 @@ import { InputError } from "../../../core/src/TaskStore.js";
  *   POST /api/runs/:id/retry                     {prompt?}
  *   POST /api/runs/:id/input                     {text}
  *   POST /api/runs/:id/review                    {decision:'accept'|'reject', note?}
+ *   POST /api/runs/:id/worktree/apply            {check?} copies the reviewed
+ *                                                changes into the working tree
+ *                                                (uncommitted); check only tests
  *   POST /api/runs/:id/worktree/remove
  */
 export default async function runRoutes(ctx) {
@@ -103,6 +106,14 @@ export default async function runRoutes(ctx) {
   if (method === "POST" && rest === "/review") {
     const input = (await body()) ?? {};
     send(200, reviewRun({ db, hub, worker, runId, input, actor, services }));
+    return true;
+  }
+  if (method === "POST" && rest === "/worktree/apply") {
+    const input = (await body()) ?? {};
+    send(
+      200,
+      await worker.applyWorktree(runId, { actor, check: input.check === true }),
+    );
     return true;
   }
   if (method === "POST" && rest === "/worktree/remove") {
@@ -203,7 +214,7 @@ function reviewRun({ db, hub, worker, runId, input, actor, services }) {
   if (decision === "accept") {
     // Dependents are dispatched best effort; onTaskCompleted is async.
     Promise.resolve()
-      .then(() => services.workflows?.onTaskCompleted?.(task.id))
+      .then(() => services.graph?.onTaskCompleted?.(task.id))
       .catch(() => {});
   }
   return { run: worker.get(runId), task: updatedTask, review };

@@ -716,7 +716,7 @@ test("routes: hook POST, status/install/uninstall, settings, audit, policy throu
     services.settings.set("ops.quarantinedHosts", ["runner-1"]);
 
     const all = await call(settingsRoutes, "GET", "/api/settings");
-    assert.equal(all.data["ui.graphics"], "medium");
+    assert.equal(all.data["ui.graphics"], "auto");
     assert.equal(all.data["webhook.github.hmac"], undefined);
     assert.equal(all.data["extensions.item.x"], undefined);
     assert.equal(all.data["ops.quarantinedHosts"], undefined);

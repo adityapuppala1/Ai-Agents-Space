@@ -11,6 +11,10 @@ import { createSuggest } from "../../../core/src/workflows/suggest.js";
  * Templates, workflows, workflow versions, task contracts, checkpoints,
  * dry runs, replay, team suggestions, validation, and the supervisor view.
  *
+ * Validation: `GET /api/workspaces/:id/validate` checks the stored graph;
+ * `POST /api/workspaces/:id/validate` with `{ taskId, dependsOn }` checks the
+ * stored graph with that task's dependencies replaced, without writing.
+ *
  * Register BEFORE routes/workspaces.js (uses /api/workspaces/:id/... paths).
  * Requires services.workflows (WorkflowService) whose `.graph` is a TaskGraph.
  * services.checkpoints / services.dryRun / services.suggest are created on
@@ -93,7 +97,7 @@ export default async function workflowRoutes(ctx) {
   }
 
   const workflow = path.match(
-    /^\/api\/workflows\/([^/]+)(?:\/(archive|export|versions|publish|rollback|adopt|validate|dry-run|checkpoints))?$/,
+    /^\/api\/workflows\/([^/]+)(?:\/(archive|export|versions|publish|rollback|adopt|validate-draft|validate|dry-run|checkpoints|definition|materialization))?$/,
   );
   if (workflow) {
     if (!workflows) throw new InputError("Workflows are not available", 503);
@@ -164,6 +168,32 @@ export default async function workflowRoutes(ctx) {
       send(200, workflows.validateGraph(id));
       return true;
     }
+    if (method === "GET" && action === "definition") {
+      send(200, workflows.definitionGraph(id));
+      return true;
+    }
+    // 256 KB, the same cap as /api/workflows/import: a 13-step template
+    // definition is about 10 KB.
+    if (method === "PUT" && action === "definition") {
+      const input = (await body(262144)) ?? {};
+      send(
+        200,
+        workflows.saveDefinition(id, input.definition ?? input, {
+          expectedHash: input.expectedHash ?? null,
+          actor,
+        }),
+      );
+      return true;
+    }
+    if (method === "POST" && action === "validate-draft") {
+      const input = (await body(262144)) ?? {};
+      send(200, workflows.validateDraft(id, input.definition ?? input));
+      return true;
+    }
+    if (method === "GET" && action === "materialization") {
+      send(200, workflows.materialization(id));
+      return true;
+    }
     if (method === "POST" && action === "dry-run") {
       const record = workflows.get(id);
       send(
@@ -204,7 +234,7 @@ export default async function workflowRoutes(ctx) {
   /* --------------------------- workspace scoped -------------------------- */
 
   const scoped = path.match(
-    /^\/api\/workspaces\/([^/]+)\/(workflows|graph|validate|supervisor|inbox|dry-run|suggest|checkpoints|tasks\/([^/]+)\/(dependencies|contract|branch|review|compensation|inputs)|tasks\/ready)$/,
+    /^\/api\/workspaces\/([^/]+)\/(workflows|teams|graph|validate|supervisor|inbox|dry-run|suggest|checkpoints|tasks\/([^/]+)\/(dependencies|contract|branch|review|compensation|inputs)|tasks\/ready)$/,
   );
   if (!scoped) return false;
   const workspaceId = scoped[1];
@@ -233,6 +263,32 @@ export default async function workflowRoutes(ctx) {
       );
       return true;
     }
+  }
+
+  // POST /api/workspaces/:id/teams: deploy a team for a template — staff
+  // every role (agentByRole / createAgents), choose each role's assistant
+  // (providerByRole), and optionally start the steps that wait on nothing.
+  if (rest === "teams" && method === "POST") {
+    if (!workflows) throw new InputError("Workflows are not available", 503);
+    const input = (await body(65536)) ?? {};
+    if (!input.templateId) throw new InputError("templateId is required");
+    send(
+      201,
+      await workflows.deploy(workspaceId, input.templateId, {
+        inputs: input.inputs ?? {},
+        provider: input.provider ?? null,
+        agentByRole: input.agentByRole ?? {},
+        providerByRole: input.providerByRole ?? {},
+        // true: a profile for every unstaffed role; a list: only those roles.
+        createAgents: Array.isArray(input.createAgents)
+          ? input.createAgents.filter((key) => typeof key === "string")
+          : input.createAgents === true,
+        start: input.start === true,
+        contracts: input.contracts ?? {},
+        actor,
+      }),
+    );
+    return true;
   }
 
   if (rest === "checkpoints") {
@@ -297,6 +353,20 @@ export default async function workflowRoutes(ctx) {
       graph.validateWorkflow(workspaceId, {
         workflowId: query?.get?.("workflow") ?? null,
       }),
+    );
+    return true;
+  }
+  // A proposal checked before it is written: { taskId, dependsOn }.
+  if (method === "POST" && rest === "validate") {
+    const input = (await body()) ?? {};
+    if (!input.taskId) throw new InputError("taskId is required");
+    send(
+      200,
+      graph.validateProposedDependencies(
+        workspaceId,
+        String(input.taskId),
+        input.dependsOn ?? [],
+      ),
     );
     return true;
   }

@@ -392,7 +392,7 @@ test("server boots with the full container: health, route precedence, global sna
     "the global payload carries at most the top 5 alerts",
   );
   assert.equal(payload.settings["observation.enabled"], true);
-  assert.equal(payload.settings["ui.graphics"], "medium");
+  assert.equal(payload.settings["ui.graphics"], "auto");
   assert.equal(payload.observation.enabled, true);
   assert.equal(payload.observation.running, false);
   assert.deepEqual(payload.observation.observers, ["claude-code", "copilot"]);
@@ -925,7 +925,8 @@ test("Workspace snapshot: manual runs keep the profile working state; agents exp
   const snapshot = workspace.snapshot();
   const agent = snapshot.agents.find((a) => a.id === codex.id);
   assert.equal(agent.state, "CODING");
-  assert.equal(agent.activityProvenance, "user");
+  // The profile's working style, not a report: clients show "in progress".
+  assert.equal(agent.activityProvenance, "profile");
   assert.equal(agent.runMode, "manual");
   assert.equal(agent.runStatus, "running");
   assert.equal(agent.runProvider, "manual");

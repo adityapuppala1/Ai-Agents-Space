@@ -9,6 +9,7 @@ function visualState(record) {
   return {
     theme: record.theme,
     settings: record.settings?.visual ?? {},
+    layout: record.settings?.officeLayout ?? null,
   };
 }
 
@@ -25,6 +26,7 @@ export default async function visualPresetRoutes(ctx) {
       name: `${workspace.record.name} visual preset`,
       theme: current.theme,
       settings: current.settings,
+      layout: current.layout ?? { zones: {}, props: [] },
     }));
     return true;
   }
@@ -43,13 +45,24 @@ export default async function visualPresetRoutes(ctx) {
   const record = services.hub.applyVisualPreset(workspaceId, {
     theme: preset.theme,
     visual: preset.settings,
+    layout: preset.layout,
   });
   services.audit?.record?.({
     actor,
     action: "visualPreset.apply",
     target: workspaceId,
     workspaceId,
-    details: { name: preset.name, theme: preset.theme, keys: Object.keys(preset.settings) },
+    details: {
+      name: preset.name,
+      theme: preset.theme,
+      keys: Object.keys(preset.settings),
+      layout: preset.layout
+        ? {
+            rooms: Object.keys(preset.layout.zones).length,
+            furniture: preset.layout.props.length,
+          }
+        : null,
+    },
   });
   services.bus?.emit("workspace", workspaceId);
   send(200, { preset, changes, workspace: record });

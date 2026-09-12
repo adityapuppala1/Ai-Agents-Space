@@ -111,7 +111,24 @@ export const EVENT_KINDS = [
   "system",
   "task",
   "complete",
+  // A workflow step's result passed from one agent to the next; the event
+  // names both agents and the artifacts (TaskGraph.onTaskCompleted).
+  "handoff",
+  // A team assembled for a workflow; the event names every member and role.
+  "team",
 ];
+
+/**
+ * Artifact kinds RunWorker writes today. Shared vocabulary for readers, NOT
+ * enforced: `artifacts.kind` is unconstrained TEXT and workflow contracts and
+ * tests already store kinds of their own, so validating here would break them.
+ */
+export const ARTIFACT_KINDS = Object.freeze([
+  "diff",
+  "test-output",
+  "message",
+  "snippet",
+]);
 
 /** Who asserted an event. Never label an inferred event as provider-reported. */
 export const PROVENANCE = ["provider", "inferred", "user", "system"];
@@ -236,6 +253,70 @@ export function makeEvent(partial) {
   };
 }
 
+/**
+ * The simple commands in a shell line, split on unquoted `;`, `|`, `&` and
+ * newlines. Heredoc bodies are data, not commands, so the lines between
+ * `<<TAG` and `TAG` are dropped; quoted text is never split.
+ */
+export function commandSegments(command) {
+  const kept = [];
+  let heredocEnd = null;
+  for (const line of String(command ?? "").split("\n")) {
+    if (heredocEnd) {
+      if (line.trim() === heredocEnd) heredocEnd = null;
+      continue;
+    }
+    kept.push(line);
+    const heredoc = line.match(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1/);
+    if (heredoc) heredocEnd = heredoc[2];
+  }
+  const text = kept.join("\n");
+  const segments = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote && text[i - 1] !== "\\") quote = null;
+      current += ch;
+    } else if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      current += ch;
+    } else if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") {
+      segments.push(current);
+      current = "";
+    } else current += ch;
+  }
+  segments.push(current);
+  return segments.map((segment) => segment.trim()).filter(Boolean);
+}
+
+// Leading words that run the next command: env assignments, cd is its own
+// segment already, and wrappers such as npx or `bundle exec`.
+const COMMAND_PREFIX =
+  /^(?:(?:\w+=(?:"[^"]*"|'[^']*'|\S*)\s+)|(?:sudo|time|env|npx|bunx|pnpm\s+exec|pnpm\s+dlx|yarn\s+dlx|bundle\s+exec|poetry\s+run|uv\s+run)\s+)+/i;
+const SHELL_WRAPPER =
+  /^(?:bash|sh|zsh|dash|pwsh|powershell(?:\.exe)?|cmd(?:\.exe)?)\s+(?:(?:-{1,2}[\w-]+|\/[ck])\s+)+([\s\S]+)$/i;
+const TEST_RUNNER =
+  /^(?:(?:jest|vitest|pytest|mocha|phpunit|rspec|ctest|tox|nose2|karma|ava)\b|(?:npm|pnpm|yarn|bun|deno)\s+(?:run\s+)?tests?\b|node\s+(?:--test|--experimental-test-runner)\b|(?:go|cargo|dotnet|mvn|gradle|swift|flutter|rails)\s+tests?\b|playwright\s+test\b|make\s+(?:test|check)\b|python3?\s+-m\s+(?:pytest|unittest)\b)/i;
+
+/**
+ * True when a shell line runs a test runner as a command, not when a test
+ * runner's name appears in an argument (a grep pattern, an echo, a commit
+ * message) or inside a heredoc.
+ */
+export function runsTests(command, depth = 0) {
+  return commandSegments(command).some((segment) => {
+    const bare = segment.replace(COMMAND_PREFIX, "");
+    if (TEST_RUNNER.test(bare)) return true;
+    // `bash -lc 'npm test'`, `pwsh -Command "npm test"`: look inside.
+    const wrapped = depth < 2 ? bare.match(SHELL_WRAPPER) : null;
+    if (!wrapped) return false;
+    const inner = wrapped[1].trim().replace(/^(["'])([\s\S]*)\1$/, "$2");
+    return runsTests(inner, depth + 1);
+  });
+}
+
 /** Maps a tool name to an activity. Shared across providers; extend per provider. */
 export function classifyTool(tool, args = {}) {
   const name = String(tool ?? "").toLowerCase();
@@ -262,14 +343,21 @@ export function classifyTool(tool, args = {}) {
       name,
     )
   ) {
-    if (
-      // A test RUNNER being invoked, not merely the word "test" somewhere in
-      // the command. `sed -n '1,20p' tests/office.test.js` reads a file; calling
-      // that "Testing" would state an activity the evidence does not support.
-      /(^|[\s"'`;&|(])(jest|vitest|pytest|mocha|phpunit|rspec|ctest|tox|nose2|karma|ava)\b|\b(npm|pnpm|yarn|bun|deno)\s+(run\s+)?tests?\b|\bnode\s+(--test|--experimental-test-runner)\b|\b(go|cargo|dotnet|mvn|gradle|swift|flutter|rails|bundle\s+exec\s+rspec)\s+tests?\b|\bplaywright\s+test\b|\bpytest\b|\bmake\s+(test|check)\b/.test(
-        text,
-      )
-    )
+    // A test RUNNER being invoked as a command, not merely the word "test"
+    // somewhere in it. `sed -n '1,20p' tests/office.test.js` reads a file and
+    // `grep "npm test" docs` searches for words; calling either "Testing"
+    // would state an activity the evidence does not support.
+    const command =
+      typeof args?.command === "string"
+        ? args.command
+        : Array.isArray(args?.command)
+          ? args.command.join(" ")
+          : typeof args?.cmd === "string"
+            ? args.cmd
+            : Array.isArray(args?.cmd)
+              ? args.cmd.join(" ")
+              : null;
+    if (command !== null ? runsTests(command) : runsTests(text))
       return "TESTING";
     if (/\b(git (status|diff|log|blame)|cat |ls |dir |grep |find )/.test(text))
       return "RESEARCHING";

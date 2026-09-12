@@ -14,8 +14,11 @@ export const SETTING_DEFAULTS = Object.freeze({
   "codex.useAppServer": false,
   "ui.presentationMode": false,
   "ui.reducedMotion": false,
-  "ui.graphics": "medium",
+  "ui.graphics": "auto",
   "budget.dailyRunLimit": null,
+  // Schedules dispatch on a timer only while this is on (and each schedule
+  // is enabled too). Off by default, so an upgrade never starts work.
+  "scheduler.enabled": false,
 });
 
 /** Keys that are safe to ship to the browser in the global snapshot. */
@@ -30,6 +33,7 @@ export const PUBLIC_SETTING_KEYS = Object.freeze([
   "ui.reducedMotion",
   "ui.graphics",
   "budget.dailyRunLimit",
+  "scheduler.enabled",
 ]);
 
 /**
@@ -59,8 +63,9 @@ const VALIDATORS = {
   "codex.useAppServer": bool,
   "ui.presentationMode": bool,
   "ui.reducedMotion": bool,
-  "ui.graphics": oneOf(["low", "medium", "high"]),
+  "ui.graphics": oneOf(["auto", "low", "medium", "high"]),
   "budget.dailyRunLimit": nullableIntRange(1, 100000),
+  "scheduler.enabled": bool,
 };
 
 // Matches keys that would hold a credential. Deliberately narrow around

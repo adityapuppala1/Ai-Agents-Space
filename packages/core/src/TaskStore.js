@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { openDatabase } from "./db.js";
+import { SENSITIVITY_LEVELS } from "./routing/router.js";
 
 const priorities = ["critical", "high", "medium", "low"];
 const transitions = {
@@ -156,6 +157,15 @@ function validateExtras(input, db, workspaceId) {
       if (!Number.isInteger(p.timeoutMs) || p.timeoutMs < 60000)
         throw new InputError("executionPolicy.timeoutMs must be >= 60000");
       policy.timeoutMs = p.timeoutMs;
+    }
+    // The task's data label (routing/router.js). It can only raise the
+    // workspace default: the stricter of the two applies at launch.
+    if (p.sensitivity !== undefined && p.sensitivity !== null) {
+      if (!SENSITIVITY_LEVELS.includes(p.sensitivity))
+        throw new InputError(
+          `executionPolicy.sensitivity must be one of ${SENSITIVITY_LEVELS.join(", ")}`,
+        );
+      policy.sensitivity = p.sensitivity;
     }
     extras.executionPolicy = policy;
   }

@@ -209,7 +209,9 @@ test("token auth, templates, workflow start, graph, tasks, analytics, and doctor
   const graph = await run(["graph", "demo", "--json", "--url", url], { env });
   assert.equal(graph.code, 0, graph.stderr);
   const g = JSON.parse(graph.stdout);
-  assert.equal(g.edges.length, 3);
+  // Three from the bug clinic, one from the demo's own team relay (Echo's
+  // live-stream task hands on to Sage's documentation task).
+  assert.equal(g.edges.length, 4);
   assert.equal(g.criticalPath.length, 4);
   const humanGraph = await run(["graph", "demo", "--url", url], { env });
   assert.match(humanGraph.stdout, /critical path: /);

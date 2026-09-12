@@ -93,6 +93,19 @@ test("ensureRun creates a task and run once per provider session and dedups even
     summary: "Approved",
   });
   assert.equal(recorder.get(run.id).status, "running");
+  // One failed tool call is not the run failing: the session carries on, so
+  // it must not become the run's error (observed on this machine: a shell
+  // command's exit code was shown in the Inbox as the session's failure).
+  recorder.applyEvent(run.id, {
+    kind: "error",
+    tool: "PowerShell",
+    summary: "PowerShell failed: Exit code 1",
+    data: { toolUseId: "toolu_1", isError: true },
+  });
+  assert.equal(recorder.get(run.id).error, null);
+  // A run-level error (a stream error, a failed turn) still is recorded.
+  recorder.applyEvent(run.id, { kind: "error", summary: "stream error" });
+  assert.equal(recorder.get(run.id).error, "stream error");
   const events = recorder.events(run.id);
   assert.ok(events.length >= 5);
   assert.equal(events[0].kind, "session.start");
@@ -192,10 +205,39 @@ test("reading a file whose name contains test is not reported as testing", () =>
     "pytest -q",
     "go test ./...",
     "cargo test",
+    "cd web && npm test",
+    'SP="C:/tmp"; node --test "$SP/a.test.js"',
+    "CI=1 npx vitest run",
+    "npm run build && node --test tests/*.test.js | tail -5",
+    "bash -lc 'npm test'",
+    'pwsh -NoProfile -Command "npm test"',
   ])
     assert.equal(
       classifyTool("Bash", { command }),
       "TESTING",
       `${command} is a test run`,
+    );
+  // Codex hands a command over as an argv array.
+  assert.equal(
+    classifyTool("exec_command", { command: ["bash", "-lc", "cargo test"] }),
+    "TESTING",
+  );
+  assert.equal(
+    classifyTool("exec_command", { cmd: "bash -lc 'grep -rn \"npm test\" .'" }),
+    "RESEARCHING",
+  );
+  // Observed on this machine: a search whose pattern mentions a test runner
+  // was reported (and counted in Day in review) as a test run.
+  for (const command of [
+    String.raw`grep -n "| Agents directory\|^| \`npm test\`" docs/UI_UX_REVIEW.md`,
+    'rg -n "npm test" docs',
+    "echo 'run npm test before pushing'",
+    "node - <<'EOF'\nconst cmd = 'node --test tests/a.test.js';\nEOF",
+    "git log --grep='npm test'",
+  ])
+    assert.notEqual(
+      classifyTool("Bash", { command }),
+      "TESTING",
+      `${command} only mentions a test runner`,
     );
 });

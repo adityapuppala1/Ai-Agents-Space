@@ -460,7 +460,16 @@ export class RunRecorder {
       fields.status = "waiting_approval";
     if (event.kind === "approval.decision" && run.status === "waiting_approval")
       fields.status = "running";
-    if (event.kind === "error")
+    // Only a run-level error is the run's error. A failed tool call carries a
+    // tool name or tool-use id, and the session usually carries on; making it
+    // the run's error showed a shell exit code as the session's failure.
+    const toolScoped = Boolean(
+      event.tool ||
+      event.data?.toolUseId ||
+      event.data?.toolCallId ||
+      event.data?.isError,
+    );
+    if (event.kind === "error" && !toolScoped)
       fields.error = String(event.summary).slice(0, 500);
     if (run.status === "stale" && event.kind !== "session.end") {
       fields.status = "running";

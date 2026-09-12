@@ -383,6 +383,7 @@ test("instantiating a template creates dependent tasks with interpolated titles"
   assert.throws(
     () =>
       workflows.instantiate(workspace.id, "feature-delivery", {
+        inputs: { feature: "Ghost check" },
         agentByRole: { qa: "ghost" },
       }),
     /Agent not found/,
@@ -1082,4 +1083,41 @@ test("workflow versions export deterministically, publish, and roll back with ha
     workflow.definitionHash,
   );
   assert.throws(() => workflows.version(workflow.id, 9), /version 9 not found/);
+});
+
+test("a template is never instantiated with its placeholders unfilled", async () => {
+  const { workflows, workspace } = setup();
+  const { listTemplates, templateInputKeys, getTemplate } =
+    await import("../packages/core/src/workflows/templates/index.js");
+  // Every listed template says which inputs it needs.
+  const agency = listTemplates().find((t) => t.id === "agency-delivery");
+  assert.deepEqual(agency.inputKeys, ["client", "deliverable"]);
+  assert.deepEqual(templateInputKeys(getTemplate("bug-clinic")), ["issue"]);
+
+  // Observed: setup's one-click "Create tasks" sent no inputs and produced
+  // tasks titled "Scope the brief for {{client}}: {{deliverable}}".
+  const before = workspace.snapshot().tasks.length;
+  assert.throws(
+    () =>
+      workflows.instantiate(workspace.id, "agency-delivery", { inputs: {} }),
+    (error) =>
+      error.status === 400 && /client, deliverable/.test(error.message),
+  );
+  assert.throws(
+    () =>
+      workflows.instantiate(workspace.id, "agency-delivery", {
+        inputs: { client: "Acme", deliverable: "   " },
+      }),
+    (error) => error.status === 400 && /deliverable/.test(error.message),
+  );
+  assert.equal(
+    workspace.snapshot().tasks.length,
+    before,
+    "nothing was created",
+  );
+
+  const workflow = workflows.instantiate(workspace.id, "agency-delivery", {
+    inputs: { client: "Acme", deliverable: "Landing page" },
+  });
+  assert.ok(workflow.tasks.every((task) => !/\{\{/.test(task.title)));
 });

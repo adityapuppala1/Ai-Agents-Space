@@ -12,7 +12,12 @@ AGENT_SPACE_BIN_CLAUDE_CODE="node tests/fixtures/fake-cli/claude.js"
 AGENT_SPACE_BIN_CODEX="node tests/fixtures/fake-cli/codex.js"
 AGENT_SPACE_BIN_COPILOT="node tests/fixtures/fake-cli/copilot.js"
 AGENT_SPACE_BIN_GEMINI="node tests/fixtures/fake-cli/gemini.js"
+AGENT_SPACE_BIN_CURSOR="node tests/fixtures/fake-cli/cursor.js"
 ```
+
+`playwright.config.js` sets all five, so the browser-test server never runs a
+real CLI that happens to be on the machine's PATH (the Cursor IDE, for
+example, installs a `cursor` launcher that detection would otherwise find).
 
 The override value is a command line (quotes honoured); relative paths resolve
 against the server's working directory. Tests should use `process.execPath`
@@ -26,6 +31,7 @@ and an absolute script path to avoid depending on `node` being on PATH.
 | `codex.js`   | `providers/codex-exec-stream-error.jsonl` (+ success) | `codex exec --json [-C cwd] [-s …] "<prompt>"` / `codex exec resume <id>`  |
 | `copilot.js` | `providers/copilot-headless-stream.jsonl`             | `copilot -p "<prompt>" --output-format json --allow-all-tools [-C dir]`    |
 | `gemini.js`  | a minimal documented `stream-json` sample             | `gemini -p "<prompt>" --output-format stream-json`                         |
+| `cursor.js`  | nothing: `--version` only, anything else exits 1      | `cursor-agent --version`                                                   |
 
 ## Contract every fake must honour
 

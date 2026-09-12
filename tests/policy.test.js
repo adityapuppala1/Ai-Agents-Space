@@ -714,7 +714,7 @@ test("Settings: defaults, typed validation, public subset, no secrets", () => {
   assert.ok(!("custom.flag" in s.publicSubset()));
   assert.equal(s.publicSubset()["ui.reducedMotion"], true);
   s.delete("ui.graphics");
-  assert.equal(s.get("ui.graphics"), "medium");
+  assert.equal(s.get("ui.graphics"), "auto");
 });
 
 test("Audit: records with uuid + timestamp, redacts secrets recursively, filters", () => {
@@ -982,7 +982,10 @@ test("network destinations: listed allows, unlisted asks under scoped, denies ot
   );
   const unlisted = net("https://evil.example");
   assert.equal(unlisted.decision, "ask");
-  assert.match(unlisted.reason, /evil.example.*not on the allowed destinations/);
+  assert.match(
+    unlisted.reason,
+    /evil.example.*not on the allowed destinations/,
+  );
   // Without 'network' in requireApprovalFor an unlisted destination is denied.
   services.policy.setForWorkspace(workspace.id, {
     requireApprovalFor: ["shell.risky"],

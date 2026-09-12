@@ -280,12 +280,28 @@ test("inbox composes approvals, broken runs, and pending reviews with counts", (
   const stale = services.recorder.ensureRun({
     workspaceId: workspace.id,
     agentId: otherAgent.id,
-    mode: "observed",
+    mode: "managed",
     provider: "copilot",
     providerSessionId: "s3",
     createTask: { title: "Quiet" },
   });
   services.recorder.setStatus(stale.id, "stale");
+  // A session the user started in their own terminal is not a decision here:
+  // Agent Space cannot retry, cancel or approve it, and an interactive session
+  // goes quiet whenever its user steps away. It stays on Live sessions.
+  const watcher = workspace.createAgent({
+    name: "Claude Code",
+    role: "Coding assistant",
+  });
+  const observed = services.recorder.ensureRun({
+    workspaceId: workspace.id,
+    agentId: watcher.id,
+    mode: "observed",
+    provider: "claude-code",
+    providerSessionId: "s5",
+    createTask: { title: "Terminal session" },
+  });
+  services.recorder.setStatus(observed.id, "stale");
   const reviewAgent = workspace.createAgent({
     name: "Gemini",
     role: "Coding assistant",
@@ -305,6 +321,10 @@ test("inbox composes approvals, broken runs, and pending reviews with counts", (
   assert.equal(inbox.questions[0].kind, "question");
   assert.deepEqual(inbox.runs.map((r) => r.status).sort(), ["failed", "stale"]);
   assert.equal(inbox.runs.find((r) => r.status === "failed").error, "exit 1");
+  assert.equal(
+    inbox.runs.some((r) => r.id === observed.id),
+    false,
+  );
   assert.equal(inbox.reviews.length, 1);
   assert.equal(inbox.reviews[0].runId, reviewed.id);
   assert.equal(inbox.reviews[0].title, "Review me");
@@ -782,7 +802,11 @@ test("escalation sweep marks old pending approvals with an injected clock", asyn
   });
   assert.equal(decided.status, "approved");
   assert.equal(decided.escalationLevel, 2);
-  assert.equal(services.approvals.escalationSweep(), 0, "decided rows are skipped");
+  assert.equal(
+    services.approvals.escalationSweep(),
+    0,
+    "decided rows are skipped",
+  );
   await services.approvals.wait(approval.id, 10);
 });
 

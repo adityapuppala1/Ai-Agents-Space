@@ -3,6 +3,7 @@
   "name": "Data engineering",
   "domain": "Data",
   "priority": "Growth",
+  "recommendedEnvironment": "data-lab",
   "description": "Ingest -> transform -> validate -> publish artifact. Produces a dataset version, a lineage record, and a validation report from executed commands.",
   "requiredResult": "Dataset version, lineage, validation report",
   "roles": [

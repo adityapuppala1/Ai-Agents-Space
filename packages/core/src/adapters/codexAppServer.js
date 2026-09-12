@@ -438,6 +438,69 @@ export const codexAppServerAdapter = defineAdapter({
   },
 });
 
+/**
+ * What the workspace policy can judge in a Codex request: the command it
+ * would run, or each file it would change. Permission requests and questions
+ * carry nothing the policy engine understands, so they go to a person as
+ * before. Codex's network context has no documented shape and is not read;
+ * curl- and wget-style destinations in the command text are checked by the
+ * command rule.
+ */
+function policyRequests(kind, payload) {
+  if (kind === "command" && payload.command)
+    return [
+      {
+        kind: "command",
+        tool: "codex",
+        command: String(payload.command),
+        cwd: payload.cwd,
+      },
+    ];
+  if (kind === "file" && Array.isArray(payload.changes))
+    return payload.changes
+      .filter((change) => change?.path)
+      .map((change) => ({
+        kind: "file",
+        tool: "codex",
+        path: String(change.path),
+        access: "write",
+        cwd: payload.cwd,
+      }));
+  return [];
+}
+
+const DECISION_RANK = { allow: 0, ask: 1, deny: 2 };
+
+/**
+ * The strictest verdict the workspace policy gives any part of the request,
+ * or null when there is nothing to judge (or no policy engine). A request
+ * that cannot be evaluated is left to a person, never allowed by default.
+ */
+function policyVerdict(services, ctx, kind, payload) {
+  if (!services.policy?.evaluate) return null;
+  let worst = null;
+  for (const request of policyRequests(kind, payload)) {
+    let evaluation;
+    try {
+      evaluation = services.policy.evaluate({
+        workspaceId: ctx.run?.workspaceId,
+        runId: ctx.run?.id,
+        request,
+      });
+    } catch {
+      continue;
+    }
+    if (!evaluation || evaluation.passthrough) continue;
+    if (
+      !worst ||
+      (DECISION_RANK[evaluation.decision] ?? 1) >
+        (DECISION_RANK[worst.decision] ?? 1)
+    )
+      worst = evaluation;
+  }
+  return worst;
+}
+
 async function handleServerRequest(message, state) {
   const { rpc, ctx } = state;
   const method = message.method;
@@ -466,6 +529,47 @@ async function handleServerRequest(message, state) {
   const providerRef = String(
     params.approvalId ?? params.itemId ?? params.callId ?? message.id,
   );
+  // The workspace policy decides first, as it does for Claude Code hooks: a
+  // denied command or path is refused without asking anyone, and a request
+  // that goes to a person carries the rule, so rule-based dual approval
+  // applies. A policy "allow" still goes to a person, because Codex asked.
+  const verdict = policyVerdict(services, ctx, kind, payload);
+  if (verdict?.decision === "deny") {
+    const reason = `Agent Space policy ${verdict.rule}: ${verdict.reason}`;
+    rpc?.respond(message.id, responseFor(spec, false, params));
+    try {
+      services.audit?.record?.({
+        actor: "codex-app-server",
+        action: "codex.deny",
+        runId: ctx.run?.id ?? null,
+        workspaceId: ctx.run?.workspaceId ?? null,
+        policyDecision: "deny",
+        details: { method, kind, rule: verdict.rule, reason: verdict.reason },
+      });
+    } catch {
+      /* audit is best effort */
+    }
+    ctx?.emit?.(
+      event(PROVIDER, {
+        providerEventId: `${PROVIDER}:approval:${state.sessionId ?? "?"}:${providerRef}:decision`,
+        sessionId: state.sessionId ?? null,
+        timestamp: Date.now(),
+        kind: "approval.decision",
+        provenance: "system",
+        summary: `Denied by policy: ${summary} — ${clip(reason, 100)}`,
+        data: smallData({
+          method,
+          kind,
+          approved: false,
+          approvalId: null,
+          reason,
+          rule: verdict.rule,
+          payload,
+        }),
+      }),
+    );
+    return;
+  }
   let approved = false;
   let reason = null;
   let approvalId = null;
@@ -480,7 +584,8 @@ async function handleServerRequest(message, state) {
         taskId: ctx.run?.taskId,
         kind,
         payload,
-        reason: summary,
+        reason: verdict?.reason ? `${summary} — ${verdict.reason}` : summary,
+        rule: verdict?.rule ?? null,
         provider: PROVIDER,
         providerRef,
         expiresInMs: ctx.approvalTimeoutMs ?? null,

@@ -385,6 +385,18 @@ test("health alerts on a stopped dispatch, a stale approval, and an open breaker
   assert.equal(snapshot.status, "degraded");
   assert.equal(snapshot.incident.dispatchStopped, true);
   assert.equal(snapshot.approvals.pending, 1);
+
+  // RunWorker.providerHealth() really answers an array of entries; the alert
+  // must name the provider, not the array index.
+  services.runWorker.providerHealth = () => [
+    { provider: "codex", state: "open", consecutiveFailures: 3 },
+    { provider: "claude-code", state: "closed", consecutiveFailures: 0 },
+  ];
+  const open = services.health
+    .snapshot()
+    .alerts.filter((alert) => alert.code === "provider.circuit-open");
+  assert.equal(open.length, 1);
+  assert.match(open[0].title, /breaker for codex is open/);
   await services.close();
 });
 

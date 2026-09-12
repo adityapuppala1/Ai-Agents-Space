@@ -3,9 +3,9 @@ import { DEMO_WORKSPACE_ID } from "../../../core/src/WorkspaceHub.js";
 import { schemaVersion } from "../../../core/src/db.js";
 
 /**
- * Workspace, task, agent, run, and demo routes. Returns true when handled.
- * Unscoped legacy routes (/api/tasks, /api/workspace, /api/demo) target the
- * demo workspace or the one named by ?workspace=<id>.
+ * Workspace, task, agent, run, event-history and demo routes. Returns true
+ * when handled. Unscoped legacy routes (/api/tasks, /api/workspace,
+ * /api/demo) target the demo workspace or the one named by ?workspace=<id>.
  */
 export default async function workspaceRoutes(ctx) {
   const { method, path, url, send, body, hub, db } = ctx;
@@ -78,6 +78,19 @@ export default async function workspaceRoutes(ctx) {
   }
   if (method === "GET" && rest === "/runs") {
     send(200, workspace.runs());
+    return true;
+  }
+  // GET /api/workspaces/:id/events?before=<sequence>&limit=<1..500>
+  // One page of the workspace's event history, newest first (the snapshot
+  // holds only the latest 60). { events, nextBefore, total, newest }.
+  if (method === "GET" && rest === "/events") {
+    send(
+      200,
+      workspace.events({
+        before: url.searchParams.get("before"),
+        limit: url.searchParams.get("limit") ?? 100,
+      }),
+    );
     return true;
   }
   if (method === "POST" && rest === "/demo") {

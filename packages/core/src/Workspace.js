@@ -22,6 +22,19 @@ export const ACTIVE_RUN_STATUSES = [
 const CLIENT_SOURCE = /^[a-z][a-z0-9-]{0,23}$/;
 const RESERVED_SOURCES = new Set(["demo", "observed", "simulated"]);
 
+/**
+ * The demo's team relay: Echo's live-stream task hands its result to Sage's
+ * documentation task. Every record it writes says it is simulated.
+ */
+const DEMO_RELAY = "demo-relay";
+const DEMO_RELAY_TEMPLATE = "live-stream-relay";
+/** Scripted subagents for Nova's demo task, opened and closed by progress. */
+const DEMO_SUBAGENTS = [
+  ["Check the cards at phone width", "Collect the icon set"],
+  ["Compare the empty states", "List the missing focus rings"],
+  ["Measure the office frame rate", "Audit the colour contrast"],
+];
+
 function parseJson(value, fallback) {
   try {
     return value ? JSON.parse(value) : fallback;
@@ -154,10 +167,70 @@ export function rowToWorkspace(row) {
 }
 
 /**
+ * An event row as the clients see it. `sequence` is the paging cursor for
+ * Workspace.events(); `data` itself is never sent, only the inferred activity.
+ */
+function rowToEvent(row) {
+  const data = parseJson(row.data, {});
+  const event = {
+    id: row.id,
+    sequence: row.sequence,
+    message: row.message,
+    kind: row.kind,
+    agentId: row.agent_id ?? undefined,
+    runId: row.run_id ?? undefined,
+    taskId: row.task_id ?? undefined,
+    timestamp: row.timestamp,
+    provenance: row.provenance ?? "system",
+    tool: row.tool ?? null,
+    file: row.file ?? null,
+    activity: data.activity ?? null,
+  };
+  // Interactions between agents name their recipient; the office draws them
+  // only when both ends are known agents.
+  if (typeof data.toAgentId === "string") event.toAgentId = data.toAgentId;
+  if (row.kind === "handoff")
+    event.handoff = {
+      fromAgentId: data.fromAgentId ?? row.agent_id ?? null,
+      toAgentId: data.toAgentId ?? null,
+      fromTaskId: data.fromTaskId ?? null,
+      toTaskId: data.toTaskId ?? null,
+      workflowId: data.workflowId ?? null,
+      dispatched: data.dispatched === true,
+      reason: data.reason ?? null,
+      withheld: data.withheld === true,
+      simulated: data.simulated === true,
+      artifacts: Array.isArray(data.artifacts)
+        ? data.artifacts.slice(0, 6).map((artifact) => ({
+            id: artifact?.id ?? null,
+            kind: artifact?.kind ?? null,
+            title: artifact?.title ?? null,
+          }))
+        : [],
+    };
+  if (row.kind === "team")
+    event.team = {
+      workflowId: data.workflowId ?? null,
+      simulated: data.simulated === true,
+      members: Array.isArray(data.members)
+        ? data.members.slice(0, 20).map((member) => ({
+            agentId: member?.agentId ?? null,
+            role: member?.role ?? null,
+          }))
+        : [],
+    };
+  return event;
+}
+
+/**
  * Visible state of an agent. Observed and managed runs report what the
  * provider actually did (activity inferred from tool names, labelled as
  * such); manual and simulated tasks keep the profile's working state; a
  * BLOCKED task always wins.
+ *
+ * For a manual task the state is the working style chosen on the profile,
+ * not something anyone reported, so its provenance is "profile" and clients
+ * show only that the task is in progress. Demo tasks are simulated: "system".
  */
 function agentState(agent, task, run) {
   if (!task) return { state: "IDLE", activityProvenance: null };
@@ -181,7 +254,7 @@ function agentState(agent, task, run) {
   }
   return {
     state: agent.workingState,
-    activityProvenance: task.source === "demo" ? "system" : "user",
+    activityProvenance: task.source === "demo" ? "system" : "profile",
   };
 }
 
@@ -225,19 +298,46 @@ export class Workspace extends EventEmitter {
         "SELECT * FROM events WHERE workspace_id = ? ORDER BY sequence DESC LIMIT ?",
       )
       .all(this.id, limit)
-      .map((row) => ({
-        id: row.id,
-        message: row.message,
-        kind: row.kind,
-        agentId: row.agent_id ?? undefined,
-        runId: row.run_id ?? undefined,
-        taskId: row.task_id ?? undefined,
-        timestamp: row.timestamp,
-        provenance: row.provenance ?? "system",
-        tool: row.tool ?? null,
-        file: row.file ?? null,
-        activity: parseJson(row.data, {}).activity ?? null,
-      }));
+      .map(rowToEvent);
+  }
+
+  /**
+   * One page of this workspace's recorded events, newest first, older than
+   * `before` (a sequence number; omitted = from the newest). The snapshot
+   * carries only the latest 60; this is how a client reads further back.
+   * `nextBefore` is null when nothing older remains. The fields are the
+   * snapshot's own, so nothing is exposed that the live feed does not show.
+   */
+  events({ before = null, limit = 100 } = {}) {
+    const size = Math.min(Math.max(Number(limit) || 100, 1), 500);
+    const cursor = Number(before);
+    const rows =
+      Number.isFinite(cursor) && cursor > 0
+        ? this.db
+            .prepare(
+              "SELECT * FROM events WHERE workspace_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT ?",
+            )
+            .all(this.id, cursor, size + 1)
+        : this.db
+            .prepare(
+              "SELECT * FROM events WHERE workspace_id = ? ORDER BY sequence DESC LIMIT ?",
+            )
+            .all(this.id, size + 1);
+    const more = rows.length > size;
+    const events = rows.slice(0, size).map(rowToEvent);
+    // `total` counts every event up to `newest`, read together, so a client
+    // can add the live events newer than `newest` without counting twice.
+    const counts = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n, MAX(sequence) AS newest FROM events WHERE workspace_id = ?",
+      )
+      .get(this.id);
+    return {
+      events,
+      nextBefore: more ? (events.at(-1)?.sequence ?? null) : null,
+      total: counts?.n ?? 0,
+      newest: counts?.newest ?? null,
+    };
   }
 
   /**
@@ -294,6 +394,48 @@ export class Workspace extends EventEmitter {
         .all(this.id, limit)
         .map((row) => rowToRun(row, now)),
     );
+  }
+
+  /**
+   * Subagents a run started and has not heard back from: delegation events
+   * (Claude Code's Task/Agent tool) whose tool-use id has no tool.end or
+   * error after it. Newest first, at most four. A "subagent finished" hook
+   * event carries no tool-use id and is never counted as open.
+   */
+  #openSubagents(runId) {
+    let rows = [];
+    try {
+      rows = this.db
+        .prepare(
+          `SELECT id, kind, message, timestamp, json_extract(data, '$.toolUseId') AS tool_use_id
+             FROM events
+            WHERE run_id = ? AND kind IN ('delegation', 'tool.end', 'error')
+            ORDER BY sequence DESC LIMIT 400`,
+        )
+        .all(runId);
+    } catch {
+      return [];
+    }
+    const ended = new Set(
+      rows
+        .filter((row) => row.kind !== "delegation" && row.tool_use_id)
+        .map((row) => row.tool_use_id),
+    );
+    const open = [];
+    for (const row of rows) {
+      if (row.kind !== "delegation" || !row.tool_use_id) continue;
+      if (ended.has(row.tool_use_id)) continue;
+      open.push({
+        id: String(row.tool_use_id),
+        description: String(row.message ?? "")
+          .replace(/^Delegated:\s*/i, "")
+          .slice(0, 120),
+        startedAt: row.timestamp,
+        eventId: row.id,
+      });
+      if (open.length >= 4) break;
+    }
+    return open;
   }
 
   /** Runs that currently occupy an agent (queued, running, blocked, waiting, stale). */
@@ -361,6 +503,11 @@ export class Workspace extends EventEmitter {
         lastEventAt: run?.lastEventAt ?? null,
         elapsedMs: run ? Math.max(0, now - run.startedAt) : null,
         tests: run?.tests ?? null,
+        // Simulated runs are the demo's scripted delegations (tick()).
+        subagents:
+          run && ["observed", "managed", "simulated"].includes(run.mode)
+            ? this.#openSubagents(run.id)
+            : [],
       };
     });
     return {
@@ -391,6 +538,49 @@ export class Workspace extends EventEmitter {
         agentId ?? null,
         Date.now(),
       );
+  }
+
+  /**
+   * Records one workspace event with structured data (a handoff names both
+   * agents and the artifacts passed; a team names its members) and
+   * broadcasts. `data` is stored whole; clients only ever get the fields
+   * rowToEvent picks from it.
+   */
+  recordEvent({
+    kind,
+    message,
+    agentId = null,
+    runId = null,
+    taskId = null,
+    data = null,
+    provenance = "system",
+  } = {}) {
+    // A link to a run or task that is not (or no longer) on record is dropped
+    // rather than losing the event to a foreign-key refusal.
+    const known = (table, id) =>
+      id && this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)
+        ? id
+        : null;
+    this.sequence++;
+    this.db
+      .prepare(
+        `INSERT INTO events (id, sequence, workspace_id, run_id, task_id, kind, message, agent_id, timestamp, provenance, data)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        this.sequence,
+        this.id,
+        known("runs", runId),
+        known("tasks", taskId),
+        kind,
+        String(message ?? "").slice(0, 500),
+        agentId,
+        Date.now(),
+        provenance,
+        data ? JSON.stringify(data) : null,
+      );
+    this.emit("change", this.snapshot());
   }
 
   changed(message, kind = "task", agentId, runId) {
@@ -625,7 +815,9 @@ export class Workspace extends EventEmitter {
         [
           "Connect the live event stream",
           "Keep tasks and agent states synchronized across connected clients.",
-          78,
+          // Close to done, so the demo relay's handoff to Sage comes within
+          // about a minute and a half of loading (one point per 8 s tick).
+          90,
           "high",
         ],
         [
@@ -647,11 +839,28 @@ export class Workspace extends EventEmitter {
           "low",
         ],
       ];
+      // Simulated relay records from an earlier load describe tasks that no
+      // longer exist; the new load writes its own.
+      this.db
+        .prepare(
+          "DELETE FROM events WHERE workspace_id = ? AND kind IN ('team', 'handoff') AND json_extract(data, '$.simulated') = 1",
+        )
+        .run(this.id);
       const agents = this.snapshot().agents;
+      let relayFrom = null;
       samples.forEach(([title, description, progress, priority], i) => {
         const agent = agents[i];
         if (!agent || agent.taskId) return;
-        let task = this.store.create({ title, description, priority }, "demo");
+        // Echo's task is the first leg of the demo relay (see DEMO_RELAY).
+        const relay =
+          i === 2
+            ? { workflowId: DEMO_RELAY, templateId: DEMO_RELAY_TEMPLATE }
+            : {};
+        let task = this.store.create(
+          { title, description, priority, ...relay },
+          "demo",
+        );
+        if (i === 2) relayFrom = { task, agent };
         task = this.store.assign(task.id, agent.id);
         const runId = this.#startRun(task, agent);
         task = this.store.update(task.id, {
@@ -667,15 +876,56 @@ export class Workspace extends EventEmitter {
           runId,
         );
       });
-      this.store.create(
+      // The relay's second leg waits for Echo's task, already assigned to
+      // Sage (the way a deployed team's later steps are), and starts when
+      // Echo finishes.
+      const relayTo = agents[5] && !agents[5].taskId ? agents[5] : null;
+      const relayed = Boolean(relayFrom && relayTo);
+      const documentTask = this.store.create(
         {
           title: "Document the integration contract",
           description:
             "Describe how external tools can submit tasks to the local workspace API.",
           priority: "medium",
+          ...(relayed
+            ? {
+                dependsOn: [relayFrom.task.id],
+                workflowId: DEMO_RELAY,
+                templateId: DEMO_RELAY_TEMPLATE,
+              }
+            : {}),
         },
         "demo",
       );
+      if (relayed) {
+        this.db
+          .prepare(
+            "UPDATE tasks SET assigned_agent_id = ?, updated_at = ? WHERE id = ?",
+          )
+          .run(relayTo.id, Date.now(), documentTask.id);
+        this.sequence++;
+        this.db
+          .prepare(
+            `INSERT INTO events (id, sequence, workspace_id, kind, message, agent_id, timestamp, provenance, data)
+             VALUES (?, ?, ?, 'team', ?, ?, ?, 'system', ?)`,
+          )
+          .run(
+            randomUUID(),
+            this.sequence,
+            this.id,
+            `Team assembled for “Live stream relay” (simulated): ${relayFrom.agent.name} (${relayFrom.agent.role}), ${relayTo.name} (${relayTo.role})`,
+            relayFrom.agent.id,
+            Date.now(),
+            JSON.stringify({
+              workflowId: DEMO_RELAY,
+              simulated: true,
+              members: [
+                { agentId: relayFrom.agent.id, role: relayFrom.agent.role },
+                { agentId: relayTo.id, role: relayTo.role },
+              ],
+            }),
+          );
+      }
       this.demoRunning = true;
       this.changed(
         "Demo workspace loaded. All agent activity is simulated.",
@@ -705,10 +955,93 @@ export class Workspace extends EventEmitter {
             task.assignedAgentId,
             runId,
           );
-        }
+          this.#demoHandoffs(updated);
+        } else this.#demoSubagents(updated);
       }
     });
     this.sequence++;
     this.emit("change", this.snapshot());
+  }
+
+  /**
+   * The demo relay's baton: when a demo task finishes, each queued demo task
+   * that was waiting only on finished tasks starts with the agent it was
+   * given, and a handoff naming both agents is recorded as simulated.
+   */
+  #demoHandoffs(finished) {
+    const from = finished.assignedAgentId
+      ? this.profiles.get(finished.assignedAgentId)
+      : null;
+    const tasks = this.store.list();
+    const done = new Set(
+      tasks.filter((t) => t.status === "COMPLETED").map((t) => t.id),
+    );
+    for (const next of tasks) {
+      if (next.source !== "demo" || next.status !== "QUEUE") continue;
+      if (!next.dependsOn?.includes(finished.id)) continue;
+      if (!next.dependsOn.every((id) => done.has(id))) continue;
+      const agentId = next.assignedAgentId;
+      if (!agentId) continue;
+      const agent = this.snapshot().agents.find((a) => a.id === agentId);
+      if (!agent || agent.taskId) continue;
+      const task = this.store.assign(next.id, agentId);
+      const runId = this.#startRun(task, agent);
+      this.#record(
+        `${agent.name} started “${task.title}”`,
+        "task",
+        agentId,
+        runId,
+      );
+      this.recordEvent({
+        kind: "handoff",
+        message: `${from?.name ?? "The previous step"} handed “${finished.title}” on to ${agent.name}, who started “${task.title}” (simulated)`,
+        agentId: from?.id ?? null,
+        runId,
+        taskId: task.id,
+        data: {
+          fromAgentId: from?.id ?? null,
+          toAgentId: agentId,
+          fromTaskId: finished.id,
+          toTaskId: task.id,
+          workflowId: task.workflowId ?? null,
+          artifacts: [],
+          dispatched: true,
+          simulated: true,
+        },
+      });
+    }
+  }
+
+  /**
+   * Scripted subagents on the demo's dashboard task: two open at every
+   * tenth percent plus four, and report back two and four points later, so
+   * the demo office shows helpers stepping out and returning. Simulated
+   * delegation events, recorded like a provider's.
+   */
+  #demoSubagents(task) {
+    if (task.title !== "Build the agent dashboard") return;
+    const run = this.activeRun(task.id);
+    if (!run) return;
+    const step = task.progress % 10;
+    const round = Math.floor(task.progress / 10) % DEMO_SUBAGENTS.length;
+    const id = (index) =>
+      `demo-${task.id.slice(0, 8)}-${task.progress - step}-${index}`;
+    const [first, second] = DEMO_SUBAGENTS[round];
+    const note = (kind, message, toolUseId) =>
+      this.recordEvent({
+        kind,
+        message,
+        agentId: task.assignedAgentId,
+        runId: run.id,
+        taskId: task.id,
+        data: { toolUseId, simulated: true },
+      });
+    if (step === 4) {
+      note("delegation", `Delegated: ${first}`, id(0));
+      note("delegation", `Delegated: ${second}`, id(1));
+    } else if (step === 6)
+      note("tool.end", `Subagent reported back: ${first}`, id(0));
+    else if (step === 8)
+      note("tool.end", `Subagent reported back: ${second}`, id(1));
   }
 }

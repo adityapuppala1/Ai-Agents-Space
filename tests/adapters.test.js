@@ -398,10 +398,10 @@ test("codex approval method table covers v2 and legacy names with schema enums",
   );
 });
 
-async function runAppServer({ approvals, prompt = "run tests" }) {
+async function runAppServer({ approvals, prompt = "run tests", extra = {} }) {
   const state = { sessionId: null };
   const events = [];
-  const services = approvals ? { approvals } : {};
+  const services = { ...(approvals ? { approvals } : {}), ...extra };
   const launch = codexAppServerAdapter.build({
     prompt,
     binary: { command: process.execPath, args: [fakeCli("codex.js")] },
@@ -491,6 +491,73 @@ test("codex app-server adapter denies approvals when no approval service exists"
     ),
   );
   assert.equal(codexAppServerAdapter.finalize(state, code).status, "completed");
+});
+
+test("codex app-server requests go through the workspace policy first", async () => {
+  // A command the policy denies is refused without asking anyone, audited.
+  const asked = [];
+  const audit = [];
+  const deny = await runAppServer({
+    approvals: {
+      request(input) {
+        asked.push(input);
+        return { id: "appr-x", status: "pending" };
+      },
+      async wait() {
+        return { status: "approved", decision: "approve" };
+      },
+    },
+    extra: {
+      policy: {
+        evaluate: ({ request }) => ({
+          decision: "deny",
+          rule: "command.denied",
+          reason: `Command matches the denied list entry “${request.command}”.`,
+        }),
+      },
+      audit: { record: (entry) => audit.push(entry) },
+    },
+  });
+  assert.equal(asked.length, 0, "a denied request never reaches a person");
+  const denied = deny.events.find((e) => e.kind === "approval.decision");
+  assert.equal(denied.data.approved, false);
+  assert.equal(denied.data.rule, "command.denied");
+  assert.equal(denied.provenance, "system");
+  assert.match(denied.summary, /Denied by policy/);
+  assert.ok(
+    deny.events.some(
+      (e) => e.kind === "message" && e.summary === "Command was declined",
+    ),
+  );
+  assert.equal(audit.at(-1).action, "codex.deny");
+  assert.equal(audit.at(-1).details.rule, "command.denied");
+
+  // A request that goes to a person carries the rule (so rule-based dual
+  // approval applies) and the policy's reason.
+  const requests = [];
+  await runAppServer({
+    approvals: {
+      request(input) {
+        requests.push(input);
+        return { id: "appr-2", status: "pending", ...input };
+      },
+      async wait(id) {
+        return { id, status: "approved", decision: "approve" };
+      },
+    },
+    extra: {
+      policy: {
+        evaluate: () => ({
+          decision: "ask",
+          rule: "command.risky",
+          reason: "Risky command needs a human decision.",
+        }),
+      },
+    },
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].rule, "command.risky");
+  assert.match(requests[0].reason, /Risky command needs a human decision/);
 });
 
 test("codex app-server adapter reports failed turns and interrupts", async () => {

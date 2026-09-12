@@ -1,4 +1,11 @@
 import { InputError } from "../../../core/src/TaskStore.js";
+import { CAPABILITIES, PROVIDERS } from "../../../core/src/contracts.js";
+import {
+  SENSITIVITY_LABELS,
+  SENSITIVITY_LEVELS,
+  VENDORS,
+  vendorOf,
+} from "../../../core/src/routing/router.js";
 
 /**
  * Workspace policy routes. Register BEFORE routes/workspaces.js because it
@@ -17,6 +24,55 @@ export default async function policyRoutes(ctx) {
   if (method === "GET" && path === "/api/policy/presets") {
     if (!policy) throw new InputError("Policy engine is not enabled", 503);
     send(200, policy.presets());
+    return true;
+  }
+  // GET /api/routing: the words routing uses (sensitivity labels, vendors,
+  // and which vendor each assistant sends work to).
+  if (method === "GET" && path === "/api/routing") {
+    send(200, {
+      levels: SENSITIVITY_LEVELS,
+      labels: SENSITIVITY_LABELS,
+      vendors: VENDORS,
+      providers: Object.entries(PROVIDERS).map(([id, provider]) => ({
+        id,
+        name: provider.name,
+        vendor: provider.vendor ?? null,
+        vendorId: vendorOf(id),
+      })),
+      capabilities: CAPABILITIES,
+    });
+    return true;
+  }
+  // POST /api/workspaces/:id/route { taskId?, requires?, sensitivity?,
+  // allowExperimental? } → each assistant ranked, with the checks that
+  // decided it. Read-only: nothing is started or changed.
+  const route = path.match(/^\/api\/workspaces\/([^/]+)\/route$/);
+  if (route && method === "POST") {
+    if (!services.router) throw new InputError("Routing is not enabled", 503);
+    const input = (await body()) ?? {};
+    const requires = input.requires ?? [];
+    if (
+      !Array.isArray(requires) ||
+      !requires.every((item) => CAPABILITIES.includes(item))
+    )
+      throw new InputError(
+        `requires must list capabilities from: ${CAPABILITIES.join(", ")}`,
+      );
+    const sensitivity = input.sensitivity ?? null;
+    if (sensitivity !== null && !SENSITIVITY_LEVELS.includes(sensitivity))
+      throw new InputError(
+        `sensitivity must be one of ${SENSITIVITY_LEVELS.join(", ")}`,
+      );
+    send(
+      200,
+      services.router.rank({
+        workspaceId: decodeURIComponent(route[1]),
+        taskId: typeof input.taskId === "string" ? input.taskId : null,
+        requires,
+        sensitivity,
+        allowExperimental: input.allowExperimental !== false,
+      }),
+    );
     return true;
   }
   const scoped = path.match(

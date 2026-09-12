@@ -406,7 +406,10 @@ export class ApprovalService {
           409,
         );
       const approvedBy = approvers({ decisions });
-      if (decision === "approve" && approvedBy.length < approval.requiredDecisions)
+      if (
+        decision === "approve" &&
+        approvedBy.length < approval.requiredDecisions
+      )
         return this.#partialApproval(approval, {
           actor: actorName,
           note: noteText,
@@ -450,7 +453,8 @@ export class ApprovalService {
         note: noteText,
         payloadHash: storedHash,
         requiredDecisions: approval.requiredDecisions,
-        approvers: approval.requiredDecisions > 1 ? approvers({ decisions }) : undefined,
+        approvers:
+          approval.requiredDecisions > 1 ? approvers({ decisions }) : undefined,
       },
     });
     this.services.audit?.record({
@@ -491,7 +495,8 @@ export class ApprovalService {
         "UPDATE approvals SET decisions = ? WHERE id = ? AND status = 'pending'",
       )
       .run(JSON.stringify(decisions), approval.id);
-    const remaining = approval.requiredDecisions - approvers({ decisions }).length;
+    const remaining =
+      approval.requiredDecisions - approvers({ decisions }).length;
     this.services.recorder?.applyEvent(approval.runId, {
       kind: "status",
       provenance: "user",
@@ -1032,6 +1037,9 @@ export class ApprovalService {
 
   /**
    * Everything that needs a person: approvals, broken runs, review requests.
+   * Broken runs are runs Agent Space can act on (managed, manual); a session
+   * observed from the user's own terminal is not a decision here — it cannot
+   * be retried or cancelled from Agent Space and appears on Live sessions.
    * Approvals carry `urgency`, the exact `proposedAction` and the
    * `affectedResources`, and are ordered most urgent first (oldest first
    * within one level). Existing fields are unchanged.
@@ -1058,7 +1066,9 @@ export class ApprovalService {
       .prepare(
         `SELECT r.id, r.workspace_id, r.task_id, r.agent_id, r.provider, r.mode, r.status, r.title, r.error, r.started_at, r.ended_at, r.last_event_at, r.attempt, t.title AS task_title
          FROM runs r LEFT JOIN tasks t ON t.id = r.task_id
-         WHERE r.status IN ('failed', 'stale', 'disconnected') AND (? IS NULL OR r.workspace_id = ?)
+         WHERE r.status IN ('failed', 'stale', 'disconnected')
+           AND COALESCE(r.mode, '') <> 'observed'
+           AND (? IS NULL OR r.workspace_id = ?)
          ORDER BY COALESCE(r.ended_at, r.last_event_at, r.started_at) DESC LIMIT 200`,
       )
       .all(workspaceId, workspaceId);

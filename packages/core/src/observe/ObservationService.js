@@ -1,11 +1,12 @@
 import { basename } from "node:path";
-import { homedir } from "node:os";
-import { openSync, readSync, closeSync, statSync } from "node:fs";
+import { arch, homedir, platform } from "node:os";
+import { openSync, readSync, closeSync, statSync, existsSync } from "node:fs";
 import { PROVIDERS, TERMINAL_RUN_STATUSES } from "../contracts.js";
 import { InputError } from "../TaskStore.js";
 import { DEMO_WORKSPACE_ID } from "../WorkspaceHub.js";
 import { RunRecorder } from "../runs/RunRecorder.js";
 import { transaction } from "../db.js";
+import { detectPassiveSurfaces } from "../providers/surfaces.js";
 import {
   agentUsable,
   ensureProviderAgent,
@@ -263,6 +264,78 @@ export class ObservationService {
          FROM observed_sessions`,
       )
       .get();
+    const liveByProvider = Object.fromEntries(
+      this.db
+        .prepare(
+          `SELECT provider, COUNT(*) AS count
+           FROM observed_sessions
+           WHERE live = 1 AND ended_at IS NULL
+           GROUP BY provider`,
+        )
+        .all()
+        .map((row) => [row.provider, row.count]),
+    );
+    const surfaces = [];
+    for (const observer of this.observers) {
+      let detail = {};
+      try {
+        // Observers without a status() of their own (Claude Code, Codex,
+        // Copilot) still know their vendor home. Its existence is the
+        // installation signal; without it an idle provider read as missing.
+        detail =
+          observer.status?.() ??
+          (observer.home ? { homeExists: existsSync(observer.home) } : {});
+      } catch (error) {
+        detail = { error: String(error?.message ?? error) };
+      }
+      const provider = observer.provider;
+      const liveSessions = liveByProvider[provider] ?? 0;
+      // An observer that judges its own installation (Gemini excludes a home
+      // that only Antigravity created) is authoritative over the bare folder.
+      const installed =
+        typeof detail.installed === "boolean"
+          ? detail.installed
+          : Boolean(detail.homeExists);
+      surfaces.push({
+        id: provider,
+        provider,
+        label: provider,
+        kind: "cli",
+        detected: installed || liveSessions > 0,
+        observable: true,
+        fidelity: detail.unverified
+          ? "unverified-session-files"
+          : detail.experimental
+            ? "conversation-summaries"
+            : "provider-session-files",
+        liveSessions,
+        note: detail.note ?? null,
+        error: detail.error ?? null,
+      });
+      if (detail.antigravity) {
+        surfaces.push({
+          id: "antigravity-ide",
+          provider: "antigravity",
+          label: "Google Antigravity",
+          kind: "ide",
+          detected: Boolean(detail.antigravity.detected),
+          observable: Boolean(detail.antigravity.supported),
+          fidelity: detail.antigravity.supported
+            ? "provider-session-files"
+            : "installation-detection",
+          liveSessions: 0,
+          note:
+            detail.antigravity.note ??
+            "Antigravity was not detected on this machine.",
+          error: null,
+        });
+      }
+    }
+    const existingSurfaceIds = new Set(surfaces.map((surface) => surface.id));
+    for (const surface of detectPassiveSurfaces()) {
+      if (surface.detected && !existingSurfaceIds.has(surface.id))
+        surfaces.push(surface);
+    }
     return {
       enabled: this.enabled(),
       running: this.running,
@@ -270,6 +343,8 @@ export class ObservationService {
       staleAfterMs: this.staleAfter(),
       endAfterMs: this.endAfterMs,
       observers: this.observers.map((observer) => observer.provider),
+      host: { platform: platform(), arch: arch() },
+      surfaces,
       lastPollAt: this.lastPollAt,
       lastErrors: this.lastErrors,
       sessionCounts: {

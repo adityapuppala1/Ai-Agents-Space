@@ -244,6 +244,9 @@ test("summary computes funnel, time breakdown, provider usage, and reported flag
 
   assert.equal(summary.reliability.disconnects, 1);
   assert.equal(summary.reliability.cancellations, 1);
+  // Observed on this machine: the Analytics "Failed runs" tile said "—"
+  // under a "counted" label, because failures were never counted.
+  assert.equal(summary.reliability.failures, 1);
   assert.equal(summary.reliability.retries, 1);
   assert.deepEqual(summary.reliability.retryReasons, { "usage limit": 1 });
   assert.deepEqual(summary.dataQuality, {

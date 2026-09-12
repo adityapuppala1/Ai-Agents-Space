@@ -455,6 +455,7 @@ export class Analytics {
     };
     const allRunning = [];
     const reliability = {
+      failures: 0,
       disconnects: 0,
       cancellations: 0,
       staleEvents: 0,
@@ -513,6 +514,7 @@ export class Analytics {
       for (const name of classifications)
         reliability.retryClassifications[name] =
           (reliability.retryClassifications[name] ?? 0) + 1;
+      if (run.status === "failed") reliability.failures++;
       if (run.status === "disconnected") reliability.disconnects++;
       if (run.status === "cancelled") {
         reliability.cancellations++;

@@ -285,7 +285,11 @@ export class HealthService {
       );
     const breakers = providers.breakers;
     if (breakers && typeof breakers === "object") {
-      for (const [provider, state] of Object.entries(breakers)) {
+      // RunWorker.providerHealth() answers an array of { provider, state };
+      // a keyed object is still accepted. Name the provider from the entry,
+      // or an array index ends up in the alert ("breaker for 0").
+      for (const [key, state] of Object.entries(breakers)) {
+        const provider = state?.provider ?? key;
         const open =
           state === "open" ||
           state?.state === "open" ||

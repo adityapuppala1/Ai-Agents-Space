@@ -135,6 +135,11 @@ export function toolEvents(
     kind = "search";
   else if (/^(webfetch|websearch|web_fetch|web_search|fetch)$/i.test(tool))
     kind = "web";
+  // A subagent (Claude Code's Task/Agent tool): recorded as a delegation
+  // carrying the tool-use id, so the snapshot can tell when it reports back
+  // (Workspace#openSubagents). Observed sessions and hooks already did this;
+  // managed runs did not, so a team step's subagents never showed.
+  else if (activity === "DELEGATING") kind = "delegation";
   else if (command) kind = isTestCommand(command) ? "test" : "command";
   if (kind)
     events.push(
@@ -142,17 +147,21 @@ export function toolEvents(
         ...base,
         providerEventId: id ? `${provider}:tool:${id}:${kind}` : null,
         kind,
-        summary:
-          kind === "command" || kind === "test"
-            ? `Running ${clip(command, 100)}`
-            : kind === "file.edit"
-              ? `Editing ${clip(file, 100)}`
-              : kind === "file.read"
-                ? `Reading ${clip(file, 100)}`
-                : summaryParts.join(" "),
+        summary: secondarySummary(kind, { command, file, args, summaryParts }),
       }),
     );
   return events;
+}
+
+/** The summary of the event a tool call adds beside its tool.start. */
+function secondarySummary(kind, { command, file, args, summaryParts }) {
+  if (kind === "command" || kind === "test")
+    return `Running ${clip(command, 100)}`;
+  if (kind === "file.edit") return `Editing ${clip(file, 100)}`;
+  if (kind === "file.read") return `Reading ${clip(file, 100)}`;
+  if (kind === "delegation")
+    return `Delegated: ${clip(args.description ?? args.prompt ?? "subagent", 100)}`;
+  return summaryParts.join(" ");
 }
 
 /** Builds the prompt sent to the provider from the task record. */

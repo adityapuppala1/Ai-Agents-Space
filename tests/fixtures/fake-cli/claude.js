@@ -6,6 +6,8 @@
  *   WRITE_FILE → writes fake-output.txt into cwd and emits an Edit tool_use
  *   HANG       → sleeps 60 s before the result (for cancel tests)
  *   FAIL       → emits an error result and exits 1
+ *   SNIPPET    → emits one message holding three fenced blocks: an untargeted
+ *                python one, a js one that names src/app.js, and a text one
  * Accepts -C/--cwd <dir> and --version. Never touches real provider homes.
  */
 import { readFileSync, writeFileSync } from "node:fs";
@@ -47,6 +49,29 @@ const rewrite = (record) => {
 const wantsWrite = /WRITE_FILE/.test(prompt);
 const wantsHang = /HANG/.test(prompt);
 const wantsFail = /FAIL/.test(prompt);
+const wantsSnippet = /SNIPPET/.test(prompt);
+
+const fence = "```";
+const snippetMessage = [
+  "Here is the sorting helper you asked about:",
+  "",
+  `${fence}python`,
+  "def sort_pairs(pairs):",
+  "    return sorted(pairs, key=lambda pair: (pair[1], pair[0]))",
+  fence,
+  "",
+  "And the same idea for the entry point:",
+  "",
+  `${fence}js src/app.js`,
+  "export const boot = () => start();",
+  'console.log("ready");',
+  fence,
+  "",
+  `${fence}text`,
+  "build finished in 4.2 seconds",
+  "0 errors, 0 warnings reported",
+  fence,
+].join("\n");
 
 (async () => {
   for (const record of lines) {
@@ -124,6 +149,22 @@ const wantsFail = /FAIL/.test(prompt);
             content: "1 passing",
           },
         ],
+      },
+      session_id: sessionId,
+      uuid: randomUUID(),
+      timestamp: new Date().toISOString(),
+    });
+    await sleep(10);
+  }
+  if (wantsSnippet) {
+    emit({
+      type: "assistant",
+      message: {
+        model: "claude-haiku-4-5-20251001",
+        id: `msg_fake_${randomUUID().slice(0, 8)}`,
+        role: "assistant",
+        content: [{ type: "text", text: snippetMessage }],
+        usage: { input_tokens: 4, output_tokens: 9 },
       },
       session_id: sessionId,
       uuid: randomUUID(),

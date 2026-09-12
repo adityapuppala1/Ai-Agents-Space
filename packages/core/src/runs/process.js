@@ -56,13 +56,27 @@ export function envKeyFor(providerId) {
   return `AGENT_SPACE_BIN_${String(providerId).toUpperCase().replace(/-/g, "_")}`;
 }
 
-function lookup(name, { timeoutMs = 5000 } = {}) {
+function lookup(name, { timeoutMs = 5000, env = process.env } = {}) {
   const tool = process.platform === "win32" ? "where" : "which";
+  // Windows `where.exe` can consult the parent PATH despite a scoped child
+  // environment. Resolve the supplied PATH directly before falling back.
+  const separator = process.platform === "win32" ? ";" : ":";
+  const extensions = process.platform === "win32"
+    ? String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((value) => value.trim())
+    : [""];
+  const paths = String(env.PATH ?? env.Path ?? "")
+    .split(separator)
+    .map((value) => value.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean)
+    .flatMap((folder) => [name, ...extensions.map((extension) => `${name}${extension}`)].map((candidate) => resolvePath(folder, candidate)))
+    .filter(existsSync);
+  if (paths.length) return pickExecutable(paths, { env }) ?? paths[0];
   try {
     const out = execFileSync(tool, [name], {
       encoding: "utf8",
       timeout: timeoutMs,
       windowsHide: true,
+      env,
       stdio: ["ignore", "pipe", "ignore"],
     });
     const lines = out
@@ -97,7 +111,7 @@ export function resolveBinary(providerId, env = process.env, options = {}) {
   if (!options.noCache && cache.has(key)) return cache.get(key);
   let result = null;
   for (const name of names) {
-    const found = (options.which ?? lookup)(name);
+    const found = (options.which ?? ((binary) => lookup(binary, { env })))(name);
     if (found) {
       result = { command: found, args: [], resolved: true, source: "path" };
       break;

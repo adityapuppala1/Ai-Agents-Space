@@ -813,3 +813,100 @@ test("createScheduler attaches services.scheduler and stops its timer on close",
   await services.close();
   assert.equal(scheduler.timer, null);
 });
+
+test("scheduling is turned on and off without a restart, audited, and the setting is public", async () => {
+  const ctx = setup({ enabled: false });
+  try {
+    const { services, scheduler } = ctx;
+    // A documented, validated setting the browser can see.
+    assert.equal(services.settings.get(SETTING_SCHEDULER_ENABLED), false);
+    assert.equal(services.settings.publicSubset()["scheduler.enabled"], false);
+    assert.throws(
+      () => services.settings.set(SETTING_SCHEDULER_ENABLED, "yes"),
+      /true or false/,
+    );
+    assert.equal(scheduler.timer, null);
+
+    const on = await routeCall(services, "POST", "/api/scheduler/enabled", {
+      enabled: true,
+    });
+    assert.equal(on.status, 200);
+    assert.equal(on.data.enabled, true);
+    assert.equal(on.data.running, true);
+    assert.ok(
+      scheduler.timer,
+      "the timer starts at once, not at the next boot",
+    );
+    assert.equal(audits(services, "scheduler.enable")[0].actor, "local-user");
+
+    const off = await routeCall(services, "POST", "/api/scheduler/enabled", {
+      enabled: false,
+    });
+    assert.equal(off.data.enabled, false);
+    assert.equal(off.data.running, false);
+    assert.equal(scheduler.timer, null);
+    assert.equal(audits(services, "scheduler.disable").length, 1);
+    await assert.rejects(
+      () =>
+        routeCall(services, "POST", "/api/scheduler/enabled", {
+          enabled: "on",
+        }),
+      /true or false/,
+    );
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("a schedule's next run times are previewed in its zone without writing anything", async () => {
+  const ctx = setup({ enabled: false });
+  try {
+    const { services } = ctx;
+    const before = services.db
+      .prepare("SELECT COUNT(*) AS n FROM schedules")
+      .get().n;
+    const preview = await routeCall(
+      services,
+      "POST",
+      "/api/schedules/preview",
+      {
+        expression: "0 9 * * 1-5",
+        timeZone: NY,
+        count: 3,
+      },
+    );
+    assert.equal(preview.status, 200);
+    assert.equal(preview.data.occurrences.length, 3);
+    for (const at of preview.data.occurrences) {
+      const wall = wallClock(at, NY);
+      assert.equal(wall.hour, 9);
+      assert.equal(wall.minute, 0);
+    }
+    // Strictly increasing, from the scheduler's clock.
+    const [a, b, c] = preview.data.occurrences;
+    assert.ok(a > ctx.clock.now && b > a && c > b);
+    // Nothing was written.
+    assert.equal(
+      services.db.prepare("SELECT COUNT(*) AS n FROM schedules").get().n,
+      before,
+    );
+    await assert.rejects(
+      () =>
+        routeCall(services, "POST", "/api/schedules/preview", {
+          expression: "not cron",
+          timeZone: NY,
+        }),
+      InputError,
+    );
+    await assert.rejects(
+      () =>
+        routeCall(services, "POST", "/api/schedules/preview", {
+          expression: "0 9 * * *",
+          timeZone: "Mars/Olympus",
+        }),
+      /Unknown time zone/,
+    );
+  } finally {
+    ctx.cleanup();
+  }
+});

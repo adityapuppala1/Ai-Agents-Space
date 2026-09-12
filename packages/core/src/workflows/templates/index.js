@@ -197,6 +197,18 @@ export const CONNECTOR_NAMES = Object.freeze(Object.keys(CONNECTOR_VOCABULARY));
 /** Priorities from the roadmap section 14 table. */
 export const PRIORITIES = Object.freeze(["Launch", "Growth", "Explore"]);
 
+/** Visual environments a workflow pack may recommend to the client. */
+export const RECOMMENDED_ENVIRONMENTS = Object.freeze([
+  "studio",
+  "operations",
+  "garden",
+  "midnight",
+  "sandstone",
+  "data-lab",
+  "research-library",
+  "creative-studio",
+]);
+
 /** Branch conditions a template step may carry (mirrors TaskGraph.BRANCH_WHEN). */
 const BRANCH_WHEN = [
   "previous.status",
@@ -381,6 +393,14 @@ export function validateTemplate(template) {
   if (!PRIORITIES.includes(template.priority))
     fail(id, `priority must be one of ${PRIORITIES.join(", ")}`);
   if (
+    template.recommendedEnvironment !== undefined &&
+    !RECOMMENDED_ENVIRONMENTS.includes(template.recommendedEnvironment)
+  )
+    fail(
+      id,
+      `recommendedEnvironment must be one of ${RECOMMENDED_ENVIRONMENTS.join(", ")}`,
+    );
+  if (
     typeof template.requiredResult !== "string" ||
     !template.requiredResult.trim()
   )
@@ -466,6 +486,31 @@ export function validateTemplate(template) {
   return true;
 }
 
+const PLACEHOLDER = /\{\{\s*([\w.-]+)\s*\}\}/g;
+
+/**
+ * The input keys a template's steps use (`{{client}}` → "client"), sorted.
+ * A template instantiated without one of them would create tasks whose
+ * titles and briefs still read "{{client}}".
+ */
+export function templateInputKeys(template) {
+  const keys = new Set();
+  const visit = (value) => {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object")
+      Object.values(value).forEach(visit);
+    else if (typeof value === "string")
+      for (const match of value.matchAll(PLACEHOLDER)) keys.add(match[1]);
+  };
+  visit(template?.steps ?? []);
+  return [...keys].sort();
+}
+
+const withInputKeys = (template) => ({
+  ...structuredClone(template),
+  inputKeys: templateInputKeys(template),
+});
+
 export function listTemplates() {
   const templates = load();
   const ordered = TEMPLATE_ORDER.filter((id) => templates.has(id)).map((id) =>
@@ -473,13 +518,13 @@ export function listTemplates() {
   );
   for (const [id, template] of templates)
     if (!TEMPLATE_ORDER.includes(id)) ordered.push(template);
-  return ordered.map((template) => structuredClone(template));
+  return ordered.map(withInputKeys);
 }
 
 export function getTemplate(id) {
   const template = load().get(String(id));
   if (!template) throw new InputError(`Template ${id} not found`, 404);
-  return structuredClone(template);
+  return withInputKeys(template);
 }
 
 /**

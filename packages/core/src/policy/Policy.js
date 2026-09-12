@@ -2,8 +2,17 @@ import { resolve as resolvePath, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { InputError } from "../TaskStore.js";
 import {
+  SENSITIVITY_LEVELS,
+  VENDORS,
+  capRefusal,
+  dataRefusal,
+  effectiveSensitivity,
+  providerTokensToday,
+} from "../routing/router.js";
+import {
   AUTONOMY_PRESETS,
   DEFAULT_POLICY,
+  PROVIDERS,
   isSecretPath,
 } from "../contracts.js";
 
@@ -289,6 +298,16 @@ export function findRisky(command) {
  *   allowedProviders     provider must be listed (empty = any).
  *   allowedDestinations  [{ host, ports?, scheme? }] network allow list;
  *                        empty keeps the single allowedNetwork switch.
+ *   dataSensitivity      default label for this workspace's tasks (a task
+ *                        may raise its own, never lower it); null = none.
+ *   dataRules            { label: [vendor] } which vendors may receive work
+ *                        with that label; a label with no rule may go
+ *                        anywhere, an empty list nowhere (routing/router.js).
+ *   providerDailyTokens  { provider: tokens } daily cap per assistant,
+ *                        against provider-reported usage in this workspace.
+ *   routingPreference    [provider] tie-break order when ranking assistants.
+ *   minEvaluations       graded results an assistant needs before its pass
+ *                        rate ranks it (default 5).
  */
 export const POLICY_EXTENSION_DEFAULTS = Object.freeze({
   dualApprovalFor: [],
@@ -297,7 +316,86 @@ export const POLICY_EXTENSION_DEFAULTS = Object.freeze({
   allowedModels: [],
   allowedProviders: [],
   allowedDestinations: [],
+  dataSensitivity: null,
+  dataRules: {},
+  providerDailyTokens: {},
+  routingPreference: [],
+  minEvaluations: 5,
 });
+
+const PROVIDER_KEYS = Object.keys(PROVIDERS);
+
+function validateRouting(input, out) {
+  if (input.dataSensitivity !== undefined) {
+    const label = input.dataSensitivity;
+    if (label !== null && !SENSITIVITY_LEVELS.includes(label))
+      throw new InputError(
+        `dataSensitivity must be null or one of ${SENSITIVITY_LEVELS.join(", ")}`,
+      );
+    out.dataSensitivity = label;
+  }
+  if (input.dataRules !== undefined) {
+    const rules = input.dataRules;
+    if (!rules || typeof rules !== "object" || Array.isArray(rules))
+      throw new InputError(
+        "dataRules must be an object of { label: [vendor] }",
+      );
+    const clean = {};
+    for (const [label, vendors] of Object.entries(rules)) {
+      if (!SENSITIVITY_LEVELS.includes(label))
+        throw new InputError(
+          `dataRules label “${label}” must be one of ${SENSITIVITY_LEVELS.join(", ")}`,
+        );
+      if (vendors === null) continue; // no rule for this label
+      if (!Array.isArray(vendors) || !vendors.every((v) => VENDORS[v]))
+        throw new InputError(
+          `dataRules.${label} must list vendors from: ${Object.keys(VENDORS).join(", ")}`,
+        );
+      clean[label] = [...new Set(vendors)];
+    }
+    out.dataRules = clean;
+  }
+  if (input.providerDailyTokens !== undefined) {
+    const caps = input.providerDailyTokens;
+    if (!caps || typeof caps !== "object" || Array.isArray(caps))
+      throw new InputError(
+        "providerDailyTokens must be an object of { provider: tokens }",
+      );
+    const clean = {};
+    for (const [provider, cap] of Object.entries(caps)) {
+      if (!PROVIDER_KEYS.includes(provider))
+        throw new InputError(
+          `providerDailyTokens: unknown provider “${provider}”`,
+        );
+      if (cap === null) continue;
+      if (!Number.isInteger(cap) || cap < 1 || cap > 1e9)
+        throw new InputError(
+          `providerDailyTokens.${provider} must be null or a whole number of tokens from 1 to 1000000000`,
+        );
+      clean[provider] = cap;
+    }
+    out.providerDailyTokens = clean;
+  }
+  const preference = stringList(
+    input.routingPreference,
+    "routingPreference",
+    20,
+  );
+  if (preference !== undefined) {
+    const unknown = preference.find((id) => !PROVIDER_KEYS.includes(id));
+    if (unknown)
+      throw new InputError(`routingPreference: unknown provider “${unknown}”`);
+    out.routingPreference = [...new Set(preference)];
+  }
+  if (input.minEvaluations !== undefined) {
+    const n = input.minEvaluations;
+    if (!Number.isInteger(n) || n < 1 || n > 1000)
+      throw new InputError(
+        "minEvaluations must be a whole number from 1 to 1000",
+      );
+    out.minEvaluations = n;
+  }
+}
 
 const DEFAULT_PORTS = { http: 80, https: 443, ftp: 21, ws: 80, wss: 443 };
 
@@ -358,7 +456,11 @@ export function matchDestination(destination, allowedDestinations) {
   for (const entry of allowedDestinations ?? []) {
     if (!entry || typeof entry !== "object") continue;
     if (!hostMatches(entry.host, destination.host)) continue;
-    if (entry.scheme && destination.scheme && entry.scheme !== destination.scheme)
+    if (
+      entry.scheme &&
+      destination.scheme &&
+      entry.scheme !== destination.scheme
+    )
       continue;
     if (Array.isArray(entry.ports) && entry.ports.length) {
       if (destination.port === null || !entry.ports.includes(destination.port))
@@ -532,6 +634,7 @@ export function validatePolicy(input, { partial = true } = {}) {
   const allowedDestinations = validateDestinations(input.allowedDestinations);
   if (allowedDestinations !== undefined)
     out.allowedDestinations = allowedDestinations;
+  validateRouting(input, out);
   return out;
 }
 
@@ -558,6 +661,26 @@ export function mergePolicy(base, override) {
     merged.escalateAfterMs = POLICY_EXTENSION_DEFAULTS.escalateAfterMs;
   if (typeof merged.escalationReviewer !== "string")
     merged.escalationReviewer = null;
+  // Routing fields: copies, so a caller can never edit the stored policy.
+  for (const key of ["dataRules", "providerDailyTokens"])
+    merged[key] =
+      merged[key] &&
+      typeof merged[key] === "object" &&
+      !Array.isArray(merged[key])
+        ? Object.fromEntries(
+            Object.entries(merged[key]).map(([k, v]) => [
+              k,
+              Array.isArray(v) ? [...v] : v,
+            ]),
+          )
+        : {};
+  merged.routingPreference = Array.isArray(merged.routingPreference)
+    ? [...merged.routingPreference]
+    : [];
+  if (!SENSITIVITY_LEVELS.includes(merged.dataSensitivity))
+    merged.dataSensitivity = null;
+  if (!Number.isInteger(merged.minEvaluations) || merged.minEvaluations < 1)
+    merged.minEvaluations = POLICY_EXTENSION_DEFAULTS.minEvaluations;
   merged.budget = {
     ...DEFAULT_POLICY.budget,
     ...(base?.budget ?? {}),
@@ -787,7 +910,8 @@ export class Policy {
     let chosenConnection = connection ?? null;
     if (!chosenConnection && connectionId) {
       try {
-        chosenConnection = this.services.connections?.get?.(connectionId) ?? null;
+        chosenConnection =
+          this.services.connections?.get?.(connectionId) ?? null;
       } catch {
         chosenConnection = null;
       }
@@ -831,7 +955,39 @@ export class Policy {
       connection: chosenConnection,
     });
     if (access)
-      return { allowed: false, reason: access.reason, rule: access.rule, effective };
+      return {
+        allowed: false,
+        reason: access.reason,
+        rule: access.rule,
+        effective,
+      };
+    // Data rules and per-assistant caps come from the workspace policy only:
+    // a task can raise its own label (override.sensitivity), never loosen a
+    // rule.
+    const label = effectiveSensitivity(policy, override?.sensitivity ?? null);
+    effective.sensitivity = label;
+    if (provider) {
+      const data = dataRefusal(policy, label, provider);
+      if (data)
+        return {
+          allowed: false,
+          reason: data.reason,
+          rule: data.rule,
+          effective,
+        };
+      const cap = capRefusal(
+        policy,
+        provider,
+        providerTokensToday(this.db, id, provider, this.now()),
+      );
+      if (cap)
+        return {
+          allowed: false,
+          reason: cap.reason,
+          rule: cap.rule,
+          effective,
+        };
+    }
     const perDay = policy.budget?.maxRunsPerDay;
     if (perDay && this.#runsToday(id) >= perDay)
       return {
@@ -1095,7 +1251,11 @@ export class Policy {
         "ask",
         "network.destination.unlisted",
         `Destination ${label} is not on the allowed destinations list; a human must decide.`,
-        { target, destination, allowedDestinations: policy.allowedDestinations },
+        {
+          target,
+          destination,
+          allowedDestinations: policy.allowedDestinations,
+        },
       ];
     return [
       "deny",
@@ -1167,7 +1327,9 @@ export class Policy {
     const ruleId =
       typeof rule === "string" ? rule : (rule?.id ?? rule?.rule ?? null);
     return (
-      (kind && list.includes(kind)) || (ruleId && list.includes(ruleId)) || false
+      (kind && list.includes(kind)) ||
+      (ruleId && list.includes(ruleId)) ||
+      false
     );
   }
 }

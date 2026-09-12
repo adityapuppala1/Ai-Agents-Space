@@ -7,6 +7,7 @@ export const WORKING_STATES = [
   "TESTING",
   "DEBUGGING",
   "RESEARCHING",
+  "REVIEWING",
 ];
 
 export const DEFAULT_AGENTS = [

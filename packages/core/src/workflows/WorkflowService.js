@@ -1,9 +1,18 @@
 import { randomUUID, createHash } from "node:crypto";
 import { InputError } from "../TaskStore.js";
+import { PROVIDERS } from "../contracts.js";
+import { WORKING_STATES } from "../AgentProfiles.js";
 import { transaction } from "../db.js";
 import { TaskGraph, validateBranchCondition } from "./TaskGraph.js";
 import { validateContract, contractIsEmpty } from "./contracts.js";
-import { getTemplate, listTemplates, interpolate } from "./templates/index.js";
+import {
+  getTemplate,
+  listTemplates,
+  interpolate,
+  templateInputKeys,
+  validateTemplate,
+} from "./templates/index.js";
+import { stepsToNodes, definitionEdges, diffDefinitions } from "./editor.js";
 
 /** The on-disk/Git format version of an exported workflow document. */
 export const WORKFLOW_FORMAT_VERSION = 1;
@@ -178,6 +187,7 @@ export class WorkflowService {
       inputs = {},
       provider = null,
       agentByRole = {},
+      providerByRole = {},
       contracts = {},
       actor = "local-user",
     } = {},
@@ -186,6 +196,19 @@ export class WorkflowService {
     const template = getTemplate(templateId);
     if (!inputs || typeof inputs !== "object" || Array.isArray(inputs))
       throw new InputError("inputs must be an object");
+    // A missing input would leave "{{key}}" in task titles and briefs; refuse
+    // before anything is written rather than create tasks nobody can read.
+    const missing = (template.inputKeys ?? templateInputKeys(template)).filter(
+      (key) =>
+        inputs[key] === undefined ||
+        inputs[key] === null ||
+        String(inputs[key]).trim() === "",
+    );
+    if (missing.length)
+      throw new InputError(
+        `"${template.name}" needs a value for: ${missing.join(", ")}. Nothing was created.`,
+        400,
+      );
     if (provider !== null && typeof provider !== "string")
       throw new InputError("provider must be a string");
     const agentIds = new Map();
@@ -268,7 +291,8 @@ export class WorkflowService {
           "workflow",
         );
         const dependsOn = (step.dependsOn ?? []).map((key) => idByKey.get(key));
-        const stepProvider = step.provider ?? provider ?? null;
+        const stepProvider =
+          step.provider ?? providerByRole?.[step.role] ?? provider ?? null;
         const agentId = agentIds.get(step.role) ?? null;
         this.db
           .prepare(
@@ -333,6 +357,169 @@ export class WorkflowService {
       );
       return this.get(workflowId);
     });
+  }
+
+  /**
+   * Deploys a team: staffs every role of a template, creates the workflow,
+   * records who is on the team, and (with `start`) starts the steps that
+   * wait on nothing. Later steps start as their inputs are handed over
+   * (TaskGraph.onTaskCompleted records each handoff).
+   *
+   *   agentByRole     { roleKey: agentId } existing profiles
+   *   providerByRole  { roleKey: provider } the assistant each role runs on
+   *   createAgents    true: create a profile for each role left unstaffed;
+   *                   a list of role keys: only for those roles (a profile
+   *                   with the role's name is reused, never doubled)
+   *   start           start the ready first steps now
+   *
+   * Returns { workflow, team: [{ roleKey, role, agentId, agentName, provider,
+   * created }], started: [{ taskId, runId?, error? }] }.
+   */
+  async deploy(workspaceId, templateId, options = {}) {
+    const {
+      inputs = {},
+      provider = null,
+      agentByRole = {},
+      providerByRole = {},
+      createAgents = false,
+      start = false,
+      contracts = {},
+      actor = "local-user",
+    } = options;
+    const workspace = this.hub.get(workspaceId);
+    const template = getTemplate(templateId);
+    const roles = Array.isArray(template.roles) ? template.roles : [];
+    for (const [key, value] of Object.entries(providerByRole ?? {}))
+      if (value !== null && value !== undefined && !PROVIDERS[value])
+        throw new InputError(`Unknown provider "${value}" for role ${key}`);
+    const staffed = { ...(agentByRole ?? {}) };
+    const team = [];
+    const palette = [
+      "#7d8cc4",
+      "#4f9d8a",
+      "#c27c83",
+      "#c29552",
+      "#6f86b8",
+      "#8a9d62",
+      "#9b6fb3",
+      "#4f9dc7",
+    ];
+    // Check every staffed profile before anything is written.
+    for (const role of roles)
+      if (staffed[role.key])
+        workspace.profiles.get(staffed[role.key], { includeArchived: false });
+    // true staffs every unstaffed role; a list of role keys only those.
+    const wantsProfile = (role) =>
+      createAgents === true ||
+      (Array.isArray(createAgents) && createAgents.includes(role.key));
+    roles.forEach((role, index) => {
+      const roleProvider = providerByRole?.[role.key] ?? provider ?? null;
+      let agentId = staffed[role.key] ?? null;
+      let created = false;
+      if (!agentId && wantsProfile(role)) {
+        const existing = workspace.profiles
+          .list()
+          .find(
+            (profile) =>
+              String(profile.name).toLowerCase() ===
+              String(role.name).toLowerCase(),
+          );
+        if (existing) agentId = existing.id;
+        else {
+          const agent = workspace.createAgent({
+            name: String(role.name).slice(0, 40),
+            role: String(role.name).slice(0, 60),
+            color: palette[index % palette.length],
+            workingState: WORKING_STATES.includes(role.workingState)
+              ? role.workingState
+              : "CODING",
+            provider: roleProvider,
+            skills: Array.isArray(role.skills) ? role.skills : [],
+          });
+          agentId = agent.id;
+          created = true;
+        }
+        staffed[role.key] = agentId;
+      }
+      let agentName = null;
+      try {
+        agentName = agentId ? workspace.profiles.get(agentId).name : null;
+      } catch {
+        agentName = null;
+      }
+      team.push({
+        roleKey: role.key,
+        role: role.name,
+        agentId,
+        agentName,
+        provider: roleProvider,
+        created,
+      });
+    });
+    const workflow = this.instantiate(workspaceId, templateId, {
+      inputs,
+      provider,
+      agentByRole: staffed,
+      providerByRole,
+      contracts,
+      actor,
+    });
+    const members = team.filter((member) => member.agentId);
+    if (members.length)
+      workspace.recordEvent({
+        kind: "team",
+        message: `Team assembled for “${workflow.name}”: ${members
+          .map((member) => `${member.agentName} (${member.role})`)
+          .join(", ")}`,
+        data: {
+          workflowId: workflow.id,
+          members: members.map((member) => ({
+            agentId: member.agentId,
+            role: member.role,
+          })),
+        },
+      });
+    const started = [];
+    if (start) {
+      const tasks = this.#tasks(workflow.id);
+      for (const task of tasks) {
+        if ((task.dependsOn ?? []).length || !task.provider) continue;
+        try {
+          const run = await this.services.runWorker?.start?.({
+            workspaceId,
+            taskId: task.id,
+            agentId: task.assignedAgentId ?? undefined,
+            provider: task.provider,
+            actor,
+          });
+          started.push({ taskId: task.id, runId: run?.id ?? null });
+        } catch (error) {
+          started.push({ taskId: task.id, error: error.message });
+          workspace.changed(
+            `Could not start “${task.title}”: ${error.message}`,
+            "error",
+            task.assignedAgentId ?? undefined,
+          );
+        }
+      }
+    }
+    this.services.audit?.record?.({
+      actor,
+      action: "workflow.deploy",
+      target: workflow.id,
+      workspaceId,
+      details: {
+        templateId: template.id,
+        team: team.map((member) => ({
+          role: member.roleKey,
+          agentId: member.agentId,
+          provider: member.provider,
+          created: member.created,
+        })),
+        started: started.length,
+      },
+    });
+    return { workflow: this.get(workflow.id), team, started };
   }
 
   #tasks(workflowId) {
@@ -444,6 +631,60 @@ export class WorkflowService {
   }
 
   /**
+   * Stores a definition as the next version of an existing workflow and makes
+   * it the current draft.
+   *
+   * The single write path for a new version, so an imported document and a
+   * structural edit produce identical rows and differ only in the audit action
+   * they record. Publishing stays a separate, deliberate step.
+   */
+  #storeVersion(
+    row,
+    definition,
+    { actor = "local-user", action, details = {} },
+  ) {
+    const hash = definitionHash(definition);
+    const next = (row.version ?? 1) + 1;
+    const now = Date.now();
+    return transaction(this.db, () => {
+      this.db
+        .prepare(
+          `INSERT INTO workflow_versions (id, workflow_id, version, definition, definition_hash, created_at, created_by, published_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(
+          randomUUID(),
+          row.id,
+          next,
+          JSON.stringify(definition),
+          hash,
+          now,
+          actor,
+        );
+      this.db
+        .prepare(
+          "UPDATE workflows SET version = ?, definition = ?, definition_hash = ?, status = 'draft', published_at = NULL, updated_at = ? WHERE id = ?",
+        )
+        .run(next, JSON.stringify(definition), hash, now, row.id);
+      this.services.audit?.record?.({
+        actor,
+        action,
+        target: row.id,
+        workspaceId: row.workspace_id,
+        details: {
+          version: next,
+          definitionHash: hash,
+          status: "draft",
+          ...details,
+        },
+      });
+      // #recompute() would report the task state; the row this call just wrote
+      // is the truth about the version and its draft status.
+      return { ...this.get(row.id), version: next, status: "draft" };
+    });
+  }
+
+  /**
    * exportWorkflow(id) → a deterministic JSON document.
    *
    * The same workflow always produces byte-identical JSON (keys sorted, no
@@ -498,38 +739,11 @@ export class WorkflowService {
     const existing = json.id
       ? this.db.prepare("SELECT * FROM workflows WHERE id = ?").get(json.id)
       : null;
-    if (existing) {
-      const next = (existing.version ?? 1) + 1;
-      return transaction(this.db, () => {
-        this.db
-          .prepare(
-            `INSERT INTO workflow_versions (id, workflow_id, version, definition, definition_hash, created_at, created_by, published_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-          )
-          .run(
-            randomUUID(),
-            existing.id,
-            next,
-            JSON.stringify(definition),
-            hash,
-            now,
-            actor,
-          );
-        this.db
-          .prepare(
-            "UPDATE workflows SET version = ?, definition = ?, definition_hash = ?, status = 'draft', published_at = NULL, updated_at = ? WHERE id = ?",
-          )
-          .run(next, JSON.stringify(definition), hash, now, existing.id);
-        this.services.audit?.record?.({
-          actor,
-          action: "workflow.import",
-          target: existing.id,
-          workspaceId: existing.workspace_id,
-          details: { version: next, definitionHash: hash, status: "draft" },
-        });
-        return { ...this.get(existing.id), version: next, status: "draft" };
+    if (existing)
+      return this.#storeVersion(existing, definition, {
+        actor,
+        action: "workflow.import",
       });
-    }
     const targetWorkspace = workspaceId ?? json.workspaceId;
     if (!targetWorkspace)
       throw new InputError(
@@ -819,5 +1033,173 @@ export class WorkflowService {
   validateGraph(id) {
     const row = this.#row(id);
     return this.graph.validateWorkflow(row.workspace_id, { workflowId: id });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Editing the step graph inside the definition                        */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The step graph as an editor needs it: the definition itself plus the
+   * nodes and edges already inside it, and the vocabularies an edit must stay
+   * within (roles, required tools, inputs).
+   */
+  definitionGraph(id) {
+    const row = this.#row(id);
+    const definition = parseJson(row.definition, {});
+    const owner = row.owner ?? "agent-space";
+    return {
+      workflowId: id,
+      workspaceId: row.workspace_id,
+      name: row.name,
+      version: row.version ?? 1,
+      status: row.status,
+      definitionHash: row.definition_hash ?? null,
+      // #recompute() rewrites `status` from the task state, so a version that
+      // was never published shows as active there. published_at is the durable
+      // answer to "has anyone signed this version off".
+      publishedAt: row.published_at ?? null,
+      definition,
+      steps: definition.steps ?? [],
+      edges: definitionEdges(definition),
+      roles: definition.roles ?? [],
+      requiredTools: definition.requiredTools ?? [],
+      inputs: definition.inputs ?? {},
+      owner,
+      editable: owner === "agent-space",
+    };
+  }
+
+  /**
+   * Runs the four launch checks over a proposed definition that was never
+   * stored. Same code, same wording, and nothing is written.
+   */
+  validateDraft(id, definition) {
+    const row = this.#row(id);
+    return this.graph.validateDraftNodes(
+      row.workspace_id,
+      stepsToNodes(definition),
+    );
+  }
+
+  /**
+   * Stores an edited step graph as a new draft version.
+   *
+   * `expectedHash` is the hash the editor loaded. A mismatch means someone
+   * else wrote a version in the meantime, and the edit is refused rather than
+   * silently overwriting theirs.
+   */
+  saveDefinition(
+    id,
+    definition,
+    { expectedHash = null, actor = "local-user" } = {},
+  ) {
+    const row = this.#row(id);
+    const owner = row.owner ?? "agent-space";
+    if (owner !== "agent-space")
+      throw new InputError(
+        `"${row.name}" is orchestrated by "${owner}"; its definition is edited there, not here`,
+        409,
+      );
+    if (expectedHash && expectedHash !== (row.definition_hash ?? null))
+      throw new InputError(
+        `The workflow changed since you opened it (it is now version ${row.version ?? 1}, hash ${row.definition_hash}). Reload before saving.`,
+        409,
+      );
+    const previous = parseJson(row.definition, {});
+    const next = validateDefinition(definition);
+    // A definition that carries steps is judged by the same structural rules
+    // as a shipped template pack. Imported documents are deliberately not:
+    // they already load today, and tightening that is a separate decision.
+    if (next.steps) {
+      try {
+        validateTemplate(next);
+      } catch (error) {
+        throw new InputError(error.message, 400);
+      }
+    }
+    const report = this.validateDraft(id, next);
+    if (!report.ok) {
+      const error = new InputError(
+        `This graph cannot be launched: ${report.problems
+          .map(
+            (problem) =>
+              `${problem.code} at ${problem.title ?? problem.taskId}`,
+          )
+          .join("; ")}`,
+        400,
+      );
+      error.problems = report.problems;
+      throw error;
+    }
+    const diff = diffDefinitions(previous, next);
+    return this.#storeVersion(row, next, {
+      actor,
+      action: "workflow.edit",
+      details: {
+        addedSteps: diff.addedSteps,
+        removedSteps: diff.removedSteps,
+        changedSteps: diff.changedSteps,
+        addedEdges: diff.addedEdges.length,
+        removedEdges: diff.removedEdges.length,
+      },
+    });
+  }
+
+  /**
+   * Which steps of the definition already exist as tasks, and which tasks no
+   * longer match a step.
+   *
+   * A report, never a write. Editing the definition does not delete a task:
+   * a task may already carry runs, artifacts and audit rows, and removing it
+   * would destroy that record. Re-materializing an edited workflow is a
+   * separate feature that does not exist yet.
+   */
+  materialization(id) {
+    const row = this.#row(id);
+    const definition = parseJson(row.definition, {});
+    const tasks = this.db
+      .prepare(
+        "SELECT id, title, status, context FROM tasks WHERE workflow_id = ? ORDER BY created_at, rowid",
+      )
+      .all(id);
+    const runs = (taskId) =>
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM runs WHERE task_id = ?")
+        .get(taskId).n;
+    const stepKeyOf = (task) => parseJson(task.context, {}).stepKey ?? null;
+    const taskByKey = new Map();
+    for (const task of tasks) {
+      const key = stepKeyOf(task);
+      if (key && !taskByKey.has(key)) taskByKey.set(key, task);
+    }
+    const defined = new Set((definition.steps ?? []).map((step) => step.key));
+    return {
+      workflowId: id,
+      version: row.version ?? 1,
+      steps: (definition.steps ?? []).map((step) => {
+        const task = taskByKey.get(step.key) ?? null;
+        return {
+          key: step.key,
+          title: step.title ?? step.key,
+          taskId: task?.id ?? null,
+          status: task?.status ?? null,
+          runs: task ? runs(task.id) : 0,
+        };
+      }),
+      orphanTasks: tasks
+        .filter((task) => {
+          const key = stepKeyOf(task);
+          return !key || !defined.has(key);
+        })
+        .map((task) => ({
+          taskId: task.id,
+          title: task.title,
+          stepKey: stepKeyOf(task),
+          status: task.status,
+          runs: runs(task.id),
+        })),
+      note: "Editing the definition does not delete tasks that already exist, and never deletes a task that has runs.",
+    };
   }
 }

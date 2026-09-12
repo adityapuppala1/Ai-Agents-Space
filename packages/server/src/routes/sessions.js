@@ -9,7 +9,7 @@ import { InputError } from "../../../core/src/TaskStore.js";
  *   GET  /api/sessions/:id           → one session (+ its run)
  *   POST /api/sessions/:id/attach    → { workspaceId } re-map to another workspace
  *   POST /api/observation/poll       → run one poll pass now
- *   GET  /api/observation/status     → { enabled, intervalMs, observers, lastPollAt, sessionCounts }
+ *   GET  /api/observation/status     → { enabled, intervalMs, observers, surfaces, lastPollAt, sessionCounts }
  */
 export default async function sessionRoutes(ctx) {
   const { method, path, query, send, body, services } = ctx;

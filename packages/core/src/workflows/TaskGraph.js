@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { InputError } from "../TaskStore.js";
 import { DEFAULT_POLICY, PROVIDERS } from "../contracts.js";
+import { scan as scanUntrusted } from "../context/untrusted.js";
 import {
   contractFromRow,
   checkInputs,
@@ -15,6 +16,15 @@ function parseJson(value, fallback) {
     return fallback;
   }
 }
+
+/** Why a ready step did not start, in the words a handoff record uses. */
+const HANDOFF_REASONS = {
+  "no provider on task":
+    "no assistant chosen for this step; start it from the task board",
+  "autoDispatch disabled by workspace policy":
+    "automatic starts are off in this workspace's policy",
+  "run worker unavailable": "runs cannot be started on this server",
+};
 
 function rowToNode(row) {
   return {
@@ -83,6 +93,147 @@ export function validateBranchCondition(input) {
       "branchCondition.equals must be a string, number, boolean, or null",
     );
   return { when: input.when, equals: input.equals, then };
+}
+
+/**
+ * Providers a workspace may not use, derived from connection scoping.
+ * A connection with no `allowedWorkspaces` is unscoped and denies nothing.
+ *
+ * → Map<providerId, reason>
+ */
+export function deniedProvidersFor(connections = [], workspaceId) {
+  const denied = new Map();
+  for (const connection of connections) {
+    const scoped = connection.allowedWorkspaces ?? [];
+    if (!scoped.length) continue;
+    if (!scoped.includes(workspaceId))
+      denied.set(
+        connection.provider,
+        `connection "${connection.alias ?? connection.provider}" is not allowed in this workspace`,
+      );
+    else denied.delete(connection.provider);
+  }
+  return denied;
+}
+
+/**
+ * The four static checks over a set of graph nodes: cycles, unreachable
+ * steps, missing required inputs, permission conflicts.
+ *
+ * Pure on purpose. `validateWorkflow` feeds it rows read from the database
+ * and the workflow editor feeds it a proposed definition that was never
+ * stored, so a draft and a live graph are judged by the same code in the same
+ * words. `evaluateTool` is a callback rather than a service read so this
+ * function never reaches for a container.
+ *
+ * → { ok, problems: [{ code, taskId, title, detail }], checked }
+ */
+export function checkGraph(
+  nodes = [],
+  {
+    deniedProviders = new Map(),
+    policy = DEFAULT_POLICY,
+    evaluateTool = null,
+  } = {},
+) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const problems = [];
+  const push = (code, node, detail) =>
+    problems.push({
+      code,
+      taskId: node?.id ?? null,
+      title: node?.title ?? null,
+      detail,
+    });
+
+  // Cycles.
+  const adjacency = new Map(
+    nodes.map((node) => [node.id, node.dependsOn.filter((id) => byId.has(id))]),
+  );
+  const seenCycles = new Set();
+  for (const node of nodes) {
+    const cycle = findCycle(adjacency, node.id);
+    if (!cycle) continue;
+    const fingerprint = [...cycle].sort().join("|");
+    if (seenCycles.has(fingerprint)) continue;
+    seenCycles.add(fingerprint);
+    push("cycle", node, `dependency cycle: ${cycle.join(" -> ")}`);
+  }
+
+  // Unreachable steps: no path from any root.
+  const roots = nodes.filter(
+    (node) => node.dependsOn.filter((id) => byId.has(id)).length === 0,
+  );
+  const reachable = new Set();
+  const queue = roots.map((node) => node.id);
+  while (queue.length) {
+    const id = queue.shift();
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    for (const node of nodes)
+      if (node.dependsOn.includes(id) && !reachable.has(node.id))
+        queue.push(node.id);
+  }
+  for (const node of nodes) {
+    if (reachable.has(node.id)) continue;
+    const missingDeps = node.dependsOn.filter((id) => !byId.has(id));
+    push(
+      "unreachable",
+      node,
+      missingDeps.length
+        ? `no path from any starting step: depends on ${missingDeps.join(", ")}, which is not part of this graph`
+        : "no path from any starting step (its dependency chain never starts)",
+    );
+  }
+
+  // Missing required inputs.
+  for (const node of nodes) {
+    const check = checkInputs(node);
+    for (const miss of check.missing) push("missing-input", node, miss.detail);
+  }
+
+  // Permission conflicts: provider scope and denied tools.
+  for (const node of nodes) {
+    if (node.provider) {
+      if (!PROVIDERS[node.provider])
+        push(
+          "permission-conflict",
+          node,
+          `unknown provider "${node.provider}"`,
+        );
+      else if (deniedProviders.has(node.provider))
+        push(
+          "permission-conflict",
+          node,
+          `provider ${PROVIDERS[node.provider].name}: ${deniedProviders.get(node.provider)}`,
+        );
+      if (policy.autonomy === "observe-only")
+        push(
+          "permission-conflict",
+          node,
+          "workspace policy is observe-only, so this step can never be launched here",
+        );
+    }
+    for (const tool of node.contract?.allowedTools ?? []) {
+      let decision = null;
+      try {
+        decision = evaluateTool?.(tool) ?? null;
+      } catch {
+        decision = null;
+      }
+      const deniedByList = (policy.deniedCommands ?? []).some((entry) =>
+        tool.toLowerCase().includes(String(entry).toLowerCase()),
+      );
+      if (decision?.decision === "deny" || deniedByList)
+        push(
+          "permission-conflict",
+          node,
+          `the step requires "${tool}", which the workspace policy denies${decision?.reason ? `: ${decision.reason}` : ""}`,
+        );
+    }
+  }
+
+  return { ok: problems.length === 0, problems, checked: nodes.length };
 }
 
 /**
@@ -239,6 +390,121 @@ export class TaskGraph {
   }
 
   /**
+   * What a finished step hands on: its agent, its latest run, that run's
+   * final message (scanned: a result carrying instruction-like text is
+   * withheld from the next prompt) and the artifacts it produced.
+   */
+  #handoffFrom(row, workspace) {
+    const fromAgentId = row.assigned_agent_id ?? null;
+    let fromAgentName = null;
+    try {
+      fromAgentName = fromAgentId
+        ? (workspace.profiles.get(fromAgentId, { includeArchived: true })
+            ?.name ?? null)
+        : null;
+    } catch {
+      fromAgentName = null;
+    }
+    const run = this.db
+      .prepare(
+        "SELECT id, agent_id FROM runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
+      )
+      .get(row.id);
+    const recorder =
+      this.services.runWorker?.recorder ?? this.services.recorder;
+    let artifacts = [];
+    try {
+      artifacts =
+        run && recorder?.artifacts
+          ? recorder.artifacts(run.id, { withContent: true })
+          : [];
+    } catch {
+      artifacts = [];
+    }
+    const message = artifacts.find((artifact) => artifact.kind === "message");
+    const summary =
+      typeof message?.content === "string" ? message.content.trim() : "";
+    const verdict = summary
+      ? scanUntrusted(summary, { source: "tool" })
+      : { untrusted: false, findings: [] };
+    return {
+      fromTaskId: row.id,
+      fromTitle: row.title,
+      fromRunId: run?.id ?? null,
+      fromAgentId: fromAgentId ?? run?.agent_id ?? null,
+      fromAgentName,
+      summary: verdict.untrusted ? "" : summary.slice(0, 1500),
+      withheld: verdict.untrusted,
+      findings: verdict.untrusted
+        ? verdict.findings.slice(0, 5).map((finding) => finding.rule)
+        : [],
+      artifacts: artifacts.slice(0, 6).map((artifact) => ({
+        id: artifact.id,
+        kind: artifact.kind,
+        title: artifact.title ?? artifact.kind,
+      })),
+    };
+  }
+
+  /**
+   * The handoff as a workspace event naming both agents: recorded whether or
+   * not the next step was started, with the reason when it was not, so the
+   * office and the Timeline show the baton passing either way.
+   */
+  #recordHandoff(workspace, handoff, dependent, result, workflowId) {
+    // The watcher and a direct call can both process one completion, and a
+    // failed start may be retried: one record per pair and outcome.
+    const completedAt =
+      this.db
+        .prepare("SELECT completed_at FROM tasks WHERE id = ?")
+        .get(handoff.fromTaskId)?.completed_at ?? "";
+    const key = `${handoff.fromTaskId}:${dependent.id}:${completedAt}:${result.dispatched === true}`;
+    this.handoffsRecorded ??= new Set();
+    if (this.handoffsRecorded.has(key)) return;
+    this.handoffsRecorded.add(key);
+    const toAgentId = dependent.agentId ?? result.agentId ?? null;
+    let toAgentName = null;
+    try {
+      toAgentName = toAgentId
+        ? (workspace.profiles.get(toAgentId, { includeArchived: true })?.name ??
+          null)
+        : null;
+    } catch {
+      toAgentName = null;
+    }
+    const from = handoff.fromAgentName ?? "The previous step";
+    const to = toAgentName ?? "the next step";
+    try {
+      workspace.recordEvent({
+        kind: "handoff",
+        message: `${from} handed “${handoff.fromTitle}” on to ${to}${
+          result.dispatched
+            ? `, who started “${dependent.title}”`
+            : ` for “${dependent.title}” (not started: ${HANDOFF_REASONS[result.reason] ?? result.reason ?? "waiting"})`
+        }`,
+        agentId: handoff.fromAgentId,
+        runId: result.runId ?? null,
+        taskId: dependent.id,
+        data: {
+          fromAgentId: handoff.fromAgentId,
+          toAgentId,
+          fromTaskId: handoff.fromTaskId,
+          toTaskId: dependent.id,
+          fromRunId: handoff.fromRunId,
+          workflowId: workflowId ?? dependent.workflowId ?? null,
+          artifacts: handoff.artifacts,
+          dispatched: result.dispatched === true,
+          reason: result.dispatched ? null : (result.reason ?? null),
+          withheld: handoff.withheld,
+          findings: handoff.findings.length ? handoff.findings : undefined,
+        },
+      });
+    } catch {
+      /* a lost handoff record never blocks the workflow */
+    }
+  }
+
+  /**
    * Called when a task reaches COMPLETED. Dependents that just became ready
    * and have a provider are dispatched through services.runWorker when the
    * workspace policy does not disable auto-dispatch.
@@ -251,6 +517,13 @@ export class TaskGraph {
     const readyIds = new Set(this.ready(workspaceId).map((node) => node.id));
     const results = [];
     const skipped = [];
+    let workspace = null;
+    try {
+      workspace = this.hub.get(workspaceId);
+    } catch {
+      workspace = null;
+    }
+    const handoff = workspace ? this.#handoffFrom(row, workspace) : null;
     for (const dependent of this.dependents(taskId)) {
       if (!readyIds.has(dependent.id)) continue;
       const result = { taskId: dependent.id, dispatched: false, reason: null };
@@ -271,16 +544,29 @@ export class TaskGraph {
         result.reason = ownership.reason;
         continue;
       }
+      const passOn = () => {
+        if (workspace && handoff)
+          this.#recordHandoff(
+            workspace,
+            handoff,
+            dependent,
+            result,
+            row.workflow_id,
+          );
+      };
       if (!dependent.provider) {
         result.reason = "no provider on task";
+        passOn();
         continue;
       }
       if (policy.autoDispatch === false) {
         result.reason = "autoDispatch disabled by workspace policy";
+        passOn();
         continue;
       }
       if (!this.services.runWorker?.start) {
         result.reason = "run worker unavailable";
+        passOn();
         continue;
       }
       if (this.dispatched.has(dependent.id)) {
@@ -297,6 +583,7 @@ export class TaskGraph {
       });
       if (!claim.ok) {
         result.reason = claim.reason;
+        passOn();
         continue;
       }
       result.idempotencyKey = claim.key;
@@ -310,9 +597,12 @@ export class TaskGraph {
           taskId: dependent.id,
           agentId: dependent.agentId ?? undefined,
           provider: dependent.provider,
+          handoff,
         });
         result.dispatched = true;
         result.runId = run?.id ?? null;
+        result.agentId = run?.agentId ?? null;
+        passOn();
         this.services.audit?.record?.({
           actor,
           action: "workflow.auto-dispatch",
@@ -324,6 +614,7 @@ export class TaskGraph {
       } catch (error) {
         this.dispatched.delete(dependent.id);
         result.reason = `dispatch failed: ${error.message}`;
+        passOn();
         this.services.audit?.record?.({
           actor,
           action: "workflow.auto-dispatch.failed",
@@ -1012,20 +1303,20 @@ export class TaskGraph {
   /* Validation: cycles, missing inputs, unreachable steps, permissions  */
   /* ------------------------------------------------------------------ */
 
-  #allowedProviders(workspaceId) {
-    const connections = this.services.connections?.list?.() ?? [];
-    const denied = new Map();
-    for (const connection of connections) {
-      const scoped = connection.allowedWorkspaces ?? [];
-      if (!scoped.length) continue;
-      if (!scoped.includes(workspaceId))
-        denied.set(
-          connection.provider,
-          `connection "${connection.alias ?? connection.provider}" is not allowed in this workspace`,
-        );
-      else denied.delete(connection.provider);
-    }
-    return denied;
+  /** The context the four checks need, built once for both callers. */
+  #checkContext(workspaceId) {
+    return {
+      deniedProviders: deniedProvidersFor(
+        this.services.connections?.list?.() ?? [],
+        workspaceId,
+      ),
+      policy: this.#policy(workspaceId),
+      evaluateTool: (tool) =>
+        this.services.policy?.evaluate?.({
+          workspaceId,
+          request: { kind: "tool", tool, command: tool },
+        }) ?? null,
+    };
   }
 
   /**
@@ -1039,114 +1330,37 @@ export class TaskGraph {
     const rows = this.#rows(workspaceId).filter(
       (row) => !workflowId || row.workflow_id === workflowId,
     );
-    const nodes = rows.map(rowToNode);
-    const byId = new Map(nodes.map((node) => [node.id, node]));
-    const problems = [];
-    const push = (code, node, detail) =>
-      problems.push({
-        code,
-        taskId: node?.id ?? null,
-        title: node?.title ?? null,
-        detail,
-      });
+    return checkGraph(rows.map(rowToNode), this.#checkContext(workspaceId));
+  }
 
-    // Cycles.
-    const adjacency = new Map(
-      nodes.map((node) => [
-        node.id,
-        node.dependsOn.filter((id) => byId.has(id)),
-      ]),
+  /**
+   * The same four checks over nodes that were never stored, so the workflow
+   * editor can validate a proposed graph before anything is written.
+   */
+  validateDraftNodes(workspaceId, nodes = []) {
+    this.hub.get(workspaceId);
+    return checkGraph(nodes, this.#checkContext(workspaceId));
+  }
+
+  /**
+   * The same checks over the stored graph with one task's dependencies
+   * replaced by a proposal, so the dependency editor can check exactly what
+   * it would save. Nothing is written.
+   */
+  validateProposedDependencies(workspaceId, taskId, dependsOn = []) {
+    this.hub.get(workspaceId);
+    if (!Array.isArray(dependsOn))
+      throw new InputError("dependsOn must be an array of task ids");
+    const nodes = this.#rows(workspaceId).map(rowToNode);
+    if (!nodes.some((node) => node.id === taskId))
+      throw new InputError("Task not found", 404);
+    const proposal = [...new Set(dependsOn.map((id) => String(id)))];
+    return checkGraph(
+      nodes.map((node) =>
+        node.id === taskId ? { ...node, dependsOn: proposal } : node,
+      ),
+      this.#checkContext(workspaceId),
     );
-    const seenCycles = new Set();
-    for (const node of nodes) {
-      const cycle = findCycle(adjacency, node.id);
-      if (!cycle) continue;
-      const fingerprint = [...cycle].sort().join("|");
-      if (seenCycles.has(fingerprint)) continue;
-      seenCycles.add(fingerprint);
-      push("cycle", node, `dependency cycle: ${cycle.join(" -> ")}`);
-    }
-
-    // Unreachable steps: no path from any root.
-    const roots = nodes.filter(
-      (node) => node.dependsOn.filter((id) => byId.has(id)).length === 0,
-    );
-    const reachable = new Set();
-    const queue = roots.map((node) => node.id);
-    while (queue.length) {
-      const id = queue.shift();
-      if (reachable.has(id)) continue;
-      reachable.add(id);
-      for (const node of nodes)
-        if (node.dependsOn.includes(id) && !reachable.has(node.id))
-          queue.push(node.id);
-    }
-    for (const node of nodes) {
-      if (reachable.has(node.id)) continue;
-      const missingDeps = node.dependsOn.filter((id) => !byId.has(id));
-      push(
-        "unreachable",
-        node,
-        missingDeps.length
-          ? `no path from any starting step: depends on ${missingDeps.join(", ")}, which is not part of this graph`
-          : "no path from any starting step (its dependency chain never starts)",
-      );
-    }
-
-    // Missing required inputs.
-    for (const node of nodes) {
-      const check = checkInputs(node);
-      for (const miss of check.missing)
-        push("missing-input", node, miss.detail);
-    }
-
-    // Permission conflicts: provider scope and denied tools.
-    const deniedProviders = this.#allowedProviders(workspaceId);
-    const policy = this.#policy(workspaceId);
-    for (const node of nodes) {
-      if (node.provider) {
-        if (!PROVIDERS[node.provider])
-          push(
-            "permission-conflict",
-            node,
-            `unknown provider "${node.provider}"`,
-          );
-        else if (deniedProviders.has(node.provider))
-          push(
-            "permission-conflict",
-            node,
-            `provider ${PROVIDERS[node.provider].name}: ${deniedProviders.get(node.provider)}`,
-          );
-        if (policy.autonomy === "observe-only")
-          push(
-            "permission-conflict",
-            node,
-            "workspace policy is observe-only, so this step can never be launched here",
-          );
-      }
-      for (const tool of node.contract.allowedTools ?? []) {
-        let decision = null;
-        try {
-          decision = this.services.policy?.evaluate?.({
-            workspaceId,
-            request: { kind: "tool", tool, command: tool },
-          });
-        } catch {
-          decision = null;
-        }
-        const deniedByList = (policy.deniedCommands ?? []).some((entry) =>
-          tool.toLowerCase().includes(String(entry).toLowerCase()),
-        );
-        if (decision?.decision === "deny" || deniedByList)
-          push(
-            "permission-conflict",
-            node,
-            `the step requires "${tool}", which the workspace policy denies${decision?.reason ? `: ${decision.reason}` : ""}`,
-          );
-      }
-    }
-
-    return { ok: problems.length === 0, problems, checked: nodes.length };
   }
 
   /* ------------------------------------------------------------------ */

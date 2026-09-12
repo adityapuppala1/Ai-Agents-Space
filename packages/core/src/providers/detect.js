@@ -259,6 +259,27 @@ export async function defaultWhich(
   name,
   { env = process.env, timeoutMs = 5000, signal, platform } = {},
 ) {
+  // `where.exe` can retain the parent process' PATH on Windows even when a
+  // child receives a scoped PATH. Search the supplied environment first so a
+  // connection probe always resolves the same executable it will later run.
+  const separator = isWindows(platform) ? ";" : ":";
+  const folders = envPath(env)
+    .split(separator)
+    .map((folder) => folder.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+  const candidates = isWindows(platform)
+    ? [name, ...executableExtensions(env).map((extension) => `${name}${extension}`)]
+    : [name];
+  const scoped = [];
+  for (const folder of folders) {
+    for (const candidate of candidates) {
+      const path = join(folder, candidate);
+      if (existsSync(path)) scoped.push(path);
+    }
+  }
+  const scopedMatch = pickExecutable(scoped, { env, platform });
+  if (scopedMatch) return scopedMatch;
+
   const result = await runCommand(whereExecutable(env, platform), [name], {
     env,
     timeoutMs,

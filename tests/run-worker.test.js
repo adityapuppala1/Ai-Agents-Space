@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1064,4 +1070,195 @@ test("a code range is pinned to a git revision at launch and staleness is detect
     "the pin is not silently rewritten",
   );
   await worker.wait(again.id, 20000);
+});
+
+test("a fenced block with no file target becomes a snippet artifact", async (t) => {
+  const { workspace, recorder, worker, task } = setup(t);
+  const created = task("Explain the sort");
+  const run = await worker.start({
+    workspaceId: workspace.id,
+    taskId: created.id,
+    provider: "claude-code",
+    prompt: "WRITE_FILE and SNIPPET please",
+  });
+  const done = await worker.wait(run.id, 20000);
+  assert.equal(done.status, "completed");
+
+  const artifacts = recorder.artifacts(run.id);
+  const kinds = artifacts.map((a) => a.kind);
+  for (const kind of ["diff", "test-output", "message"])
+    assert.ok(kinds.includes(kind), `${kind} artifact still captured`);
+  assert.equal(kinds[kinds.length - 1], "snippet", "snippets are written last");
+
+  const snippets = artifacts.filter((a) => a.kind === "snippet");
+  assert.equal(snippets.length, 1, "only the untargeted fence materializes");
+  assert.equal(snippets[0].metadata.language, "python");
+  assert.equal(snippets[0].metadata.languageSource, "fence");
+  assert.equal(snippets[0].metadata.detectedBy, "fenced-code-block");
+  assert.equal(snippets[0].metadata.origin.final, false);
+  assert.match(recorder.artifact(snippets[0].id).content, /def sort_pairs/);
+
+  // The js fence names src/app.js and the text fence is labelled output: both
+  // are skipped, and the run says so rather than dropping them quietly.
+  const notice = recorder
+    .events(run.id, { limit: 500 })
+    .find((event) => /not materialized as snippets/.test(event.message));
+  assert.ok(notice, "skipped blocks are reported");
+  assert.match(notice.message, /^2 code blocks were seen/);
+  assert.match(notice.message, /1 targeted/);
+  assert.match(notice.message, /1 non-code-language/);
+});
+
+test("a launch uses a connection this workspace may use, and is refused when none is", async (t) => {
+  const audit = [];
+  const { workspace, worker, task, services } = setup(t, {
+    extraServices: { audit: { record: (entry) => audit.push(entry) } },
+  });
+  // Two accounts for one provider, real rows in the registry. The first is
+  // scoped to another workspace; only the second may be used here. The first
+  // row used to win, so this launch was refused although an allowed account
+  // existed.
+  const scoped = services.connections.create({
+    provider: "claude-code",
+    alias: "client-a",
+    allowedWorkspaces: ["another-workspace"],
+  });
+  const allowed = services.connections.create({
+    provider: "claude-code",
+    alias: "client-b",
+    allowedWorkspaces: [workspace.id],
+  });
+  // Detection is not run in tests; mark both usable the way a probe would.
+  const markReady = (id) =>
+    services.db
+      .prepare("UPDATE connections SET status = 'ready' WHERE id = ?")
+      .run(id);
+  // Every other claude-code row (the detected default) is set aside so the
+  // two above are the only candidates.
+  services.db
+    .prepare(
+      "UPDATE connections SET enabled = 0 WHERE provider = 'claude-code' AND id NOT IN (?, ?)",
+    )
+    .run(scoped.id, allowed.id);
+  markReady(scoped.id);
+  markReady(allowed.id);
+
+  const run = await worker.start({
+    workspaceId: workspace.id,
+    taskId: task("Uses the account allowed here").id,
+    provider: "claude-code",
+  });
+  assert.equal(run.connectionId, allowed.id);
+  await worker.wait(run.id, 20000);
+
+  // Only the out-of-scope account is left: refused through the policy, with
+  // the reason, audited, and nothing started.
+  services.db
+    .prepare("UPDATE connections SET enabled = 0 WHERE id = ?")
+    .run(allowed.id);
+  const blocked = task("No account for this workspace");
+  await assert.rejects(
+    () =>
+      worker.start({
+        workspaceId: workspace.id,
+        taskId: blocked.id,
+        provider: "claude-code",
+      }),
+    (error) => {
+      assert.equal(error.status, 403);
+      assert.match(error.message, /restricted to other workspaces/);
+      return true;
+    },
+  );
+  const refusal = audit.findLast((entry) => entry.action === "run.refused");
+  assert.equal(refusal.details.connectionId, scoped.id);
+  assert.equal(refusal.details.rule, "launch.connection.not-allowed");
+  assert.equal(workspace.store.get(blocked.id).status, "QUEUE");
+});
+
+test("a reviewed worktree is applied to the working tree only as reviewed, never committed", async (t) => {
+  const audit = [];
+  const { workspace, recorder, worker, task, repo, services } = setup(t, {
+    policy: { ...DEFAULT_POLICY, autonomy: "sandbox" },
+    extraServices: { audit: { record: (entry) => audit.push(entry) } },
+  });
+  const created = task("Sandboxed change to apply");
+  const run = await worker.start({
+    workspaceId: workspace.id,
+    taskId: created.id,
+    provider: "claude-code",
+    prompt: "WRITE_FILE in sandbox",
+  });
+  assert.equal((await worker.wait(run.id, 20000)).status, "completed");
+  const inWorktree = join(run.worktree, "fake-output.txt");
+  const inRepo = join(repo, "fake-output.txt");
+  const original = readFileSync(inWorktree, "utf8");
+  const commits = () =>
+    execFileSync("git", ["rev-list", "--count", "HEAD"], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim();
+  const before = commits();
+
+  // Not reviewed yet: refused.
+  await assert.rejects(
+    () => worker.applyWorktree(run.id),
+    /Accept the review first/,
+  );
+  services.db
+    .prepare("UPDATE tasks SET review = ? WHERE id = ?")
+    .run(JSON.stringify({ runId: run.id, status: "accepted" }), created.id);
+
+  // A check reports the files and changes nothing.
+  const checked = await worker.applyWorktree(run.id, { check: true });
+  assert.equal(checked.applied, false);
+  assert.deepEqual(checked.files, ["fake-output.txt"]);
+  assert.ok(!existsSync(inRepo));
+
+  // The worktree changed after review: refused.
+  writeFileSync(inWorktree, `${original}edited after review\n`);
+  await assert.rejects(
+    () => worker.applyWorktree(run.id),
+    /changed after the diff you reviewed/,
+  );
+  writeFileSync(inWorktree, original);
+
+  // A file of the person's own in the way: refused, and left alone.
+  writeFileSync(inRepo, "mine\n");
+  await assert.rejects(
+    () => worker.applyWorktree(run.id),
+    /uncommitted changes in fake-output\.txt/,
+  );
+  assert.equal(readFileSync(inRepo, "utf8"), "mine\n");
+  rmSync(inRepo);
+
+  // Applied: the file is there, uncommitted, exactly as reviewed.
+  const applied = await worker.applyWorktree(run.id);
+  assert.equal(applied.applied, true);
+  // Same content; git writes line endings the way this machine's config
+  // (core.autocrlf) says, as it does for any file it checks out.
+  const lf = (text) => text.replaceAll("\r\n", "\n");
+  assert.equal(lf(readFileSync(inRepo, "utf8")), lf(original));
+  assert.equal(commits(), before, "nothing was committed");
+  const status = execFileSync("git", ["status", "--porcelain"], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  assert.match(status, /\?\? fake-output\.txt/);
+  assert.equal(
+    audit.findLast((e) => e.action === "run.worktree.apply").details.files[0],
+    "fake-output.txt",
+  );
+  assert.ok(recorder.get(run.id).context.appliedAt);
+  assert.ok(
+    recorder
+      .events(run.id)
+      .some((e) => /Applied 1 file from the worktree/.test(e.message)),
+  );
+
+  // Twice: refused, nothing duplicated.
+  await assert.rejects(
+    () => worker.applyWorktree(run.id),
+    /already in your working tree/,
+  );
 });

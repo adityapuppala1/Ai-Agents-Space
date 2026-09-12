@@ -9,6 +9,7 @@ import {
   TOOL_VOCABULARY,
   TOOL_NAMES,
   CONNECTOR_VOCABULARY,
+  RECOMMENDED_ENVIRONMENTS,
 } from "../packages/core/src/workflows/templates/index.js";
 import {
   validateContract,
@@ -357,6 +358,23 @@ test("the data analytics pack requires both a generated query and an executed re
   // The output schema keeps the distinction as data too.
   assert.ok(pack.outputSchema.required.includes("executed"));
   assert.ok(pack.outputSchema.required.includes("executionExitCode"));
+});
+
+test("data workflow packs recommend the Data Lab environment", () => {
+  for (const id of ["data-engineering", "data-analytics"]) {
+    const pack = getTemplate(id);
+    assert.equal(pack.recommendedEnvironment, "data-lab");
+    assert.ok(RECOMMENDED_ENVIRONMENTS.includes(pack.recommendedEnvironment));
+  }
+  assert.equal(
+    getTemplate("feature-delivery").recommendedEnvironment,
+    undefined,
+  );
+  assert.throws(
+    () =>
+      validateTemplate(baseTemplate({ recommendedEnvironment: "unsafe-room" })),
+    /recommendedEnvironment must be one of/,
+  );
 });
 
 test("the research pack flags retrieved versus verified per source", () => {

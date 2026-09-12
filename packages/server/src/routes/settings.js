@@ -22,6 +22,16 @@ export default async function settingsRoutes(ctx) {
   if (method === "PUT" || method === "PATCH") {
     const patch = await body();
     const result = settings.update(patch);
+    // The scheduler's timer follows its setting however the setting is
+    // written, so turning it on here does not wait for a restart.
+    if (
+      patch &&
+      Object.hasOwn(patch, "scheduler.enabled") &&
+      services.scheduler
+    )
+      await (patch["scheduler.enabled"] === true
+        ? services.scheduler.start()
+        : services.scheduler.stop());
     services.audit?.record({
       actor,
       action: "settings.update",

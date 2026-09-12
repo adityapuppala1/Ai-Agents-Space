@@ -29,6 +29,7 @@ import { ContextManifest } from "./context/ContextManifest.js";
 import { createCheckpointService } from "./workflows/checkpoints.js";
 import { createDryRun } from "./workflows/dryRun.js";
 import { createSuggest } from "./workflows/suggest.js";
+import { Router } from "./routing/router.js";
 import { createWebhookService } from "./webhooks/WebhookService.js";
 import { createIncidentService } from "./ops/Incident.js";
 import { createBackupService } from "./ops/Backup.js";
@@ -210,6 +211,10 @@ export function createServices(options = {}) {
   services.audit = new Audit(db);
   services.policy = new Policy(services);
   hub.setPolicyService(services.policy);
+
+  // Routing ranks assistants from the policy, connections, usage and
+  // evaluations; it reads them when asked and starts nothing.
+  services.router = new Router(services);
 
   // 2. Provider connections (reads hook status from settings when asked).
   services.connections = new ConnectionService(services, {

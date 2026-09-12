@@ -28,7 +28,9 @@ const HEALTH_INTERVAL_MS =
 
 const services = createServices({
   dbPath,
-  demo: process.env.DEMO !== "false",
+  // Production starts from recorded provider activity. The showcase is an
+  // explicit opt-in (`DEMO=true`) and remains available to tests and demos.
+  demo: process.env.DEMO === "true",
   port,
 });
 let server;

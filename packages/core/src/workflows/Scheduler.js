@@ -928,6 +928,53 @@ export class Scheduler {
     this.timer = null;
   }
 
+  /**
+   * Turns timed dispatch on or off without a restart: writes the
+   * `scheduler.enabled` setting, then starts the timer (applying each
+   * schedule's missed-run policy to what fell due while it was off) or stops
+   * it. Runs already started are not touched. Audited as the actor.
+   */
+  async setEnabled(on, { actor = "local-user" } = {}) {
+    if (typeof on !== "boolean")
+      throw new InputError("enabled must be true or false");
+    if (!this.services.settings?.set)
+      throw new InputError("Settings are not available", 503);
+    this.services.settings.set(SETTING_SCHEDULER_ENABLED, on);
+    const result = on ? await this.start() : (this.stop(), { started: false });
+    this.#audit(
+      on ? "scheduler.enable" : "scheduler.disable",
+      null,
+      { missed: result.missed?.length ?? 0 },
+      { actor },
+    );
+    this.services.bus?.emit?.("global");
+    return { ...this.status(), missed: result.missed ?? [] };
+  }
+
+  /**
+   * The next `count` occurrences of an expression in a zone, from `fromMs`,
+   * without writing anything: what a schedule would do before it is saved.
+   * Invalid expressions and unknown zones are refused with the reason.
+   */
+  preview(expression, timeZone = "UTC", { count = 5, fromMs = null } = {}) {
+    const text = String(expression ?? "").trim();
+    if (!text || text.length > 120)
+      throw new InputError("expression must contain 1-120 characters");
+    parse(text);
+    const zone = String(timeZone ?? "UTC").trim() || "UTC";
+    if (!isValidTimeZone(zone))
+      throw new InputError(`Unknown time zone "${zone}"`);
+    const size = Math.max(1, Math.min(Number(count) || 5, 20));
+    const occurrences = [];
+    let at = Number.isFinite(fromMs) ? fromMs : this.now();
+    for (let i = 0; i < size; i++) {
+      at = nextOccurrence(text, at, zone);
+      if (at === null || at === undefined) break;
+      occurrences.push(at);
+    }
+    return { expression: text, timeZone: zone, occurrences };
+  }
+
   /** For the health dashboard. Counts only; nothing is predicted. */
   status() {
     const counts = this.db
