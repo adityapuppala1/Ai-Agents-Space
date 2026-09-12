@@ -115,4 +115,20 @@ The work is spread over five owned modules; do them in this order and stop at th
 
 Then update [CONNECTIONS.md](CONNECTIONS.md) and `docs/ROADMAP_STATUS.md` with what was actually verified, and on which version and OS.
 
+### The contract, stated once and proved for all of them
+
+`tests/adapter-contract.test.js` runs against **every registered adapter**, so registering a new one is the only step needed to be held to the same shape as the rest. Until it existed, each adapter was tested only on its own terms — its own fixtures, its own stream, its own flags — and nothing said what an adapter *is*; a new one could omit a capability key, emit an event kind the rest of the system does not know, or throw on a line it did not recognise, and every existing test would still pass.
+
+What it holds you to:
+
+- **It is registered under the id it calls itself**, names a provider `contracts.js` knows, and has a human name.
+- **It declares every capability key**, each one of `verified` / `experimental` / `unknown` / `unsupported`, and no others. `supportsResume` may not contradict the `resume` capability: `experimental` with `supportsResume: true` is legitimate (the mechanism exists but is unproven here), `unsupported` with `true` is not.
+- **Something can look for its binary** — `launchBinaries`, or the provider table's own `binaries`.
+- **An adapter that cannot launch refuses**, with an `InputError` that carries a `fix`. Emitting a command line that would run the wrong thing is worse than refusing; Cursor is the worked example.
+- **An adapter that can launch builds a runnable command** that keeps the working folder and actually passes the prompt (as an argument, or over stdin).
+- **`parse()` survives anything.** It is run over empty lines, bare strings, numbers, truncated JSON, nulls and shapes no provider documents, and must return a list — never throw — and every event it emits must carry a kind `contracts.js` knows and its own provider's name.
+- **`finalize()` answers for a run that recorded nothing** rather than throwing.
+
+A transport that is not a headless stream says so in `transport` (Codex's app-server speaks JSON-RPC) and is exempt only from the command-building rule, not from the rest.
+
 **Worked example of honesty:** Gemini CLI 0.59.0 is installed on this machine and its flags are verified from its own `--help` (`-p`, `-o text|json|stream-json`, `--approval-mode`, `-m`, `-r`, `--session-id`, `--include-directories`). It is not authenticated: every run exits 41 with an auth error on stderr, and `~/.gemini/settings.json` does not exist until an auth method is chosen. So the launch **flags** are verified while a completed **run** is not, and the capability matrix must say exactly that — `experimental` for launch, `unknown` for anything that depends on a finished run. `cursor-agent` is genuinely not installed (only the Cursor IDE launcher), so Cursor stays detect-only and experimental.

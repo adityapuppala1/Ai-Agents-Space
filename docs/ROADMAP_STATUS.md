@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **You can say one thing to a whole team, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 2.3).** Done, with tests:
+> **Every adapter is held to one contract, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 6.3).** Done, with tests — and the planned approach rejected:
+>
+> - **"Adding a provider is a config entry, not an adapter" was the wrong trade.** `defineAdapter()` already takes a largely declarative object; what remains as code is the flag construction and the stream parser, which is exactly the part that differs per provider. Codex's app-server adapter speaks JSON-RPC rather than a headless stream and would never fit a CLI template, so the config language would have needed an escape hatch for the case that motivated it — and would likely have totalled more code than the six adapters it replaced.
+> - **What was missing was an enforced shape, not a format.** Every adapter was tested only on its own terms — its own fixtures, its own stream, its own flags — so nothing said what an adapter *is*. A new one could omit a capability key, emit an event kind the rest of the system does not know, or throw on an unrecognised line, and every existing test would still pass.
+> - **`tests/adapter-contract.test.js` runs against every registered adapter:** it is registered under the id it calls itself; it declares every capability key in the four words the UI reads and no others; `supportsResume` does not contradict `resume`; something can look for its binary; an adapter that cannot launch refuses with a fix rather than emitting a command that would run the wrong thing; one that can builds a command keeping the folder and passing the prompt; `parse()` survives twelve hostile lines without throwing and never invents an event kind or another provider's name; `finalize()` answers for a run that recorded nothing.
+> - **Registering a new adapter is the only step needed to be held to it**, which is what "as a document" was reaching for. [TESTING.md](TESTING.md) states the same contract in prose beside the existing five-step guide.
+> - **Two findings were my own test being wrong, not the product's.** `launchBinaries` is an optional override of the provider table's `binaries`, and `supportsResume: true` alongside `resume: "experimental"` is legitimate — the mechanism exists but is unverified here. Both assertions were corrected to the genuinely contradictory cases rather than the code being changed to satisfy an over-strict test.
+>
+> Verification: `npm test` 716 / 0 (nine new). No UI change, so nothing to look at; no server change, so no restart.
+
+> **You can say one thing to a whole team, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 2.3).** Done, with tests:
 >
 > - **"Message the team" on the relay strip.** The strip is the team that gathers in the conference room, so it is where addressing the room belongs.
 > - **It is several actions, and says so.** Every member continues its own session, so this starts a new attempt for each one — stated in the dialog before anything is sent, because a message that sets several agents working is not something to discover afterwards.
