@@ -91,6 +91,18 @@ npm run test:routes -- --fast  # 5 viewports, for a quick pass while working
 
 It writes `report.json` and a screenshot **only for renders that failed** — a folder of 256 correct screenshots is not evidence anyone reads.
 
+## The security probe
+
+```sh
+npm run test:security        # 48 requests an attacker would make
+```
+
+`artifacts/security-probe.mjs` starts its own server on 5210 with an in-memory database, a token, and throwaway provider homes, then attacks it: authentication and token comparison, nine path-traversal encodings, `Origin`/`Host`/CORS, the security headers, SQL injection into search, body limits and malformed JSON, content-type smuggling, prototype pollution, confirmation on the destructive routes, secret leakage, SSRF targets, and error handling. It writes `test-results/security-probe.json` and exits non-zero on a finding.
+
+Nothing in it is destructive — no stop-all, no retention sweep, no backup to a real path, and never a request to the port a person is actually using.
+
+**Two checks use a raw socket instead of `fetch()`, and must stay that way.** `fetch()` silently drops a `Host:` override, so a Host check made through it tests nothing; and it surfaces a refused request as status 0, which reads as a failure when the server in fact answered. Both produced a false finding the first time this probe was run — re-testing on the wire showed `403` and `415` respectively, and nothing had been created. A probe that cries wolf is worse than no probe, so the raw path is committed rather than left as something to rediscover.
+
 It is committed rather than thrown away because it has been written twice before and its findings had to be rediscovered each time: the `rem` type-scale regression that shrank the whole interface was caught by the `tiny` count, not by anyone's eye.
 
 **A warning from its own history.** The first version tested names with `innerText` and reported thirty unnamed controls that were plainly labelled "Save view", "Daylight studio", "All areas (9)". `innerText` is layout-dependent and empty for anything inside a closed `<details>`; the accessible-name algorithm uses *contents*. When this audit reports something, check the finding is real before changing the product — an audit that cries wolf is worse than none.

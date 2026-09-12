@@ -30,6 +30,19 @@ Statuses here are deliberately literal. Where something is observed rather than 
 - **Agents look at whoever is speaking.** A glance follows a colleague with a recorded message, in the same room, within range, turning at most about 69°. Silence means every head stays forward: there is no idle looking-around, and gaze is never invented.
 - **A prioritised plan** for what comes next in [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md), built from a study of seventeen comparable products.
 
+### Security
+
+- **An outbound webhook can no longer be pointed at the machine's own network.** Creating an endpoint is the one place where a caller names an address and the *server* connects to it, and the only check was that the URL began with `http`. On a server bound to the network — the shared mode, where a token is the only thing between the API and everyone else — that made it a way to reach whatever the server can reach and the caller cannot: the host's loopback interface, the LAN, and the cloud metadata service on `169.254.169.254` that hands out credentials to anything that asks. Found by review, not by a scanner (CWE-918).
+
+  Link-local addresses are now refused always, whatever the server is bound to, because nothing legitimate delivers a webhook there. Loopback and private addresses are still allowed on a loopback-bound server, which is the ordinary local install where posting to `http://localhost:3000/hook` is the point; a remote-bound server refuses them unless `AGENT_SPACE_WEBHOOK_ALLOW_PRIVATE=true` says otherwise. A URL carrying a username or password is refused outright — it would be sent to the target and recorded on the way.
+
+  The check is made twice, because one place is not enough: on the address written into the form, and again on whatever a *hostname* resolves to, through a `lookup` passed to the request. The second is what stops `evil.example` with an A record of `169.254.169.254`, and because the socket connects to exactly the address that lookup returned, there is no gap for a second DNS answer to be used instead. The same rule is applied again at delivery, so an endpoint stored while bound to loopback does not keep firing once the server is restarted with `HOST` set. Node's client does not follow redirects, so a 302 is not a way round it either.
+
+  `packages/core/src/webhooks/target.js` holds the rule; `tests/webhook-target.test.js` proves it against a real socket — a refused delivery reaches the listener zero times, a permitted local one arrives — and covers the spellings that usually get past this kind of check: `::ffff:169.254.169.254`, `::ffff:a9fe:a9fe`, and `http://2130706433/`.
+- **The security probe is part of the repository.** `npm run test:security` starts an isolated server on its own port with an in-memory database and fake provider homes, then makes 48 requests an attacker would make: authentication, nine path-traversal encodings, `Origin`/`Host`/CORS, the security headers, SQL injection into search, body limits, content-type smuggling, prototype pollution, confirmation on the destructive routes, secret leakage, the SSRF targets above, and error handling. It exits non-zero on a finding.
+
+  Two of its checks use a raw socket rather than `fetch()`, because `fetch()` cannot make them honestly: it silently drops a `Host` override and reports a refused request as status 0. Both produced a false finding the first time this was run, and re-testing them on the wire showed the server had answered `403` and `415` all along. The raw path is in the committed script so that result cannot be mistaken twice.
+
 ### Changed
 
 - **Resolving a provider binary no longer holds the server.** The synchronous `where` / `which` fallback was capped at five seconds and re-ran on every launch attempt, so an unresponsive PATH entry froze every page and WebSocket repeatedly. It is now capped at 800 ms and cached for 30 seconds, keyed by binary name and PATH.

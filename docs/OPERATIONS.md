@@ -30,6 +30,7 @@ Full reference in [`.env.example`](../.env.example) and [ARCHITECTURE.md](ARCHIT
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `PORT`, `HOST`                                                                  | Bind address. Use `HOST=0.0.0.0` **only** with `AGENT_SPACE_TOKEN` |
 | `AGENT_SPACE_TOKEN`                                                             | Bearer token for every `/api` request and WebSocket (shared mode)  |
+| `AGENT_SPACE_WEBHOOK_ALLOW_PRIVATE`                                             | Allow outbound webhooks to loopback/private addresses. Defaults to yes when bound to loopback, no when bound to the network |
 | `AGENT_SPACE_DB`                                                                | SQLite file, or `:memory:`                                         |
 | `AGENT_SPACE_DATA_DIR`                                                          | Worktrees and artifacts (default `data/`)                          |
 | `DEMO`                                                                          | Load the isolated demo workspace                                   |

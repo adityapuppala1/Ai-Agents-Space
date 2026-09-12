@@ -30,6 +30,11 @@ import {
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { InputError } from "../TaskStore.js";
+import {
+  assertDeliverable,
+  guardedLookup,
+  privateTargetsAllowed,
+} from "./target.js";
 
 export const DIRECTIONS = ["inbound", "outbound"];
 
@@ -119,13 +124,24 @@ function rowToDelivery(row) {
 }
 
 /** Default HTTPS/HTTP sender using node built-ins. Injected in tests. */
-function defaultSend({ url, headers, body, timeoutMs = 10000 }) {
+export function defaultSend({
+  url,
+  headers,
+  body,
+  timeoutMs = 10000,
+  allowPrivate,
+}) {
   return new Promise((resolve) => {
+    // Checked again here, not only when the endpoint was stored: the rule
+    // depends on how this process is bound, and an endpoint saved by a
+    // loopback-bound server is still in the table when it is next started
+    // with HOST set.
+    const permitted = allowPrivate ?? privateTargetsAllowed();
     let target;
     try {
-      target = new URL(url);
-    } catch {
-      resolve({ ok: false, status: 0, error: "invalid url" });
+      target = assertDeliverable(url, { allowPrivate: permitted });
+    } catch (error) {
+      resolve({ ok: false, status: 0, error: error.message });
       return;
     }
     const send = target.protocol === "https:" ? httpsRequest : httpRequest;
@@ -139,6 +155,9 @@ function defaultSend({ url, headers, body, timeoutMs = 10000 }) {
           ...headers,
         },
         timeout: timeoutMs,
+        // A literal address was judged above; this judges what a *name*
+        // resolves to, which is the other half of the same rule.
+        lookup: guardedLookup({ allowPrivate: permitted }),
       },
       (res) => {
         res.resume();
@@ -184,12 +203,16 @@ function defaultSend({ url, headers, body, timeoutMs = 10000 }) {
 export class WebhookService {
   constructor(
     services,
-    { now = Date.now, send = defaultSend, resolveSecret } = {},
+    { now = Date.now, send = defaultSend, resolveSecret, allowPrivateTargets } = {},
   ) {
     this.services = services;
     this.db = services.db;
     this.now = now;
     this.send = send;
+    // Whether this process may deliver to loopback and private addresses. See
+    // webhooks/target.js — it follows how the server is bound.
+    this.allowPrivateTargets =
+      allowPrivateTargets ?? privateTargetsAllowed(services.env ?? process.env);
     this.resolveSecret =
       resolveSecret ?? ((ref) => this.#defaultResolveSecret(ref));
   }
@@ -225,6 +248,9 @@ export class WebhookService {
     if (direction === "outbound") {
       if (typeof url !== "string" || !/^https?:\/\//i.test(url))
         throw new InputError("An outbound endpoint needs an http(s) url");
+      // Say no here rather than storing an endpoint whose every delivery will
+      // fail, so the reason lands on the form the person is filling in.
+      assertDeliverable(url, { allowPrivate: this.allowPrivateTargets });
     }
     if (!Array.isArray(events) || events.some((e) => typeof e !== "string"))
       throw new InputError("events must be an array of strings");
@@ -302,6 +328,7 @@ export class WebhookService {
     if (current.direction === "outbound") {
       if (typeof next.url !== "string" || !/^https?:\/\//i.test(next.url))
         throw new InputError("An outbound endpoint needs an http(s) url");
+      assertDeliverable(next.url, { allowPrivate: this.allowPrivateTargets });
       const unknown = next.events.filter((e) => !OUTBOUND_EVENTS.includes(e));
       if (unknown.length)
         throw new InputError(`Unknown outbound event(s) ${unknown.join(", ")}`);
@@ -635,6 +662,7 @@ export class WebhookService {
         headers,
         body,
         event: delivery.event,
+        allowPrivate: this.allowPrivateTargets,
       });
     }
     const exhausted = !outcome.ok && attempts >= MAX_ATTEMPTS;
