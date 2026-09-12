@@ -8,6 +8,7 @@ Statuses here are deliberately literal. Where something is observed rather than 
 
 ### Added
 
+- **You can say one thing to a whole team.** "Message the team" on the relay strip. Every member continues its own session, so this starts a new attempt for each — the dialog says so, names everyone who cannot be reached and why (the server's own words, read per run), and reports a partial success as a partial success.
 - **The office replays a recorded minute.** Scrub back and the floor shows that moment — agents in the rooms their activity put them in, desk screens showing the file that was open. Activity is read from the event kind the recorder assigned, nothing is interpolated between events, and a replayed agent never claims a live run. The floor says which minute it is showing for as long as it shows it.
 - **The top bar says when another workspace needs you.** A workspace could sit blocked and say nothing until the switcher was opened; the bar now reads "Payments needs you" or "2 workspaces need you", and clicking it goes there. Silent when nothing is waiting.
 - **Arranging the office shows a live 3D preview.** It stands above the plan, is built from the same layout computation the office runs, highlights whatever the plan has selected, and rings any furniture standing in something else. Without WebGL it does not appear — the plan is the editor and always was. Dragging in 3D is not built.

@@ -1069,3 +1069,20 @@
 .office-replay .as-scrubber input {
   width: 100%;
 }
+
+/* "Message the team" in the relay strip's header. */
+.relay-message {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.relay-message:hover,
+.relay-message:focus-visible {
+  border-color: var(--accent);
+}

@@ -2,7 +2,17 @@
 
 > **What is coming next** is planned in [ROADMAP_NEXT.md](ROADMAP_NEXT.md) — a prioritised queue built from a study of seventeen comparable products. This file stays the record of what has actually shipped.
 
-> **The office replays a recorded minute, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 6.2).** Done, with tests:
+> **You can say one thing to a whole team, 12 September 2026 (latest; [ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 2.3).** Done, with tests:
+>
+> - **"Message the team" on the relay strip.** The strip is the team that gathers in the conference room, so it is where addressing the room belongs.
+> - **It is several actions, and says so.** Every member continues its own session, so this starts a new attempt for each one — stated in the dialog before anything is sent, because a message that sets several agents working is not something to discover afterwards.
+> - **The rule is read, not re-implemented.** Whether a run can be written to comes from the server, per run, via `GET /api/runs/:id/conversation`. The interface therefore never offers a message the server is about to refuse, and the refusals shown are the server's own words. A second copy of that rule in the browser would be one more thing to drift.
+> - **Nobody is quietly dropped.** Everyone who cannot be reached is named with the reason; a room where nobody can be messaged says exactly that and disables both the box and the button, which reads "Send to 0".
+> - **A partial success is reported as one.** Sending goes one run at a time, so a refusal part-way through is reported as itself rather than lost behind "sent".
+>
+> Verification: `npm test` 707 / 0 (five new in `tests/room-message.test.js`) and `npx playwright test` 57 / 0 (one new, building a real two-step workflow and asserting the refusals are named). Looked at on the e2e server: `artifacts/room-message.png` shows a team of manual tasks correctly refusing, each with "This run is recorded here only, not controlled." **Not covered end to end:** the sending path itself, which needs a workflow whose members are all resumable provider runs; the unit tests cover the arithmetic and the server's `/input` route is covered by `e2e/conversation.spec.js`.
+
+> **The office replays a recorded minute, 12 September 2026 ([ROADMAP_NEXT.md](ROADMAP_NEXT.md) item 6.2).** Done, with tests:
 >
 > - **Scrub back and the floor shows that minute.** Timeline and Day in review already had scrubbers, but both scrubbed a *list*; neither drove the office. `web/office/replay.js` reads the workspace's recorded events back as "the agents, at a moment", and the office draws it — agents in the rooms their activity puts them in, desk screens showing the file that was open.
 > - **Activity is read, not re-derived.** It comes from the event **kind** the recorder already assigned. The web never imports from `packages/core` (`office/propKinds.js` mirrors its catalogue rather than importing it), and a second tool classifier in the browser would be one more thing to keep in step with the first. A kind is the server's own conclusion, so reading it back cannot disagree with the live floor.

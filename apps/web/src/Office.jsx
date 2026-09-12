@@ -116,6 +116,7 @@ import { blocked, deskSeat, officeObstacles } from "./office/obstacles.js";
 import { buildNavGrid, findPath } from "./office/navmesh.js";
 import { easeNudge, gazeTargets, separation } from "./office/steering.js";
 import OfficeArranger from "./components/OfficeArranger.jsx";
+import RoomMessage from "./components/RoomMessage.jsx";
 import {
   createFigure,
   createCrowdFigure,
@@ -336,7 +337,7 @@ const STEP_STATES = {
  * where the baton is. Built from the tasks alone (office/relay.js). Choosing
  * a step selects the agent holding it.
  */
-function RelayStrip({ relays, current, onPick, onSelect, mask }) {
+function RelayStrip({ relays, current, onPick, onSelect, mask, onMessage }) {
   const index = Math.max(
     0,
     relays.findIndex((item) => item.workflowId === current),
@@ -355,6 +356,21 @@ function RelayStrip({ relays, current, onPick, onSelect, mask }) {
         <span>
           {relay.done}/{relay.total} done
         </span>
+        {/* Saying one thing to the whole team. Every member continues its own
+            session, so the dialog shows who will actually receive it first. */}
+        {onMessage ? (
+          <button
+            type="button"
+            className="relay-message"
+            // Named for the team rather than "the team": out of context, a
+            // screen-reader list of buttons has to say which one.
+            aria-label={`Message everyone in ${name}`}
+            title={`Message everyone in ${name}`}
+            onClick={() => onMessage(relay)}
+          >
+            Message the team
+          </button>
+        ) : null}
         {relays.length > 1 ? (
           <span className="relay-switch">
             <button
@@ -485,6 +501,8 @@ export default function Office({
   const [sceneVersion, setSceneVersion] = useState(0);
   const [hovered, setHovered] = useState(null);
   const [context, setContext] = useState(null);
+  // { title, members } while the whole team is being messaged.
+  const [messaging, setMessaging] = useState(null);
   const contextRef = useRef(null);
   const contextOrigin = useRef(null);
   const openContext = (event, id) => {
@@ -3210,6 +3228,16 @@ export default function Office({
         .filter(Boolean)
         .join(" ")}
     >
+      {messaging
+        ? createPortal(
+            <RoomMessage
+              title={messaging.title}
+              members={messaging.members}
+              onClose={() => setMessaging(null)}
+            />,
+            document.body,
+          )
+        : null}
       {arranging && arrangePlan
         ? createPortal(
             <OfficeArranger
@@ -3730,6 +3758,25 @@ export default function Office({
             onPick={setRelayShown}
             onSelect={onSelect}
             mask={mask}
+            onMessage={(relay) =>
+              setMessaging({
+                title: relayName(relay),
+                // Everyone holding a step of this relay, with the run each is
+                // on. Names come from the agent list, not the step labels.
+                members: [
+                  ...new Set(
+                    relay.steps.map((step) => step.agentId).filter(Boolean),
+                  ),
+                ].map((id) => {
+                  const agent = agents.find((item) => item.id === id);
+                  return {
+                    id,
+                    name: agent?.name ?? id,
+                    runId: agent?.runId ?? null,
+                  };
+                }),
+              })
+            }
           />
         )}
         <div className="sr-only" role="status" aria-live="polite">

@@ -33,11 +33,11 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | --- | --- | --- | --- | --- | --- |
 | 1.1 | ~~Agents that can see the furniture~~ **Done 12 Sep** | — | 2 | — | Your screenshot |
 | 1.2 | ~~Run worker in its own process~~ **Withdrawn 12 Sep — premise unproven** | — | — | — | Robustness |
-| 1.2a | Bound and cache binary resolution | P0 | — | — | What 1.2 actually found |
+| 1.2a | ~~Bound and cache binary resolution~~ **Done 12 Sep** | — | — | — | What 1.2 actually found |
 | 1.3 | ~~The workspace menu, decluttered~~ **Done 12 Sep** | — | 1 | — | Your item 4 |
 | 2.1 | ~~Speak to an agent from its desk~~ **Done 12 Sep** | — | 2 | — | CLAW3D |
 | 2.2 | ~~Give an instruction mid-run~~ **Not possible — headless CLIs are one shot** | — | — | — | CLAW3D |
-| 2.3 | Address a room | P1 | 1 | 2.1, 1.1 | CLAW3D |
+| 2.3 | ~~Address a room~~ **Done 12 Sep** | — | 1 | — | CLAW3D |
 | 3.1 | ~~Over the shoulder~~ **Done 12 Sep** | — | 1 | 1.1 | Your "agents view" |
 | 3.2 | ~~The monitor becomes real~~ **Already was — see below** | — | — | — | Your "agents view" |
 | 3.3 | ~~Read the diff at the table~~ **Done 12 Sep** (board names the files) | — | 1 | — | CLAW3D |
@@ -125,9 +125,11 @@ Select an agent, and a conversation opens anchored to it: what it has actually s
 >
 > The queueing and approval ideas in the original text are still worth having, but they belong to a reply that starts an attempt, not to steering a live process. They are not built.
 
-### 2.3 Address a room
+### 2.3 Address a room — **done, 12 September 2026**
 
-When a conference room is open, speak to everyone in it: the instruction fans out to each member's run under the same policy and approval rules, and the room's board shows what was asked.
+> Shipped as "Message the team" on the relay strip, which is the team that gathers in the room. The important part is what it refuses to pretend: every member continues *its own* session, so this is several actions rather than one conversation, and the dialog says so before anything is sent.
+>
+> Who can and cannot be written to is **the server's rule, read back per run** from `GET /api/runs/:id/conversation` rather than decided a second time in the browser — so the interface never offers a message the server is about to refuse, and the reasons shown are the server's own words. Everyone who cannot be reached is named with why, rather than quietly dropped from the count. Sending goes one run at a time and a partial success is reported as one.
 
 ## 6. Wave three — watch what an agent is doing (P1)
 

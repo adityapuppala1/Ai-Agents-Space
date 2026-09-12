@@ -3339,3 +3339,21 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Who a room message will and will not reach, listed before it is sent. */
+.as-room-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+.as-room-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.as-room-cannot {
+  color: var(--muted);
+}
