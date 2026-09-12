@@ -1,31 +1,61 @@
 {
-  "name": "ai-agent-workspace",
+  "name": "agentspace",
   "version": "0.1.0",
-  "private": true,
+  "description": "A local-first command centre for AI coding agents: watch what Claude Code, Codex and Copilot are actually doing, in a 3D office built from their own session records.",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "copilot",
+    "ai-agents",
+    "observability",
+    "local-first",
+    "three.js"
+  ],
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adityapuppala1/Ai-Agents-Space.git"
+  },
+  "homepage": "https://github.com/adityapuppala1/Ai-Agents-Space#readme",
+  "bugs": "https://github.com/adityapuppala1/Ai-Agents-Space/issues",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
   },
+  "bin": {
+    "agentspace": "bin/agentspace.js",
+    "agent-space": "bin/agent-space.js",
+    "agent-space-mcp": "bin/agent-space-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "packages/",
+    "apps/web/dist/",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "start": "node packages/server/src/main.js",
     "dev": "node --watch packages/server/src/main.js",
     "dev:web": "vite apps/web --config apps/web/vite.config.js",
     "build": "vite build apps/web --config apps/web/vite.config.js",
+    "prepack": "npm run build",
     "test:ui": "playwright test",
     "test:routes": "node artifacts/route-audit.mjs",
     "test": "node --test"
   },
   "dependencies": {
-    "lucide-react": "^1.43.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "three": "^0.186.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "lucide-react": "^1.43.0",
     "prettier": "^3.9.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.186.0",
     "vite": "^8.2.2"
   }
 }

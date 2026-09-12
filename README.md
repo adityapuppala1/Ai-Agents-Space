@@ -103,7 +103,28 @@ Every `POST` under `/api/ops` needs an explicit `{"confirm": true}` and is audit
 
 ## Run
 
-Requires Node.js **22.13+ or 24+** and a browser with WebGL2 for the 3D view. Git is needed for worktree isolation and diff artifacts.
+### One command
+
+```sh
+npx agentspace
+```
+
+It finds a free port, opens your browser, detects which assistants are installed on this machine, and starts showing the sessions they are already running. Nothing is uploaded and no account is needed.
+
+```sh
+npx agentspace --no-open        # do not open a browser
+npx agentspace --port 6100      # choose the port
+npx agentspace --demo           # load the simulated showcase workspace
+npx agentspace --data <dir>     # keep the database somewhere else
+```
+
+Your database and run artifacts live in the usual place for your operating system — `%LOCALAPPDATA%\agentspace` on Windows, `~/Library/Application Support/agentspace` on macOS, `${XDG_DATA_HOME:-~/.local/share}/agentspace` on Linux — not inside the downloaded package, so they survive the next `npx`.
+
+Works the same on Windows, macOS and Linux: there are no native modules to compile. Storage is `node:sqlite`, which is why Node **22.13+ or 24+** is required, and why installing needs no compiler and no `node-gyp`. A browser with WebGL2 is needed for the 3D view (there is a 2D fallback without it). Git is needed for worktree isolation and diff artifacts.
+
+> **Not yet published.** `npx agentspace` works once the package is published to npm; the name is available and the package is prepared and verified from a local tarball. Until then, clone and use the steps below. Publishing, and choosing a licence, are the repository owner's decisions — the package currently declares `UNLICENSED`, because no LICENSE file exists.
+
+### From a clone
 
 ```sh
 npm ci
