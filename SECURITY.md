@@ -62,7 +62,9 @@ Two of its checks deliberately use a raw socket instead of `fetch()`. This is no
 
 - **`style-src` in the Content-Security-Policy.** Tracked in [CHANGELOG.md](CHANGELOG.md); the scripting directives are strict (`script-src 'self'`, no `unsafe-eval`) and the interface has no HTML injection sink — no `dangerouslySetInnerHTML`, no `innerHTML =`, no `eval`.
 - **No rate limiting on authentication.** The token comparison is constant-time and a token is long enough that online guessing is impractical, but there is no per-address backoff on repeated failures. This is unreachable in local mode; it is worth closing before shared mode is used widely.
-- **Test fixtures contain real transcript data.** The provider fixtures under `tests/fixtures/providers/` are genuine recorded sessions and include local filesystem paths and session identifiers from the machine that recorded them. They contain no credentials, but they are not sanitised. Do not add new fixtures without reviewing them first.
+- **Earlier git history contains unsanitised fixtures.** The provider fixtures under `tests/fixtures/providers/` are genuine recorded sessions. They were sanitised on 12 September 2026 — see [tests/fixtures/providers/README.md](tests/fixtures/providers/README.md) — and [`tests/fixture-hygiene.test.js`](tests/fixture-hygiene.test.js) now fails the build on a home directory, a URL with a name before the `@`, an unvouched host, or anything shaped like a credential.
+
+  The current tree is clean. **Commits before that date still contain the original values** and remain reachable through `git log`, forks, and any clone taken earlier. No credentials were ever present; what was there was an account name, local paths, and the organisation and repository URL of an unrelated private project. Removing it from history would require rewriting published history, which has not been done.
 
 ## Out of scope
 
