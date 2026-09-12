@@ -70,7 +70,7 @@ For every session:
 
 Failure handling: `classifyFailure()` labels the failure `transport`, `rate-limit`, `auth`, `usage-limit`, `provider-error`, `user-cancelled`, `side-effects-possible` or `unknown`. Only `transport` and `rate-limit` are retried automatically by default, with bounded jittered backoff. A run that may already have edited files is **never** retried automatically — it goes to the decision inbox with the reason. Provider fallback is never automatic: when the policy permits one, the event names it and asks a person to start that attempt.
 
-Controls: `cancel` (adapter `interrupt()` if any, then `taskkill /pid <pid> /t /f` on win32 or `SIGTERM`/`SIGKILL` on the process group; the status message says side effects are not undone), `retry` (new attempt linked by `parent_run_id`; refused while a disconnected run's provider process is still alive), `input` (resume against the stored provider session id, only where `resume` is `verified`), `review`, `worktree/remove`.
+Controls: `cancel` (adapter `interrupt()` if any, then `taskkill /pid <pid> /t /f` on win32 or `SIGTERM`/`SIGKILL` on the process group; the status message says side effects are not undone), `retry` (new attempt linked by `parent_run_id`; refused while a disconnected run's provider process is still alive), `input` (resume against the stored provider session id, only where `resume` is `verified`), `review`, `worktree/apply` (copies an accepted review's changes into the working tree as uncommitted edits, after the checks in ARCHITECTURE.md §6), `worktree/remove`.
 
 ## 2. Claude Code
 

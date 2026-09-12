@@ -55,8 +55,19 @@ Provider homes are redirected the same way: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `
 
 - `e2e/workspace.spec.js` — workspace isolation, agent edits persisting across reloads, two tabs, mobile layout, WebGL loss and the accessible 2D fallback, the minimap.
 - `e2e/execution.spec.js` — launching a managed run with a fake CLI, the run inspector tabs, a Claude Code hook approval flowing through the inbox, inferred-activity labelling.
+- `e2e/office-arrange.spec.js` — arranging the office: moving and renaming a room by keyboard, placing furniture, saving, the office drawing it, a reload keeping it, and Reset giving the environment's layout back.
+- `e2e/accessibility.spec.js` — accessible names, labelled fields, unique ids, alt text, focus visibility, reduced motion, contrast arithmetic on the tokens and on rendered text in both themes, and text scaling to 150%.
+- `e2e/screen-reader.spec.js` — the path an assistive technology takes: landmarks, one page heading, an ordered outline with nothing skipped (in a workspace with records and in an empty one), named regions, a live region per view, the office's text equivalent and its spoken changes, focus never hidden behind the fixed bars, and a task created, assigned and completed with the keyboard alone.
 
 Selectors the specs depend on (`.scene-fallback`, `Inspect <name>` buttons, `.office-canvas canvas`, `.as-inferred`) are load-bearing: changing them breaks e2e.
+
+Conventions the specs rely on (11 September 2026):
+
+- **Choose the workspace explicitly.** A fresh browser opens the first real workspace once another spec has created one, so a spec that reads the demo team sets `agent-space-workspace` to `demo` in an init script (`useDemo()` in `e2e/workspace.spec.js`). A spec that writes tasks should use its own workspace: tasks cannot be deleted, and other specs count the demo's.
+- **Only agents with recorded work stand on the floor.** Scale and performance scenarios call `putTeamToWork()` from `e2e/helpers.js` so every agent has an assigned task; an idle roster draws no figures, and the specs assert that too. Idle agents are chosen from the roster (`.team-section .roster-item`), not the scene. `.agent-card` is the Agents page's card, a different thing.
+- **Navigation.** Board is the column layout of the Task board (`Task layout` group → `Board`). On a phone, secondary destinations are in the **More destinations** dialog. Office filters and environments are popovers inside the `Office controls` region; open `Filters` or `Environment` first. Settings opens on its Workspace tab; environment controls are on the Environment tab.
+- **Never depend on the demo simulation's clock.** The demo runs on its own timeline: its relay hands over, agents pick tasks up and finish them, and a room opens and closes as that happens. Specs that named one demo agent as "free", or waited for the demo to announce something, passed or failed by where in the cycle they ran. Create a workspace and drive the state the test needs.
+- **Helpers never live in a `.spec.js` file.** Importing a spec would register its tests twice; shared helpers go in `e2e/helpers.js`.
 
 ## Writing a test for a template or an extension
 

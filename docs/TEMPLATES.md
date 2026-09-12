@@ -1,6 +1,6 @@
 # Domain packs (workflow templates)
 
-Thirteen packs from [PRODUCT_ROADMAP.md](../PRODUCT_ROADMAP.md) section 14 ship as JSON in `packages/core/src/workflows/templates/`. A pack is a **scoped workflow**: role definitions, ordered steps with dependencies, tool requirements, sample inputs, an output schema, an acceptance rubric, and the concrete required result from the roadmap table. A different avatar is not a specialist agent; the contract is.
+Thirteen packs from [PRODUCT_ROADMAP.md](../Idea/PRODUCT_ROADMAP.md) section 14 ship as JSON in `packages/core/src/workflows/templates/`. A pack is a **scoped workflow**: role definitions, ordered steps with dependencies, tool requirements, sample inputs, an output schema, an acceptance rubric, and the concrete required result from the roadmap table. A different avatar is not a specialist agent; the contract is.
 
 ## The contract every pack carries
 
@@ -103,7 +103,7 @@ A pack that requires a `not-implemented` connector still ships — it declares t
 
 ## The packs
 
-Each row lists the roadmap's required result, the steps in dependency order, and the tools and connectors the pack needs. Roles are listed in the JSON with a `workingState` that drives the office scene.
+Each row lists the roadmap's required result, the steps in dependency order, and the tools and connectors the pack needs. Roles are listed in the JSON with a `workingState`: the profile's working style. It animates demo tasks only. A manual task (no provider run) shows "In progress (manual)", because nothing reports what the agent is doing, and a provider run shows the activity recorded from its events.
 
 ### 1. Feature delivery — Launch
 
