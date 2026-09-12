@@ -35,7 +35,7 @@ Priorities are dependency-ordered, not date-ordered. **P0** is being built now; 
 | 1.2 | ~~Run worker in its own process~~ **Withdrawn 12 Sep — premise unproven** | — | — | — | Robustness |
 | 1.2a | Bound and cache binary resolution | P0 | — | — | What 1.2 actually found |
 | 1.3 | ~~The workspace menu, decluttered~~ **Done 12 Sep** | — | 1 | — | Your item 4 |
-| 2.1 | ~~Speak to an agent~~ **Done 12 Sep** (from the office: still to do) | P1 | 2 | — | CLAW3D |
+| 2.1 | ~~Speak to an agent from its desk~~ **Done 12 Sep** | — | 2 | — | CLAW3D |
 | 2.2 | ~~Give an instruction mid-run~~ **Not possible — headless CLIs are one shot** | — | — | — | CLAW3D |
 | 2.3 | Address a room | P1 | 1 | 2.1, 1.1 | CLAW3D |
 | 3.1 | Over the shoulder | P1 | 1 | 1.1 | Your "agents view" |
@@ -104,9 +104,9 @@ Each row carries nine pieces of information and the panel does four jobs. Reduce
 
 The CLAW3D capability worth taking, and the one that turns the office from a display into a place you work.
 
-### 2.1 Speak to an agent — **conversation done, 12 September 2026; the office entry point is not**
+### 2.1 Speak to an agent from its desk — **done, 12 September 2026**
 
-> Shipped: the exchange itself, and replying. What is *not* yet done is opening it from an agent's desk in the office — the component was built to be used from both places, but only the run inspector uses it so far. That half stays P1.
+> Shipped whole: the exchange, replying, and reaching it from an agent's desk. See [ROADMAP_STATUS.md](ROADMAP_STATUS.md) for the evidence.
 
 
 Select an agent, and a conversation opens anchored to it: what it has actually said, and a box to say something back. The agent's recorded messages already exist as events; this gives them a face and a place.

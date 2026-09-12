@@ -53,6 +53,7 @@ import {
   Shield,
   Sparkles,
   ExternalLink,
+  MessageSquare,
   KeyRound,
   Timer,
   HeartPulse,
@@ -1175,6 +1176,16 @@ function RunPassport({ run, presentation, onOpenRun }) {
         </span>
       </p>
       <div className="run-summary-actions">
+        {/* Talking to the agent is the thing people come to its desk for, so
+            it is offered here rather than left to be found behind a tab. It
+            opens the one conversation view; there is no second one. */}
+        <button
+          className="button wide"
+          onClick={() => onOpenRun?.(run.id, run.workspaceId, "conversation")}
+        >
+          <MessageSquare size={14} aria-hidden="true" />
+          Read and reply
+        </button>
         <button
           className="button wide"
           onClick={() => onOpenRun?.(run.id, run.workspaceId)}
@@ -1702,11 +1713,13 @@ export default function App() {
     setSelectedTask(null);
   }
   const openRun = useCallback(
-    (runId, targetWorkspaceId) => {
+    // `tab` opens the inspector on a named section — "conversation" when the
+    // caller is asking to talk to the agent rather than watch it work.
+    (runId, targetWorkspaceId, tab = null) => {
       if (!runId) return;
       if (targetWorkspaceId && targetWorkspaceId !== workspaceId)
         setWorkspaceId(targetWorkspaceId);
-      setRunModal({ runId });
+      setRunModal({ runId, tab });
     },
     [workspaceId],
   );
@@ -4194,6 +4207,7 @@ export default function App() {
               workspaceId={workspaceId}
               capabilities={capabilityMap}
               presentation={presentation}
+              initialTab={runModal.tab ?? "overview"}
               onAction={(name) =>
                 setToast({ message: `Run ${name} requested` })
               }
