@@ -94,6 +94,15 @@ async function startup() {
     console.error(`Run reconciliation failed: ${error.message}`);
   }
 
+  // 2b. Placeholder runs an earlier version left on provider work: they said
+  // a task was running before anything was, and never cleared from a stop.
+  let placeholders = [];
+  try {
+    placeholders = services.hub.closeProviderPlaceholders();
+  } catch (error) {
+    console.error(`Placeholder cleanup failed: ${error.message}`);
+  }
+
   // 3. Claude Code hook status (reads ~/.claude/settings.json; never writes).
   let hooksLabel = "unknown";
   try {
@@ -226,7 +235,11 @@ async function startup() {
   console.log(
     `Startup: providers — ${providers} | live sessions: ${live} | hooks: ${hooksLabel} | schedules: ${scheduled} | observation: ${
       observe ? "on" : "off (AGENT_SPACE_OBSERVE=false)"
-    }${disconnected.length ? ` | ${disconnected.length} run(s) marked disconnected` : ""}`,
+    }${disconnected.length ? ` | ${disconnected.length} run(s) marked disconnected` : ""}${
+      placeholders.length
+        ? ` | ${placeholders.length} placeholder run(s) closed on provider work`
+        : ""
+    }`,
   );
 
   // Operational facts an operator needs before touching anything.

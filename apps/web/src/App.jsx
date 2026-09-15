@@ -1,5 +1,11 @@
 import OfficeControl, { OFFICE_THEMES } from "./components/OfficeControl.jsx";
-import { agentMatchesFilters, buildEventsFrom } from "./hooks/viewLogic.js";
+import {
+  agentMatchesFilters,
+  buildEventsFrom,
+  rowProgress,
+  runsByTask,
+  taskSourceLabel,
+} from "./hooks/viewLogic.js";
 import React, {
   lazy,
   Suspense,
@@ -90,6 +96,7 @@ import AgentDirectory from "./components/AgentDirectory.jsx";
 import { runningProviderSet } from "./hooks/providerStatus.js";
 import { attentionElsewhere } from "./hooks/workspaceSummary.js";
 import { agentsAt, replayRange } from "./office/replay.js";
+import { surfacesForWorkspace } from "./office/presence.js";
 import { workflowRelays, relayPresence } from "./office/relay.js";
 import Provenance from "./components/Provenance.jsx";
 import ActivityBadge from "./components/ActivityBadge.jsx";
@@ -1238,20 +1245,9 @@ function TaskDetails({
 }) {
   const [assignTo, setAssignTo] = useState("");
   const agent = agents.find((a) => a.id === task.assignedAgentId);
-  const run =
-    runs.find((r) => r.taskId === task.id && !r.endedAt) ??
-    runs.find((r) => r.taskId === task.id);
+  const run = runsByTask(runs).get(task.id);
   const providerRun = run && PROVIDER_MODES.has(run.mode);
-  const sourceLabel =
-    task.source === "demo"
-      ? "Demo task"
-      : task.source === "observed"
-        ? "Observed session"
-        : task.source === "workflow"
-          ? "Workflow step"
-          : task.source === "launcher"
-            ? "Launched task"
-            : "Manual task";
+  const sourceLabel = taskSourceLabel(task, run);
   return (
     <div className="task-details">
       <div className="task-kicker">
@@ -1279,9 +1275,12 @@ function TaskDetails({
         <>
           <div className="progress-heading">
             <span>Task progress</span>
-            <strong>{task.progress}%</strong>
+            <strong>{rowProgress(task, run)}</strong>
           </div>
-          <Progress value={task.progress} color={agent?.color} />
+          {/* A provider sets no percentage, so no bar pretends to measure one. */}
+          {task.provider ? null : (
+            <Progress value={task.progress} color={agent?.color} />
+          )}
         </>
       )}
       <div className="task-properties">
@@ -2451,11 +2450,11 @@ export default function App() {
     </section>
   );
   function renderTaskRows(list) {
+    // A provider run wins over a manual placeholder left on the same task.
+    const runFor = runsByTask(runs);
     const row = (t) => {
       const owner = agents.find((a) => a.id === t.assignedAgentId);
-      const taskRun =
-        runs.find((r) => r.taskId === t.id && !r.endedAt) ??
-        runs.find((r) => r.taskId === t.id);
+      const taskRun = runFor.get(t.id);
       const providerRun = taskRun && PROVIDER_MODES.has(taskRun.mode);
       const providerId = t.provider ?? taskRun?.provider ?? null;
       const ownerName = owner?.name ?? "Unassigned";
@@ -2486,13 +2485,7 @@ export default function App() {
                   <span aria-hidden="true">·</span>
                 </>
               ) : null}
-              {t.source === "demo"
-                ? "Demo task"
-                : t.source === "observed"
-                  ? "Observed session"
-                  : t.source === "workflow"
-                    ? "Workflow step"
-                    : "Manual task"}
+              {taskSourceLabel(t, taskRun)}
               {providerId ? (
                 <>
                   <span aria-hidden="true">·</span>
@@ -2512,17 +2505,7 @@ export default function App() {
           ) : (
             <Badge state={t.status} />
           )}
-          <span className="row-progress">
-            {providerRun
-              ? taskRun.startedAt
-                ? formatElapsed(
-                    (taskRun.endedAt
-                      ? new Date(taskRun.endedAt).getTime()
-                      : Date.now()) - new Date(taskRun.startedAt).getTime(),
-                  )
-                : "—"
-              : `${t.progress}%`}
-          </span>
+          <span className="row-progress">{rowProgress(t, taskRun)}</span>
           <ArrowUpRight size={16} />
         </button>
       );
@@ -2901,9 +2884,11 @@ export default function App() {
                           <Office
                             key={workspaceId}
                             agents={officeAgents}
-                            providerSurfaces={
-                              observationStatus.data?.surfaces ?? []
-                            }
+                            providerSurfaces={surfacesForWorkspace(
+                              observationStatus.data?.surfaces ?? [],
+                              liveSessions,
+                              workspaceId,
+                            )}
                             onOpenProviders={() => setView("connections")}
                             selected={selectedAgent ?? undefined}
                             onSelect={selectAgent}
@@ -3972,7 +3957,9 @@ export default function App() {
                         : "No walking tweens, bobbing or particles in the office."
                     }
                     label="Reduced motion"
-                    checked={Boolean(prefs.reducedMotion) || systemReducedMotion}
+                    checked={
+                      Boolean(prefs.reducedMotion) || systemReducedMotion
+                    }
                     disabled={systemReducedMotion}
                     onChange={(v) => updatePref("reducedMotion", v)}
                   />

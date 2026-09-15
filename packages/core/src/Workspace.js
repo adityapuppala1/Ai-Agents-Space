@@ -231,8 +231,13 @@ function rowToEvent(row) {
  * For a manual task the state is the working style chosen on the profile,
  * not something anyone reported, so its provenance is "profile" and clients
  * show only that the task is in progress. Demo tasks are simulated: "system".
+ *
+ * Provider work — a task that names a provider, or that a managed or observed
+ * run has executed — never borrows the profile's working style. With no run
+ * executing it is assigned, not started, or finished and waiting for review,
+ * and nothing is reporting any activity.
  */
-function agentState(agent, task, run) {
+function agentState(agent, task, run, { providerWork = false } = {}) {
   if (!task) return { state: "IDLE", activityProvenance: null };
   if (task.status === "BLOCKED")
     return { state: "BLOCKED", activityProvenance: "user" };
@@ -252,6 +257,7 @@ function agentState(agent, task, run) {
     // Running, but the provider has not reported a tool or message yet.
     return { state: "IDLE", activityProvenance: "system" };
   }
+  if (providerWork) return { state: "IDLE", activityProvenance: "system" };
   return {
     state: agent.workingState,
     activityProvenance: task.source === "demo" ? "system" : "profile",
@@ -438,6 +444,21 @@ export class Workspace extends EventEmitter {
     return open;
   }
 
+  /**
+   * Tasks a managed or observed run has executed. Such a task is provider
+   * work even when it names no provider, because it was launched with one.
+   */
+  #providerRunTaskIds() {
+    return new Set(
+      this.db
+        .prepare(
+          "SELECT DISTINCT task_id FROM runs WHERE workspace_id = ? AND task_id IS NOT NULL AND mode IN ('managed', 'observed')",
+        )
+        .all(this.id)
+        .map((row) => row.task_id),
+    );
+  }
+
   /** Runs that currently occupy an agent (queued, running, blocked, waiting, stale). */
   activeRuns() {
     const now = Date.now();
@@ -465,6 +486,7 @@ export class Workspace extends EventEmitter {
       }),
     }));
     const activeRuns = this.activeRuns();
+    const providerRunTasks = this.#providerRunTaskIds();
     const agents = this.profiles.list().map((agent) => {
       const task = tasks.find(
         (task) =>
@@ -478,7 +500,11 @@ export class Workspace extends EventEmitter {
           activeRuns.find((r) => r.taskId === task.id) ??
           null)
         : null;
-      const { state, activityProvenance } = agentState(agent, task, run);
+      const { state, activityProvenance } = agentState(agent, task, run, {
+        providerWork: Boolean(
+          task && (task.provider || providerRunTasks.has(task.id)),
+        ),
+      });
       return {
         ...agent,
         state,
@@ -607,6 +633,10 @@ export class Workspace extends EventEmitter {
   }
 
   #startRun(task, agent) {
+    // A task bound to a provider is executed by a managed run, which records
+    // its own lifecycle. A placeholder here would say the task was running
+    // before anything was, and would outlive the real run.
+    if (task.provider) return null;
     const id = randomUUID();
     const now = Date.now();
     const snapshot = {
@@ -650,6 +680,35 @@ export class Workspace extends EventEmitter {
       )
       .get(taskId);
     return row ? rowToRun(row) : null;
+  }
+
+  /**
+   * Ends the manual placeholder runs on a task that provider work now owns,
+   * so a placeholder never outlives the real run that replaced it. Each is
+   * closed as cancelled with a system event saying why. Returns the ids.
+   */
+  closePlaceholders(
+    taskId,
+    {
+      reason = "Closed the placeholder opened when this task was assigned: a provider runs this task, and the placeholder did no work.",
+    } = {},
+  ) {
+    const open = this.db
+      .prepare(
+        "SELECT id, agent_id FROM runs WHERE task_id = ? AND mode = 'manual' AND ended_at IS NULL",
+      )
+      .all(taskId);
+    if (!open.length) return [];
+    const now = Date.now();
+    const close = this.db.prepare(
+      "UPDATE runs SET status = 'cancelled', ended_at = ?, last_event_at = ? WHERE id = ?",
+    );
+    for (const run of open) {
+      close.run(now, now, run.id);
+      this.#record(reason, "task", run.agent_id ?? undefined, run.id);
+    }
+    this.emit("change", this.snapshot());
+    return open.map((run) => run.id);
   }
 
   /**
@@ -698,7 +757,9 @@ export class Workspace extends EventEmitter {
       }
       this.changed(
         agent
-          ? `${agent.name} started “${task.title}”`
+          ? task.provider
+            ? `${agent.name} was assigned “${task.title}”`
+            : `${agent.name} started “${task.title}”`
           : `Added “${task.title}” to the queue`,
         "task",
         agent?.id,
@@ -714,7 +775,9 @@ export class Workspace extends EventEmitter {
       const task = this.store.assign(id, agentId);
       const runId = this.#startRun(task, agent);
       this.changed(
-        `${agent.name} started “${task.title}”`,
+        task.provider
+          ? `${agent.name} was assigned “${task.title}”`
+          : `${agent.name} started “${task.title}”`,
         "task",
         agent.id,
         runId,

@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { ChevronLeft, ChevronRight, GitBranch } from "lucide-react";
 import ProviderBadge from "../components/ProviderBadge.jsx";
 import { maskText } from "../hooks/useApi.js";
-import { cardProgress } from "../hooks/viewLogic.js";
+import { cardProgress, runsByTask } from "../hooks/viewLogic.js";
 import EmptyState from "../components/EmptyState.jsx";
 import VirtualList from "../components/VirtualList.jsx";
 import { useSelection, FilterChips } from "../components/SelectionProvider.jsx";
@@ -75,16 +75,9 @@ export default function BoardView({
     return map;
   }, [visible, columns]);
   const titleOf = (id) => tasks.find((task) => task.id === id)?.title ?? id;
-  // The live run for a task, else its most recent one.
-  const runByTask = useMemo(() => {
-    const map = new Map();
-    for (const run of runs) {
-      if (!run.taskId) continue;
-      const known = map.get(run.taskId);
-      if (!known || (known.endedAt && !run.endedAt)) map.set(run.taskId, run);
-    }
-    return map;
-  }, [runs]);
+  // The live run for a task, else its most recent one; a provider run wins
+  // over a manual placeholder (see runsByTask).
+  const runByTask = useMemo(() => runsByTask(runs), [runs]);
 
   const pick = (task) => {
     selection.selectTask?.(task.id, { agentId: task.assignedAgentId ?? null });

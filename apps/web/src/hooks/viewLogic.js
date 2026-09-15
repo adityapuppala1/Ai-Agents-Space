@@ -126,7 +126,8 @@ const PROVIDER_RUN_MODES = new Set(["observed", "managed"]);
 /**
  * What a task card says about progress. A provider run reports its status and
  * elapsed time, never a percentage; only a manual or demo task carries one,
- * because a person (or the labelled simulation) set it.
+ * because a person (or the labelled simulation) set it. A task bound to a
+ * provider that no run has started says exactly that.
  */
 export function cardProgress(task, run, now = Date.now()) {
   if (run && PROVIDER_RUN_MODES.has(run.mode)) {
@@ -135,9 +136,68 @@ export function cardProgress(task, run, now = Date.now()) {
     const end = run.endedAt ? new Date(run.endedAt).getTime() : now;
     return `${label} ${formatElapsed(end - new Date(run.startedAt).getTime())}`;
   }
+  // Provider work is run, not advanced by hand: its stored progress was never
+  // set by anyone, and a placeholder left over from before is not a start.
+  if (task?.status === "IN_PROGRESS" && task.provider) return "Not launched";
   if (task?.status === "IN_PROGRESS" && typeof task.progress === "number")
     return `${task.progress}%`;
   return null;
+}
+
+/**
+ * The run each task card reports on: the live run, else the most recent. A
+ * provider run always wins over a manual placeholder on the same task, live or
+ * not — the placeholder never did the work, and one left open by an older
+ * server would otherwise make a task that did run read "Not launched".
+ * Expects runs newest first, as the snapshot sends them.
+ */
+export function runsByTask(runs = []) {
+  const map = new Map();
+  for (const run of runs ?? []) {
+    if (!run?.taskId) continue;
+    const known = map.get(run.taskId);
+    if (!known) {
+      map.set(run.taskId, run);
+      continue;
+    }
+    const isProvider = PROVIDER_RUN_MODES.has(run.mode);
+    if (isProvider !== PROVIDER_RUN_MODES.has(known.mode)) {
+      if (isProvider) map.set(run.taskId, run);
+      continue;
+    }
+    if (known.endedAt && !run.endedAt) map.set(run.taskId, run);
+  }
+  return map;
+}
+
+/**
+ * What a task row says at its right edge: a provider run's elapsed time, never
+ * a percentage; "Not launched" for provider work no run has started; and the
+ * percentage a person set on manual work. `run` is the one runsByTask picked.
+ */
+export function rowProgress(task, run, now = Date.now()) {
+  if (run && PROVIDER_RUN_MODES.has(run.mode)) {
+    if (!run.startedAt) return "—";
+    const end = run.endedAt ? new Date(run.endedAt).getTime() : now;
+    return formatElapsed(end - new Date(run.startedAt).getTime());
+  }
+  if (task?.provider && task.status !== "COMPLETED") return "Not launched";
+  return `${task?.progress ?? 0}%`;
+}
+
+/**
+ * Where a task came from, as its row and its details say it. A task typed in
+ * by hand but bound to a provider — or already executed by a provider run — is
+ * not manual work, and calling it that hides who does the work.
+ */
+export function taskSourceLabel(task, run = null) {
+  if (task?.source === "demo") return "Demo task";
+  if (task?.source === "observed") return "Observed session";
+  if (task?.source === "workflow") return "Workflow step";
+  if (task?.source === "launcher") return "Launched task";
+  if (task?.provider || (run && PROVIDER_RUN_MODES.has(run.mode)))
+    return "Provider task";
+  return "Manual task";
 }
 
 /**

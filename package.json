@@ -50,7 +50,7 @@
     "prepack": "npm run build",
     "test:ui": "playwright test",
     "test:routes": "node artifacts/route-audit.mjs",
-    "test": "node --test",
+    "test": "node --test \"tests/**/*.test.js\"",
     "test:security": "node artifacts/security-probe.mjs"
   },
   "dependencies": {

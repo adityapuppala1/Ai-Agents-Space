@@ -103,3 +103,29 @@ export function liveBeaconSurfaces(surfaces = [], agents = []) {
       });
   return [...byProvider.values()];
 }
+
+/**
+ * The detected surfaces with each live-session count narrowed to one
+ * workspace. Observation reports machine-wide counts, so without this a
+ * session belonging to one workspace drew a "1 live session" beacon on the
+ * floor of every other workspace — including one where nothing was running.
+ * Without a workspace the surfaces pass through unchanged. Never mutates.
+ */
+export function surfacesForWorkspace(
+  surfaces = [],
+  sessions = [],
+  workspaceId = null,
+) {
+  if (!workspaceId) return surfaces;
+  const counts = new Map();
+  for (const session of sessions ?? []) {
+    if (session?.workspaceId !== workspaceId) continue;
+    const provider = session.provider ?? session.providerId;
+    if (!provider) continue;
+    counts.set(provider, (counts.get(provider) ?? 0) + 1);
+  }
+  return (surfaces ?? []).map((surface) => ({
+    ...surface,
+    liveSessions: counts.get(surface.provider) ?? 0,
+  }));
+}

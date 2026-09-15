@@ -264,12 +264,17 @@ export class RunWorker {
     return retryPolicy({ policy, random: this.random });
   }
 
-  /** Runs occupying a slot: recorded as active plus launches in flight. */
+  /**
+   * Runs occupying a slot: managed runs recorded as active, plus launches in
+   * flight not yet recorded as active. A launch is recorded as running before
+   * it finishes starting, so adding the two lists outright counted it twice,
+   * and a run launched alongside it was queued behind a slot that was free.
+   */
   activeSlots(workspaceId) {
-    let inFlight = 0;
-    for (const id of this.starting.values())
-      if (id === workspaceId) inFlight += 1;
-    return this.activeCount(workspaceId) + inFlight;
+    const ids = new Set(this.activeRunIds(workspaceId));
+    for (const [runId, id] of this.starting)
+      if (id === workspaceId) ids.add(runId);
+    return ids.size;
   }
 
   // ---------------------------------------------------------------- lookups
@@ -434,6 +439,15 @@ export class RunWorker {
         `SELECT COUNT(*) AS n FROM runs WHERE workspace_id = ? AND mode = 'managed' AND status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`,
       )
       .get(workspaceId, ...ACTIVE_STATUSES).n;
+  }
+
+  activeRunIds(workspaceId) {
+    return this.db
+      .prepare(
+        `SELECT id FROM runs WHERE workspace_id = ? AND mode = 'managed' AND status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`,
+      )
+      .all(workspaceId, ...ACTIVE_STATUSES)
+      .map((row) => row.id);
   }
 
   audit(
@@ -718,8 +732,8 @@ export class RunWorker {
     }
 
     const providerState = this.queue.available(provider);
-    const atLimit =
-      this.activeSlots(workspaceId) >= effective.maxConcurrentRuns;
+    const slots = this.activeSlots(workspaceId);
+    const atLimit = slots >= effective.maxConcurrentRuns;
     const queued = atLimit || !providerState.ok;
     const label = this.labelFor(agent);
     const run = this.recorder.ensureRun({
@@ -756,6 +770,16 @@ export class RunWorker {
       parentRunId,
       attempt,
     });
+    // A manual placeholder opened when an agent was assigned is replaced by
+    // this run. Left open, it outlived the run and put the agent back to
+    // "working" once the real work had ended.
+    try {
+      workspace.closePlaceholders?.(taskId, {
+        reason: `Closed the placeholder opened when this task was assigned: ${PROVIDERS[provider].name} run ${run.id} now runs it, and the placeholder did no work.`,
+      });
+    } catch {
+      /* the run itself is valid; the placeholder stays as it was */
+    }
     const reservation = this.budget.reserve({
       workspaceId,
       runId: run.id,
@@ -840,10 +864,13 @@ export class RunWorker {
       if (atLimit)
         this.system(
           run.id,
-          `Queued: workspace already runs ${effective.maxConcurrentRuns} managed run${
-            effective.maxConcurrentRuns === 1 ? "" : "s"
+          `Queued: workspace already runs ${slots} managed run${
+            slots === 1 ? "" : "s"
           }; will start when a slot frees`,
-          { maxConcurrentRuns: effective.maxConcurrentRuns },
+          {
+            maxConcurrentRuns: effective.maxConcurrentRuns,
+            activeSlots: slots,
+          },
           "status",
         );
       else

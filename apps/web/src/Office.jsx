@@ -967,12 +967,7 @@ export default function Office({
     const figureRes = new Resources();
     const crowd = buildCrowdField(figureGroup, figureRes);
     let roomRes = new Resources();
-    let lights = createLights(
-      scene,
-      themeNow(),
-      1,
-      state.current.lighting,
-    );
+    let lights = createLights(scene, themeNow(), 1, state.current.lighting);
     let gfx = applyGraphics(
       renderer,
       scene,
@@ -1859,7 +1854,12 @@ export default function Office({
      */
     function turnFor(episode, fig, other) {
       const home = homeOf(fig);
-      const toward = facingToward(fig.pos.x, fig.pos.z, other.pos.x, other.pos.z);
+      const toward = facingToward(
+        fig.pos.x,
+        fig.pos.z,
+        other.pos.x,
+        other.pos.z,
+      );
       let facing = toward;
       if (fig.seatKey) {
         const base = home.facing ?? 0;
@@ -1911,7 +1911,11 @@ export default function Office({
       const walkMs = episode.duration * WALK_SHARE;
       const handoff = episode.kind === "handoff";
       if (!stage.mode) {
-        if (giver.seatKey && receiver.seatKey && giver.roomKey === receiver.roomKey)
+        if (
+          giver.seatKey &&
+          receiver.seatKey &&
+          giver.roomKey === receiver.roomKey
+        )
           stage.mode = "table";
         else if (giver.seatKey || receiver.seatKey) stage.mode = "send";
         else stage.mode = "walk";
@@ -2008,9 +2012,7 @@ export default function Office({
         token.position.lerpVectors(handGiver, handReceiver, share);
         // Sent between rooms, it arcs over the glass walls.
         const lift =
-          stage.mode === "send"
-            ? Math.max(0.22, 2.9 - token.position.y)
-            : 0.22;
+          stage.mode === "send" ? Math.max(0.22, 2.9 - token.position.y) : 0.22;
         token.position.y += Math.sin(share * Math.PI) * lift;
       }
       token.rotation.y = share < 0.5 ? giver.renderYaw : receiver.renderYaw;
@@ -2645,7 +2647,9 @@ export default function Office({
         // chair of its own — an agent working at its desk is sitting at it.
         const home = fig.home;
         const hasChair =
-          home?.zone === "conference" ? Boolean(fig.seatKey) : home?.zone === "desk";
+          home?.zone === "conference"
+            ? Boolean(fig.seatKey)
+            : home?.zone === "desk";
         fig.atSeat =
           hasChair &&
           !fig.walking &&
@@ -2721,7 +2725,19 @@ export default function Office({
       }
       for (const [provider, beacon] of providerBeacons) {
         const label = beaconLabels.current[provider];
-        if (label) place(label, beacon.position.x, 0.78, beacon.position.z);
+        if (!label) continue;
+        place(label, beacon.position.x, 0.78, beacon.position.z);
+        // Spread with the agent labels like every other chip on the floor, so
+        // a beacon's name can never cover an agent's.
+        if (label.style.visibility !== "hidden" && label.offsetWidth > 2)
+          pending.push({
+            id: `beacon:${provider}`,
+            el: label,
+            x: Number.parseFloat(label.style.left) || 0,
+            y: Number.parseFloat(label.style.top) || 0,
+            w: label.offsetWidth || 140,
+            h: label.offsetHeight || 24,
+          });
       }
       for (const child of roomGroup.children) {
         if (!child.userData?.core) continue;
@@ -2746,7 +2762,8 @@ export default function Office({
         // nobody walks over to say it.
         const stage = directed.get(interaction.id);
         token.visible =
-          !stage || (!stage.token && Boolean(stage.mode) && stage.mode !== "walk");
+          !stage ||
+          (!stage.token && Boolean(stage.mode) && stage.mode !== "walk");
         const seed = String(interaction.id)
           .split("")
           .reduce((sum, character) => sum + character.charCodeAt(0), 0);
@@ -3170,7 +3187,9 @@ export default function Office({
       );
     else if (closed.length)
       setRoomNews(
-        closed.map(([, title]) => `${title} went back to their desks.`).join(" "),
+        closed
+          .map(([, title]) => `${title} went back to their desks.`)
+          .join(" "),
       );
   }, [plan]);
   const announcement = [
@@ -3670,7 +3689,9 @@ export default function Office({
                   aria-label={`${room.title}: ${seated} at the table${
                     summary ? `, ${summary}` : ""
                   }${
-                    room.overflow ? `, ${room.overflow} more at their desks` : ""
+                    room.overflow
+                      ? `, ${room.overflow} more at their desks`
+                      : ""
                   }. Look into the room.`}
                 >
                   <strong>{room.title}</strong>

@@ -6,7 +6,16 @@ import { openDatabase, transaction } from "./db.js";
 import { mergePolicy, validatePolicy } from "./policy/Policy.js";
 
 export const DEMO_WORKSPACE_ID = "demo";
-export const THEMES = ["studio", "operations", "garden", "midnight", "sandstone", "data-lab", "research-library", "creative-studio"];
+export const THEMES = [
+  "studio",
+  "operations",
+  "garden",
+  "midnight",
+  "sandstone",
+  "data-lab",
+  "research-library",
+  "creative-studio",
+];
 
 function slug(name) {
   return (
@@ -98,7 +107,14 @@ export class WorkspaceHub extends EventEmitter {
     const rows = this.db
       .prepare(
         `SELECT w.*,
-           (SELECT COUNT(*) FROM tasks t WHERE t.workspace_id = w.id AND t.status = 'IN_PROGRESS') AS active,
+           (SELECT COUNT(*) FROM tasks t WHERE t.workspace_id = w.id AND t.status = 'IN_PROGRESS'
+              AND (
+                EXISTS (SELECT 1 FROM runs r WHERE r.task_id = t.id AND r.ended_at IS NULL
+                          AND r.mode IN ('managed', 'observed')
+                          AND r.status IN ('running', 'waiting_approval', 'stale'))
+                OR (t.provider IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM runs m WHERE m.task_id = t.id AND m.mode IN ('managed', 'observed')))
+              )) AS active,
            (SELECT COUNT(*) FROM tasks t WHERE t.workspace_id = w.id AND t.status = 'BLOCKED') AS attention,
            (SELECT COUNT(*) FROM agent_profiles a WHERE a.workspace_id = w.id AND a.archived_at IS NULL) AS agents
          FROM workspaces w
@@ -120,6 +136,34 @@ export class WorkspaceHub extends EventEmitter {
       attention: row.attention,
       agents: row.agents,
     }));
+  }
+
+  /**
+   * Startup: ends manual placeholder runs that earlier builds left on provider
+   * work — a task that names a provider, or that a managed or observed run has
+   * executed. Genuine manual work keeps its placeholder. Safe to run again.
+   * Returns [{ runId, workspaceId, taskId }].
+   */
+  closeProviderPlaceholders() {
+    const tasks = this.db
+      .prepare(
+        `SELECT DISTINCT r.workspace_id AS workspaceId, r.task_id AS taskId
+           FROM runs r JOIN tasks t ON t.id = r.task_id
+          WHERE r.mode = 'manual' AND r.ended_at IS NULL
+            AND (t.provider IS NOT NULL
+                 OR EXISTS (SELECT 1 FROM runs m WHERE m.task_id = t.id AND m.mode IN ('managed', 'observed')))`,
+      )
+      .all();
+    const closed = [];
+    for (const { workspaceId, taskId } of tasks) {
+      if (!this.has(workspaceId)) continue;
+      const ids = this.get(workspaceId).closePlaceholders(taskId, {
+        reason:
+          "Closed a placeholder left by an earlier version: a provider runs this task, and the placeholder opened when it was assigned never did any work.",
+      });
+      for (const runId of ids) closed.push({ runId, workspaceId, taskId });
+    }
+    return closed;
   }
 
   get(id) {
@@ -223,7 +267,9 @@ export class WorkspaceHub extends EventEmitter {
     // A preset that says nothing about the layout leaves the one in place.
     if (layout !== undefined) next.officeLayout = layout;
     transaction(this.db, () => {
-      this.db.prepare("UPDATE workspaces SET theme = ? WHERE id = ?").run(theme, id);
+      this.db
+        .prepare("UPDATE workspaces SET theme = ? WHERE id = ?")
+        .run(theme, id);
       this.db
         .prepare("UPDATE workspaces SET settings = ? WHERE id = ?")
         .run(JSON.stringify(next), id);

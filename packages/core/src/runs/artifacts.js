@@ -100,8 +100,21 @@ export function isTestCommand(command) {
 /**
  * Collects command events that look like test runs, with any output the
  * provider reported for them.
+ *
+ * Codex reports a command's output on the command event itself. Claude Code
+ * reports it on a separate tool result — `tool.end`, or `error` when the
+ * command exits non-zero — carrying the same toolUseId, so the result is
+ * paired back to its command here. Without the pairing, a failing suite left
+ * an artifact holding the command line and nothing else.
  */
 export function captureTestOutput(events) {
+  const reportedByToolUse = new Map();
+  for (const event of events) {
+    const id = event.data?.toolUseId;
+    if (!id || (event.kind !== "tool.end" && event.kind !== "error")) continue;
+    if (typeof event.data?.output !== "string") continue;
+    reportedByToolUse.set(id, event);
+  }
   const results = [];
   for (const event of events) {
     const command =
@@ -113,15 +126,34 @@ export function captureTestOutput(events) {
     if (kind !== "test" && !(kind === "command" && isTestCommand(command)))
       continue;
     if (!command && kind !== "test") continue;
+    const reported = event.data?.toolUseId
+      ? (reportedByToolUse.get(event.data.toolUseId) ?? null)
+      : null;
     results.push({
       command: command ?? event.message ?? event.summary ?? "",
-      output: event.data?.output ?? event.data?.aggregated_output ?? null,
-      exitCode: event.data?.exitCode ?? event.data?.exit_code ?? null,
+      output:
+        event.data?.output ??
+        event.data?.aggregated_output ??
+        reported?.data?.output ??
+        null,
+      exitCode:
+        event.data?.exitCode ?? event.data?.exit_code ?? exitCodeOf(reported),
       timestamp: event.timestamp,
       provenance: event.provenance,
     });
   }
   return results;
+}
+
+/**
+ * Claude Code states an exit code only for a command that failed, as the first
+ * line of its result ("Exit code 1"). A success states none, and none is
+ * invented here.
+ */
+function exitCodeOf(result) {
+  if (!result?.data?.isError) return null;
+  const match = /^Exit code (\d+)/.exec(result.data.output ?? "");
+  return match ? Number(match[1]) : null;
 }
 
 /** Last provider message text in the run, or null. */

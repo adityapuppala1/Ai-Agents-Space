@@ -3,7 +3,7 @@
 Two suites, no test framework dependency: `node --test` for unit and integration tests, Playwright for the browser.
 
 ```bash
-npm test                                  # node --test → every tests/*.test.js
+npm test                                  # node --test "tests/**/*.test.js" — never data/worktrees
 node --test tests/templates.test.js       # one file
 node --test tests/extensions.test.js tests/workflows.test.js
 npm run build && npx playwright test      # e2e (Chrome, server on port 5174)
