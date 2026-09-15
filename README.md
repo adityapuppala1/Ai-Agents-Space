@@ -147,7 +147,7 @@ For development run `npm run dev` (server with restart on change) and `npm run d
 ## Verify
 
 ```sh
-npm test            # Node unit and integration tests in tests/ (762)
+npm test            # Node unit and integration tests in tests/ (765)
 npm run build       # Vite production build
 npm run test:ui     # Playwright browser suite (57 tests in 23 files)
 npm run test:routes # Route audit: 16 routes x 8 viewports x 2 themes (256 renders)

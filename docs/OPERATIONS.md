@@ -12,7 +12,7 @@ npm run build && npm start        # build the web app, then serve it
 node --env-file=.env packages/server/src/main.js   # load .env (Node does not by itself)
 ```
 
-Default: `http://127.0.0.1:5173`. On boot `main.js` refreshes connections, reconciles managed runs, starts observation unless `AGENT_SPACE_OBSERVE=false`, and logs a startup summary.
+Default: `http://127.0.0.1:5173`. On boot `main.js` refreshes connections, reconciles managed runs, closes the manual placeholder runs left open on provider tasks, starts observation unless `AGENT_SPACE_OBSERVE=false`, and logs a startup summary.
 
 Health, at any time:
 
@@ -126,7 +126,7 @@ Roadmap sections 6 (phases) and 18 (releases R1–R6). Each item is a command pl
 Baseline for every gate:
 
 ```bash
-npm test                      # node --test over tests/*.test.js
+npm test                      # node --test "tests/**/*.test.js" — never an agent's worktree under data/
 npm run build                 # vite build of apps/web
 npx playwright test           # e2e/*.spec.js (Chrome)
 ```
